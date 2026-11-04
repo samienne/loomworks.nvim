@@ -7,10 +7,8 @@
 --- layer, the view-model's write adapters or the workspace's write methods
 --- itself (a guard checks it, tests/ui_model_calls_spec.lua).
 ---
---- In-process bodies (C0): each method's body is the in-process write the
---- editor ran before (the view-model's adapters over loomworks.model_commands,
---- or the existing loomworks function). Part C2 replaces them, in `daemon`
---- mode, with calls by id to the workspace daemon; the call sites keep their
+--- Each method is a call by id to the workspace daemon (part C2; the
+--- editor holds no model, step 6b-α): the call sites keep the
 --- shape. **C2a** routes `Workspace/1`, `Profiles/1` and `ConfigSets/1`,
 --- **C2b** (first half) the `Projects/1` methods whose dialogs need no read
 --- of the editor's model beyond `Projects/1.declaration` — the project
@@ -29,14 +27,14 @@
 --- profile row or of unit rows (a rebuild is the page's clean, then its
 --- build), and **C2d-2** its options float's `Projects/1.unit_options` and
 --- device choice (`Profiles/1.set_device` / `clear_device`) — every method
---- here: in `daemon` mode those are only ever calls —
+--- here: those are only ever calls —
 --- refused (the outcome says why) when the daemon cannot carry them, never
 --- run in-process (spec §19.16 "Availability").
 ---
---- A deletion or nuke is confirmed (ui/actions.confirm_deletion, both
---- modes): called without `plan` it answers `confirm { lines, plan }` (or
---- refused — nothing to delete with `stream = "out"`); called again with
---- that `plan` and `yes` it runs. In `daemon` mode the confirmed call is a
+--- A deletion or nuke is confirmed (ui/actions.confirm_deletion): called
+--- without `plan` it answers `confirm { lines, plan }` (or refused —
+--- nothing to delete with `stream = "out"`); called again with that `plan`
+--- and `yes` it runs. The confirmed call is a
 --- task the editor owns (Observer:start_owned), followed to its `done`: `cb`
 --- runs then — `ok` only for exit 0 — never at the acceptance; the
 --- editor's own tasks on the target (every one, for a nuke) are cancelled
@@ -51,15 +49,12 @@
 --- entry, or a description handle (`helpers.row_item`, `_row` its row) —
 --- never a domain object or a key (a variable or `type_config` field is
 --- named by its name within its project's row):
----   * `daemon` mode: the row's id, `{ id = row.id }` (API.md §1.2 ItemRef /
----     Ref; a candidate entry `{ candidate }`); a row without one is
----     refused, never looked up by key;
----   * `in-process` mode: the domain object the in-process view bound to
----     the row (loomworks.status_source.object_of); a domain object itself is
----     taken as it is.
+--- sent as the row's id, `{ id = row.id }` (API.md §1.2 ItemRef / Ref; a
+--- candidate entry `{ candidate }`); a row without one is refused, never
+--- looked up by key.
 --- A `Build/1` operation names a profile row (`profile`) or unit rows
---- (`units`, one of a profile row's `units[]` each — in `daemon` mode sent by
---- its `unit_id`); in `daemon` mode it is a task the editor owns, followed to
+--- (`units`, one of a profile row's `units[]` each — sent by its
+--- `unit_id`); it is a task the editor owns, followed to
 --- its end (`cb` then; loomworks.daemon.editor_ops.run_ids), a build asking
 --- the artifact-conflict question first from the unit rows' `artifact_block`.
 --- `Projects/1.unit_options` names a profile's unit row (`unit`, sent by its
@@ -71,451 +66,28 @@
 --- A `tool` of `Profiles/1.create` is a `Profiles/1.tool_choices` entry; a
 --- `mappings` of `ConfigSets/1.add` / `update` is the dialog's project row →
 --- configuration choice table (a choice `{ name, id? }`, ui/config_set_editor),
---- each named as an entity param is (`daemon` mode: sent as the wire's
+--- each named as an entity param is (sent as the wire's
 --- `[{ project = { id }, configuration = { id } }]`, an entry without an id
---- refused; in-process: the bound objects) — never by key or name; a
+--- refused) — never by key or name; a
 --- `candidate` of `ConfigSets/1.add` is a `ConfigSets/1.candidates` entry
 --- (an automatic set, sent as its token).
 ---
 --- `cb(r)` gets the outcome (API.md §4.1): `{ outcome = "ok", ... }` with
---- the method's result fields (a created object — in `daemon` mode its
---- `{ id, key }` — `changed`, …), `{ outcome = "confirm", lines, plan }`
+--- the method's result fields (a created object — its `{ id, key }` —
+--- `changed`, …), `{ outcome = "confirm", lines, plan }`
 --- (the call asks a confirmation: show `lines`, call again with `plan`), or
 --- `{ outcome = "refused", message?, notified? }` (no message, or
---- `notified`: already reported). It
---- may run before `call` returns (in-process) or later (a daemon call, on
---- the main loop); callers must not rely on either.
+--- `notified`: already reported). It may run before `call` returns (a
+--- refusal) or later (a daemon call, on the main loop); callers must not
+--- rely on either.
 
 local M = {}
 
-local function wv() return require("loomworks.workspace_view") end
-
---- An `ok, err` adapter's result as an outcome.
---- @param ok any
---- @param err string|nil
---- @param fields? table the result fields of an `ok`
---- @return table
-local function outcome(ok, err, fields)
-    if not ok then return { outcome = "refused", message = err } end
-    local r = { outcome = "ok" }
-    for k, v in pairs(fields or {}) do r[k] = v end
-    return r
-end
-
---- An object-returning adapter's result (`obj` or `nil, err`) as an outcome
---- carrying it as `field`.
-local function created(field, obj, err)
-    return outcome(obj ~= nil, err, { [field] = obj })
-end
-
---- The domain object an entity param names, in the `in-process` mode: the
---- object the in-process view bound to the row (a description handle's
---- `_row`), or a domain object given as it is.
---- @param x table|nil
---- @return table|nil
-local function object(x)
-    if type(x) ~= "table" then return nil end
-    if getmetatable(x) ~= nil then return x end
-    return require("loomworks.status_source").object_of(x._row or x)
-end
-
---- The in-process bodies: `fn(ws, params, cb)`.
---- @type table<string, fun(ws: loomworks.Workspace|nil, p: table, cb: fun(r: table))>
-local CALLS = {}
-
 -- ---------------------------------------------------------------------------
--- Workspace/1
+-- Deletion targets
 -- ---------------------------------------------------------------------------
 
-CALLS["Workspace/1.publish"] = function(ws, _, cb) cb(outcome(wv().publish(ws))) end
-CALLS["Workspace/1.revert_to_baseline"] = function(ws, _, cb) cb(outcome(wv().revert_to_baseline(ws))) end
-CALLS["Workspace/1.publish_one"] = function(_, p, cb) cb(outcome(wv().publish_one(object(p.item)))) end
-CALLS["Workspace/1.revert_one"] = function(_, p, cb) cb(outcome(wv().revert_one(object(p.item)))) end
-CALLS["Workspace/1.set_intent"] = function(_, p, cb) cb(outcome(wv().set_intent(object(p.item), p.intent))) end
---- `changed`: false when the text was already the description.
-CALLS["Workspace/1.set_description"] = function(_, p, cb)
-    local changed, err = wv().set_description(object(p.item), p.text)
-    cb(outcome(changed ~= nil, err, { changed = changed }))
-end
---- The in-process review prompt and trust (spec §17.4), which asks its own
---- question (never `confirm`); `trust` its result ("trusted", "discarded",
---- "cancelled", "valid" or "error").
-CALLS["Workspace/1.trust_accept"] = function(_, _, cb)
-    cb(outcome(true, nil, { trust = require("loomworks").trust_user_prefs() }))
-end
---- `{ plan? }`: without `plan` the `confirm` of what would be deleted; with
---- it, the deletion of exactly that (loomworks.model_commands).
-CALLS["Workspace/1.delete_user_prefs"] = function(ws, p, cb) cb(wv().delete_user_prefs(ws, p.plan)) end
-
--- ---------------------------------------------------------------------------
--- Profiles/1
--- ---------------------------------------------------------------------------
-
---- `config_set` of `create` / `tool_choices` in-process: a candidate entry's
---- `{ candidate }`, else the set's object.
-local function set_object(x)
-    if type(x) == "table" and x.candidate ~= nil then return { candidate = x.candidate } end
-    return object(x)
-end
-
-CALLS["Profiles/1.set_active"] = function(_, p, cb) cb(outcome(wv().activate_profile(object(p.profile)))) end
---- `{ config_set, tool?, activate? }` (`tool` a tool_choices entry) →
---- `profile` (and `config_set`, an automatic set added first).
-CALLS["Profiles/1.create"] = function(ws, p, cb)
-    cb(wv().create_profile(ws, set_object(p.config_set), p.tool and p.tool._entry or nil, p.activate == true))
-end
---- `{ config_set }` → `tools` (`{ label, module?, key?, sdk?, sdk_key?,
---- _entry }`, the wire's fields as the daemon sends them, API.md §11); waits
---- for a running tool scan, as the picker did (`ws._tool_waiters`).
-CALLS["Profiles/1.tool_choices"] = function(ws, p, cb)
-    if ws and ws._tool_state == "scanning" then
-        vim.notify("loomworks: waiting for tool detection...", vim.log.levels.INFO)
-        ws._tool_waiters[#ws._tool_waiters + 1] = function() CALLS["Profiles/1.tool_choices"](ws, p, cb) end
-        return
-    end
-    local r = wv().profile_tool_choices(ws, set_object(p.config_set))
-    if r.outcome ~= "ok" then return cb(r) end
-    local tools = {}
-    for i, e in ipairs(r.tools) do
-        tools[i] = { label = e.tool_label or e.tool_key or "(default)", _entry = e,
-            sdk = e.sdk and true or nil, key = e.sdk and e.sdk.key or e.tool_key,
-            module = not e.sdk and e.tool_mod_type or nil, sdk_key = e.sdk_key }
-    end
-    cb({ outcome = "ok", tools = tools })
-end
-CALLS["Profiles/1.add_tool"] = function(_, p, cb) cb(outcome(wv().add_profile_tool(object(p.profile), p.tool))) end
---- The device choice's write ended (loomworks.device_source, which reported
---- a failure) as an outcome.
-local function chosen(cb)
-    return function(ok, err)
-        if ok then return cb({ outcome = "ok" }) end
-        cb({ outcome = "refused", message = err, notified = true })
-    end
-end
---- `{ profile, device }` (`device` a loomworks.device_source record of its
---- scan; step 5o C2d-2): the profile's device choice.
-CALLS["Profiles/1.set_device"] = function(ws, p, cb)
-    local profile = object(p.profile)
-    if not profile then return cb({ outcome = "refused", message = "no profile (not a row of the workspace view)" }) end
-    require("loomworks.device_source").select(ws, profile, p.device, chosen(cb))
-end
---- `{ profile }`: the profile's device choice cleared.
-CALLS["Profiles/1.clear_device"] = function(ws, p, cb)
-    local profile = object(p.profile)
-    if not profile then return cb({ outcome = "refused", message = "no profile (not a row of the workspace view)" }) end
-    require("loomworks.device_source").clear(ws, profile, chosen(cb))
-end
-CALLS["Profiles/1.remove_tool"] = function(_, p, cb)
-    cb(outcome(wv().remove_profile_tool(object(p.profile), p.tool)))
-end
-
--- ---------------------------------------------------------------------------
--- ConfigSets/1
--- ---------------------------------------------------------------------------
-
---- `{}` → `sets`: rows `{ name, auto, description?, candidate?, mappings? }`,
---- a declared set's row bound to its object, an automatic one's `mappings`
---- (as the daemon's, API.md §20: `[{ project = { key }, configuration = {
---- key } }]` ordered by project key) bound to their objects. The generated
---- set names them by key (file data): resolved once, here.
-CALLS["ConfigSets/1.candidates"] = function(ws, _, cb)
-    local ss = require("loomworks.status_source")
-    local r = wv().config_set_candidates(ws)
-    local sets = {}
-    for i, s in ipairs(r.sets) do
-        local row = { name = s.name, auto = s.auto, description = s.description, candidate = s.candidate }
-        if s.auto and s.mappings then
-            row.mappings = {}
-            for _, po in pairs(ws and ws._projects or {}) do
-                local name = not po._removed and s.mappings[po.key] or nil
-                local co = name ~= nil and po:get_configuration(name) or nil
-                if co then
-                    local m = { project = { key = po.key }, configuration = { key = co.name } }
-                    ss.bind(m.project, po)
-                    ss.bind(m.configuration, co)
-                    row.mappings[#row.mappings + 1] = m
-                end
-            end
-            table.sort(row.mappings, function(a, b) return a.project.key < b.project.key end)
-        end
-        ss.bind(row, s.config_set)
-        sets[i] = row
-    end
-    cb({ outcome = "ok", sets = sets })
-end
---- The dialog's mappings (project row → configuration choice) as objects,
---- or nil + the refusal of the first that does not resolve: each the object
---- the in-process view bound to its row or choice (never looked up by key
---- or name), the configuration one of that project's but a removed one, as
---- the daemon resolves a mapping (core_interfaces `mappings_of`, API.md §20).
---- @param mappings table
---- @return table|nil objects, table|nil refusal
-local function mapping_objects(mappings)
-    local out = {}
-    for project, choice in pairs(mappings or {}) do
-        local po = object(project)
-        if not po then return nil, { outcome = "refused", message = "no project (not a row of the workspace view)" } end
-        local co = object(choice)
-        if not co or co._removed then
-            return nil, { outcome = "refused", message = "no configuration '"
-                .. tostring(type(choice) == "table" and choice.name or nil) .. "' in project '" .. tostring(po.key) .. "'" }
-        end
-        if co._project ~= po then
-            return nil, { outcome = "refused", message = "configuration '" .. tostring(co.name)
-                .. "' is not of project '" .. tostring(po.key) .. "'" }
-        end
-        out[po] = co
-    end
-    return out
-end
---- `{ name, mappings }` or `{ candidate }` (a candidates entry) → `config_set`.
-CALLS["ConfigSets/1.add"] = function(ws, p, cb)
-    if p.candidate ~= nil then
-        -- The automatic set the entry stands for: exactly that set, or
-        -- refused when it changed since it was listed.
-        local token = type(p.candidate) == "table" and p.candidate.candidate or p.candidate
-        return cb(created("config_set", wv().execute_create_config_set_from_candidate(ws, token)))
-    end
-    local m, err = mapping_objects(p.mappings)
-    if not m then return cb(err) end
-    cb(created("config_set", wv().execute_create_config_set(ws, p.name, m)))
-end
-CALLS["ConfigSets/1.update"] = function(_, p, cb)
-    local m, err = mapping_objects(p.mappings)
-    if not m then return cb(err) end
-    cb(outcome(wv().execute_edit_config_set(object(p.config_set), p.name, m)))
-end
-CALLS["ConfigSets/1.remove"] = function(ws, p, cb)
-    cb(outcome(wv().execute_delete_config_set(ws, object(p.config_set))))
-end
-
--- ---------------------------------------------------------------------------
--- Projects/1
--- ---------------------------------------------------------------------------
-
---- The objects of a Projects/1 call's entity params (`fields`: param names)
---- in the `in-process` mode, or nil + the refusal of the first a row does
---- not name (an unbound row: nothing to write).
-local function objects(p, fields)
-    local out = {}
-    for _, f in ipairs(fields) do
-        out[f] = object(p[f])
-        if out[f] == nil then
-            return nil, { outcome = "refused", message = "no " .. f .. " (not a row of the workspace view)" }
-        end
-    end
-    return out
-end
-
---- A Projects/1 body on the objects of its entity params: `fn(o, p)` → its
---- outcome.
-local function on_objects(fields, fn)
-    return function(_, p, cb)
-        local o, err = objects(p, fields)
-        if not o then return cb(err) end
-        cb(fn(o, p))
-    end
-end
-
---- `{ path, type }` (the browser's entry: its absolute directory and the
---- type picked) → `key`, `path`: the project's key and path derived from the
---- directory as the browser did (in-process the derivation only; the
---- daemon's `candidates` also detects what the project would declare).
-CALLS["Projects/1.candidates"] = function(ws, p, cb)
-    local abs = tostring(p.path):gsub("\\", "/")
-    local key, path = wv().derive_key_and_path((ws.root:gsub("\\", "/")), abs, vim.fn.fnamemodify(abs, ":t"))
-    cb({ outcome = "ok", key = key, path = path })
-end
---- `{ key, type, path?, mappings?, tool? }` (`tool` the picked tool entry)
---- → `project`.
-CALLS["Projects/1.add"] = function(ws, p, cb)
-    local ok, err, project = wv().execute_add_project(ws, p.key, p.type, p.path,
-        { mappings = p.mappings, tool_entry = p.tool })
-    cb(outcome(ok, err, { project = project }))
-end
---- `{ project }` → the declaration (workspace_view.project_declaration: no
---- ids in-process).
-CALLS["Projects/1.declaration"] = on_objects({ "project" }, function(o)
-    return wv().project_declaration(o.project)
-end)
---- `{ project, configuration?, name, fields }` (`configuration` the row
---- edited; none for a new configuration).
-CALLS["Projects/1.configuration_save"] = on_objects({ "project" }, function(o, p)
-    local cfg = object(p.configuration)
-    if p.configuration ~= nil and cfg == nil then
-        return { outcome = "refused", message = "no configuration (not a row of the workspace view)" }
-    end
-    return outcome(wv().execute_save_configuration(o.project, cfg, p.name, p.fields))
-end)
-CALLS["Projects/1.configuration_remove"] = on_objects({ "project", "configuration" }, function(o)
-    return outcome(wv().execute_delete_configuration(o.project, o.configuration))
-end)
---- `{ project, launch?, name, data }` (`launch` the row edited; none for a
---- new launch configuration) → `launch`.
-CALLS["Projects/1.launch_save"] = on_objects({ "project" }, function(o, p)
-    local launch = object(p.launch)
-    if p.launch ~= nil and launch == nil then
-        return { outcome = "refused", message = "no launch configuration (not a row of the workspace view)" }
-    end
-    local ok, err, saved = wv().execute_save_launch_config(o.project, launch, p.name, p.data)
-    return outcome(ok, err, { launch = saved })
-end)
-CALLS["Projects/1.launch_remove"] = on_objects({ "project", "launch" }, function(o)
-    return outcome(wv().execute_delete_launch_config(o.project, o.launch))
-end)
-CALLS["Projects/1.variable_save"] = on_objects({ "project" }, function(o, p)
-    return outcome(wv().execute_save_variable(o.project, p.variable, p.name, p.data))
-end)
-CALLS["Projects/1.variable_remove"] = on_objects({ "project" }, function(o, p)
-    return outcome(wv().execute_delete_variable(o.project, p.variable))
-end)
-CALLS["Projects/1.type_config_set"] = on_objects({ "project" }, function(o, p)
-    return outcome(wv().save_type_config_field(o.project, p.field, p.value))
-end)
-CALLS["Projects/1.deploy_save"] = on_objects({ "project" }, function(o, p)
-    return outcome(wv().save_deploy(o.project, p.deploy))
-end)
---- `{ project, templates }` → `values` (each template expanded under the
---- active profile; refused without one).
-CALLS["Projects/1.expand_preview"] = on_objects({ "project" }, function(o, p)
-    return wv().expand_preview(o.project, p.templates)
-end)
-
--- ---------------------------------------------------------------------------
--- Sdks/1 and Toolchains/1
--- ---------------------------------------------------------------------------
-
---- `{ provider? }` → `providers` (`{ id, label, path_prompt?, found }`,
---- `found` the installations `{ path, version? }`).
---- `{ unit }` (a profile's unit row; step 5o C2d-2) → `options`: its
---- configuration unit's build options, read synchronously from its build
---- directory (the module's `get_options`); refused when there are none (not
---- configured, or a module without options).
-CALLS["Projects/1.unit_options"] = function(_, p, cb)
-    local o = object(p.unit)
-    if o and not o.mark_deleting then o = o._config_unit end -- a unit row's project-in-profile
-    if not o then return cb({ outcome = "refused", message = "no configuration unit (not a row of the workspace view)" }) end
-    local options = o:options()
-    if not options or #options == 0 then
-        return cb({ outcome = "refused", message = "no build options available (project may need configure)" })
-    end
-    cb({ outcome = "ok", options = options })
-end
-
-CALLS["Sdks/1.detect"] = function(_, p, cb) cb(wv().sdk_detect(p.provider)) end
---- `{ provider, path }` (`path` absolute) → `sdk`.
-CALLS["Sdks/1.add"] = function(ws, p, cb) cb(created("sdk", wv().add_sdk(ws, p.provider, p.path))) end
---- `{ sdk }`: the SDK's row.
-CALLS["Sdks/1.remove"] = function(ws, p, cb)
-    local o, err = objects(p, { "sdk" })
-    if not o then return cb(err) end
-    cb(outcome(wv().remove_sdk(ws, o.sdk)))
-end
-CALLS["Toolchains/1.rescan"] = function(_, _, cb)
-    require("loomworks").rescan_tools()
-    cb(outcome(true))
-end
-
--- ---------------------------------------------------------------------------
--- Build/1 (step 5o C2d)
--- ---------------------------------------------------------------------------
-
---- An operation's scope in-process: `{ profile }` (the profile row's
---- object) or `{ units }` (each unit row's configuration unit, its
---- project-in-profile's), or nil + the refusal of a row the in-process view
---- did not bind (or a unit row with no unit yet).
---- @param p { profile?: table, units?: table[] }
---- @return table|nil scope, table|nil refusal
-local function op_scope(p)
-    local function no(what)
-        return nil, { outcome = "refused", message = "no " .. what .. " (not a row of the workspace view)" }
-    end
-    if p.profile ~= nil then
-        local profile = object(p.profile)
-        if not profile then return no("profile") end
-        return { profile = profile }
-    end
-    local units = {}
-    for _, row in ipairs(p.units or {}) do
-        local o = object(row)
-        if o and not o.mark_deleting then o = o._config_unit end -- a unit row's project-in-profile
-        if not o then return no("configuration unit") end
-        units[#units + 1] = o
-    end
-    if #units == 0 then return nil, { outcome = "refused", message = "an operation names a profile or units" } end
-    return { units = units }
-end
-
---- An operation's Future as its outcome through `cb`: ok once it resolved,
---- refused with its error.
---- @param f loomworks.Future
---- @param cb fun(r: table)
-local function settle(f, cb)
-    f:next(function() cb({ outcome = "ok" }) end,
-        function(err) cb({ outcome = "refused", message = tostring(err) }) end)
-end
-
---- `fn(unit)` (a Future) on each unit in turn, its outcome through `cb`: the
---- first rejection stops it.
---- @param units loomworks.ConfigUnit[]
---- @param fn fun(unit: loomworks.ConfigUnit): loomworks.Future
---- @param cb fun(r: table)
-local function each_unit(units, fn, cb)
-    local function step(i)
-        if i > #units then return cb({ outcome = "ok" }) end
-        fn(units[i]):next(function() step(i + 1) end,
-            function(err) cb({ outcome = "refused", message = tostring(err) }) end)
-    end
-    step(1)
-end
-
---- `{ profile | units, jobs?, force? }`: the in-process build (it asks its
---- own artifact-conflict question; `force` is the daemon call's).
-CALLS["Build/1.build"] = function(_, p, cb)
-    local scope, err = op_scope(p)
-    if not scope then return cb(err) end
-    local opts = p.jobs and { parallel_jobs = p.jobs } or nil
-    if scope.profile then return settle(scope.profile:build(opts), cb) end
-    local overseer = require("loomworks.overseer")
-    each_unit(scope.units, function(unit)
-        return overseer.run_configuration_action(unit, "build", nil, opts)
-    end, cb)
-end
---- `{ profile | units }`.
-CALLS["Build/1.configure"] = function(_, p, cb)
-    local scope, err = op_scope(p)
-    if not scope then return cb(err) end
-    if scope.profile then return settle(scope.profile:configure(), cb) end
-    local overseer = require("loomworks.overseer")
-    each_unit(scope.units, function(unit)
-        return overseer.run_configuration_action(unit, "configure")
-    end, cb)
-end
---- `{ profile | units }`: the module clean (the configuration kept). When
---- the profile's invalid ProfileProjects (core §5.4) are the clean's only
---- failure, the refusal carries their result lines as `not_run` (as the
---- daemon's clean task result does): the editor's rebuild goes on to build
---- the others.
-CALLS["Build/1.clean"] = function(_, p, cb)
-    local scope, err = op_scope(p)
-    if not scope then return cb(err) end
-    if scope.profile then
-        return scope.profile:clean(nil, { refused_ok = true }):next(function(v)
-            if type(v) ~= "table" then return cb({ outcome = "ok" }) end
-            cb({ outcome = "refused", message = require("loomworks.overseer").refused_message(v), not_run = v })
-        end, function(e) cb({ outcome = "refused", message = tostring(e) }) end)
-    end
-    each_unit(scope.units, function(unit) return unit:clean() end, cb)
-end
-
--- ---------------------------------------------------------------------------
--- Maintenance/1
--- ---------------------------------------------------------------------------
-
---- The deletion targets (API.md §22): exactly one of `profile` (a profile
---- row), `unit` (a profile's unit row), `build_dir` (an orphaned entry's
---- row), `project` (a project row), `stray_dir` (the path exactly as the view
---- lists it) or `orphans = true`.
+--- The kinds a deletion target names (exactly one).
 local TARGETS = { "profile", "unit", "build_dir", "stray_dir", "orphans", "project" }
 
 --- The one kind `t` names, or nil when it names none or several.
@@ -530,57 +102,6 @@ local function target_kind(t)
         end
     end
     return kind
-end
-
---- A deletion target's objects in-process (the rows' bound objects:
---- loomworks.deletion_plan's target shape), or nil + the refusal.
---- @param t table|nil
---- @return table|nil target, table|nil refusal
-local function deletion_object(t)
-    local kind = target_kind(t)
-    local function no(what)
-        return nil, { outcome = "refused", message = "no " .. what .. " (not a row of the workspace view)" }
-    end
-    if not kind then
-        return nil, { outcome = "refused", message = "a deletion target is exactly one of profile, unit, "
-            .. "build_dir, stray_dir, orphans, project" }
-    end
-    if kind == "stray_dir" then
-        if type(t.stray_dir) ~= "string" then return no("stray directory") end
-        return { stray_dir = t.stray_dir }
-    elseif kind == "orphans" then
-        return { orphans = true }
-    end
-    local o = object(t[kind])
-    if kind == "unit" and o and not o.mark_deleting then o = o._config_unit end -- a unit row's project-in-profile
-    if kind == "build_dir" and o and getmetatable(o) == nil then o = o.build_dir_obj end -- an orphaned entry
-    if o == nil then return no(kind == "build_dir" and "build directory" or kind) end
-    return { [kind] = o }
-end
-
---- `{ target, plan?, yes? }` (step 5o C2c-2): without `yes` the `confirm
---- { lines, plan }` of what would be deleted (or refused: a stale target,
---- nothing to delete — `stream = "out"`); with `yes` and the `plan` the
---- confirmation returned, the deletion of exactly that, `cb` once it ended
---- (loomworks.model_commands `execute_deletion`: planned, then the workspace
---- operation lock and every build-directory lock, planned again under them,
---- executed through the Workspace's deletion paths).
-CALLS["Maintenance/1.execute_deletion"] = function(ws, p, cb)
-    local target, err = deletion_object(p.target)
-    if not target then return cb(err) end
-    if p.yes and p.plan == nil then
-        return cb({ outcome = "refused", message = "a deletion is confirmed with the plan it listed" })
-    end
-    wv().execute_deletion(ws, target, p.plan, p.yes == true, cb)
-end
---- `{ plan?, yes? }`: without `yes` the `confirm` listing what the nuke
---- removes; with it and the plan, the nuke of the workspace (its root: the
---- loaded workspace's, else the refused load's; never a param).
-CALLS["Maintenance/1.nuke"] = function(ws, p, cb)
-    if p.yes and p.plan == nil then
-        return cb({ outcome = "refused", message = "a nuke is confirmed with the plan it listed" })
-    end
-    cb(wv().nuke(ws, p.plan, p.yes == true))
 end
 
 -- ---------------------------------------------------------------------------
@@ -613,7 +134,7 @@ local VERB = {
     ["Build/1.build"] = "build", ["Build/1.configure"] = "configure", ["Build/1.clean"] = "clean",
 }
 
---- In `daemon` mode with no workspace loaded in the editor, why a recovery
+--- With no workspace loaded in the editor, why a recovery
 --- method is refused: the lw command that does it (spec §19.16 "Model
 --- writes"; until the editor can connect to a daemon for a root it has not
 --- loaded).
@@ -636,7 +157,7 @@ end
 --- daemon answered — or a refusal naming why: the method not carried now
 --- (§19.16 "Availability"), the daemon's `refused` / `declined`, a method
 --- it lacks, a failed or unanswered call. Nothing runs in-process.
---- @param ws loomworks.Workspace|nil
+--- @param ws any unused (the editor holds no model)
 --- @param method string
 --- @param args table
 --- @param cb fun(r: table)
@@ -645,7 +166,7 @@ local function send(ws, method, args, cb, shape)
     local eo = require("loomworks.daemon.editor_ops")
     local obs = eo.carrier(method, ws)
     if not obs then
-        local _, mode_obs = eo.daemon_of(ws)
+        local _, mode_obs = eo.daemon_of()
         return cb(refusal(method, mode_obs and mode_obs.state ~= "stopped" and mode_obs:refusal(method)
             or "the workspace is no longer loaded"))
     end
@@ -905,7 +426,7 @@ ROUTED["Toolchains/1.rescan"] = function(ws, _, cb) send(ws, "Toolchains/1.resca
 --- failed removal) — or at once when nothing ran: the method not carried
 --- now, the daemon's `refused` / `declined`, a method it lacks, a failed
 --- call. Never at the acceptance; nothing runs in-process.
---- @param ws loomworks.Workspace|nil
+--- @param ws any unused (the editor holds no model)
 --- @param method string
 --- @param args table
 --- @param cb fun(r: table)
@@ -913,7 +434,7 @@ local function follow(ws, method, args, cb)
     local eo = require("loomworks.daemon.editor_ops")
     local obs = eo.carrier(method, ws)
     if not obs then
-        local _, mode_obs = eo.daemon_of(ws)
+        local _, mode_obs = eo.daemon_of()
         return cb(refusal(method, mode_obs and mode_obs.state ~= "stopped" and mode_obs:refusal(method)
             or "the workspace is no longer loaded"))
     end
@@ -1041,7 +562,7 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
 end
 --- The daemon nukes its own workspace: no root is ever sent. Confirmed,
 --- every task the editor owns is cancelled first (the daemon refuses while
---- any of its tasks runs; the in-process nuke stops the editor's own).
+--- any of its tasks runs).
 ROUTED["Maintenance/1.nuke"] = function(ws, p, cb)
     local method = "Maintenance/1.nuke"
     if not p.yes then return send(ws, method, {}, cb) end
@@ -1114,53 +635,37 @@ by_ids("Build/1.clean", "clean")
 --- @return string[]
 function M.methods()
     local names = {}
-    for name in pairs(CALLS) do names[#names + 1] = name end
+    for name in pairs(ROUTED) do names[#names + 1] = name end
     table.sort(names)
     return names
 end
 
---- Whether `method` is a call to the workspace daemon in `daemon` mode
---- (step 5o C2a), never run in-process there.
+--- Whether `method` is a call to the workspace daemon (step 5o C2a): every
+--- method of the status page is.
 --- @param method string
 --- @return boolean
 function M.routed(method)
     return ROUTED[method] ~= nil
 end
 
---- Call a model method of the workspace `ws` (nil: the in-process editor's
---- loaded model, loomworks.daemon.observer.loaded_workspace).
---- In `daemon` mode — no model (the editor holds none, step 6b-α) — it is a
---- call to the workspace daemon (every method is routed, step 5o C2c-2; a
---- guard checks it, tests/ui_model_calls_spec.lua); in the `in-process` mode
---- its in-process body runs. With no workspace attached, `daemon` mode (the
---- setup selection) refuses every method. `cb(r)` gets its outcome (may be
---- nil).
---- @param ws loomworks.Workspace|nil
+--- Call a model method: a call to the workspace daemon (the editor holds no
+--- model, step 6b-α; every method is routed, step 5o C2c-2), never run
+--- in-process. With no workspace root attached every method is refused,
+--- nothing sent — the recovery methods name their lw command (spec §19.16
+--- "Model writes"); with a root attached and its observer gone a method is
+--- refused as not carried. `cb(r)` gets its outcome (may be nil).
+--- @param ws any unused (the editor holds no model)
 --- @param method string `"<Interface>/<version>.<method>"`
 --- @param params table|nil
 --- @param cb fun(r: table)|nil
 function M.call(ws, method, params, cb)
-    local fn = CALLS[method]
-    if not fn then error("loomworks.ui.model_calls: unknown method " .. tostring(method), 2) end
+    local route = ROUTED[method]
+    if not route then error("loomworks.ui.model_calls: unknown method " .. tostring(method), 2) end
     params, cb = params or {}, cb or function() end
-    -- (The mode is editor_ops.daemon_of's: with no model given, the
-    -- editor's runtime selection — never whether an observer is attached:
-    -- in `daemon` mode with its observer gone a method is refused, not run
-    -- in-process. Not `daemon`: the model given, else the in-process
-    -- editor's. With no workspace attached at all the mode is the setup
-    -- selection's; in `daemon` mode every method is then refused, nothing
-    -- sent and nothing run — the recovery methods name their lw command,
-    -- spec §19.16 "Model writes".)
-    if require("loomworks.daemon.editor_ops").daemon_of(ws) then
-        local route = ROUTED[method]
-        if not route then error("loomworks.ui.model_calls: " .. method .. " is not routed to the daemon", 2) end
-        return route(ws, params, cb)
-    end
-    local target = ws or require("loomworks.daemon.observer").loaded_workspace()
-    if not target and require("loomworks").runtime_mode() == "daemon" then
+    if not require("loomworks.daemon.editor_ops").daemon_of() then
         return cb(refusal(method, NO_WORKSPACE[method] or "the workspace is not loaded"))
     end
-    return fn(target, params, cb)
+    return route(ws, params, cb)
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a

@@ -31,22 +31,33 @@ local function make_ws()
 end
 
 -- `hdr`, when given, stands in for the `loomworks.view.Header/1` view the
--- page reads (spec §19.13): the setup-error page renders from it.
+-- page reads (spec §19.13).
 local function header(get_ws, get_err, hdr)
   local orig_ws, orig_err, orig_hdr = lw.get_workspace, lw.get_setup_error, lw.view_header
   lw.get_workspace, lw.get_setup_error = get_ws, get_err
   if hdr then lw.view_header = function() return hdr end end
+  -- (A root attached: the editor observes a daemon, it holds no model.)
+  local observer = require("loomworks.daemon.observer")
+  local orig_root = observer._attached_root
+  observer._attached_root = hdr and hdr.root or nil
   local ok, lines = pcall(function()
     local t = Tree.new(status._render_fn)
     t.width = 100
     return (t:render())
   end)
   lw.get_workspace, lw.get_setup_error, lw.view_header = orig_ws, orig_err, orig_hdr
+  observer._attached_root = orig_root
   assert(ok, lines)
   for _, l in ipairs(lines) do
     local s = l:match("loomworks%.nvim .*$")
     if s then return vim.trim(s) end
   end
+end
+
+--- The header the daemon serves for `ws`: its version save_guard.version()
+--- (the daemon's view_state.header, `opts.version`).
+local function daemon_header(ws)
+  return require("loomworks.view_state").header(ws, nil, { version = save_guard.version() })
 end
 
 describe("status page header version", function()
@@ -56,7 +67,7 @@ describe("status page header version", function()
     local v = real_version
     assert.is_truthy(v)
     local ws = make_ws()
-    local h = header(function() return ws end, function() return nil end)
+    local h = header(function() return nil end, function() return nil end, daemon_header(ws))
     assert.equals("loomworks.nvim " .. v, h)
     assert.is_nil(h:find("0.0.1-dev", 1, true))
   end)
@@ -65,7 +76,7 @@ describe("status page header version", function()
     save_guard._set_version("0.1.43")
     local ws = make_ws()
     assert.equals("loomworks.nvim 0.1.43",
-      header(function() return ws end, function() return nil end))
+      header(function() return nil end, function() return nil end, daemon_header(ws)))
   end)
 
   it("shows the version on the setup-error page too", function()

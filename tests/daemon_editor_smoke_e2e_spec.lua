@@ -194,7 +194,6 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         assert.is_not_nil(obs)
         lw._load(root)
         assert.equals(obs, observer.current())
-        assert.equals("daemon", (lw.runtime_mode()))
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         daemon = H.track_root(root)
         assert.is_not_nil(daemon)

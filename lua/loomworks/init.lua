@@ -10,31 +10,9 @@ local events = require("loomworks.events")
 --- @type loomworks.Core
 local core = Core.new()
 
--- The editor's views (spec §19.13 "Two sources, one shape"): in the
--- deprecated `in-process` mode built from the in-process model; in `daemon`
--- mode only the daemon's (loomworks.views builds nothing then, step 6b-α).
+-- The editor's views (spec §19.13): only the daemon's (loomworks.views
+-- builds nothing, step 6b-α).
 local views = require("loomworks.views")
-views.set_builder("header", function() return core:view_header() end)
-views.set_builder("projects", function() return core:view_projects_index() end)
--- An in-process view is built on read and has no change of its own: when the
--- model it is built from may have changed, tell the store, which redraws the
--- statusline (a running state then starts its spinner at once).
-for _, ev in ipairs({
-    "workspace_changed", "active_set_changed", "profile_renamed",
-    "task_started", "task_stopped", "task_result",
-    "operation_started", "operation_finished",
-    "deletion_started", "deletion_completed", "deletion_failed",
-}) do
-    events.on(ev, function() views.changed() end)
-end
-
--- The deprecated `in-process` editor's loaded model (until step 6b-β): the
--- workspace a status-page call given none goes to (ui/model_calls). Never
--- loads the daemon modules (the CLI's workspaces never reach them).
-events.on("workspace_changed", function(ws)
-    local mod = package.loaded["loomworks.daemon.observer"]
-    if type(mod) == "table" then mod.set_loaded_workspace(ws) end
-end)
 
 --- Auto-load mode. Default: "auto".
 --- @type string|false
@@ -61,30 +39,19 @@ end
 -- Setup & workspace
 -- ---------------------------------------------------------------------------
 
---- Load the workspace at `root` (spec §19.1, §19.16 "End state"). In
---- `daemon` runtime mode (the default) the editor loads NO workspace of its
---- own (step 6b-α): it records the root (the deferred-LSP gate, §9.7) and
---- observes the workspace daemon of it — everything it shows comes from the
---- daemon's views and replies. In the deprecated `in-process` mode the model
---- is loaded in-process. Only the editor attaches (the CLI never calls
---- setup).
+--- Load the workspace at `root` (spec §19.16 "End state"): the editor loads
+--- NO workspace of its own (step 6b-α): it records the root (the deferred-LSP
+--- gate, §9.7) and observes the workspace daemon of it — everything it shows
+--- comes from the daemon's views and replies. Only the editor attaches (the
+--- CLI never calls setup).
 --- @param root string
 local function load(root)
-    local observer = require("loomworks.daemon.observer")
-    local attach_opts = { configured = M._runtime_mode_config, binary = M._binary_config }
-    if M.runtime_mode() ~= "daemon" then
-        core:setup({ root = root })
-        -- (Records the selection for the Runtime line; attaches nothing.)
-        observer.attach(M.workspace_root(), attach_opts)
-        return
-    end
-    -- A model left from an earlier `in-process` load goes (tests switch
-    -- modes; a session does not), as does another root's pending state.
-    -- A successor follows: no `workspace_closed` (§9.7), so buffers the
-    -- gate holds for this root stay held until the daemon's configuration.
+    -- Another root's pending state goes. A successor follows: no
+    -- `workspace_closed` (§9.7), so buffers the gate holds for this root
+    -- stay held until the daemon's configuration.
     core:shutdown({ successor = true })
     core:set_pending_root(root)
-    observer.attach(M.workspace_root(), attach_opts)
+    require("loomworks.daemon.observer").attach(M.workspace_root(), { binary = M._binary_config })
 end
 M._load = load
 
@@ -132,7 +99,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string, runtime?: { mode?: string } }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string, binary?: any }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -145,14 +112,6 @@ function M.setup(opts)
     end
     if opts and opts.task_output_win then
         task_output_win = opts.task_output_win
-    end
-    if opts and type(opts.runtime) == "table" then
-        M._runtime_mode_config = opts.runtime.mode
-        -- Report an invalid setup value once, at setup (the Runtime line
-        -- shows it too).
-        local warning = require("loomworks.daemon.runtime").editor_select({
-            configured = M._runtime_mode_config }).warning
-        if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
     end
     if opts and opts.binary ~= nil then
         -- The host binary the editor launches the daemon from (spec §19.16).
@@ -212,10 +171,6 @@ function M._auto_load_mode()
     return auto_load_mode
 end
 
---- The configured runtime mode (spec §19.1, setup option `runtime.mode`).
---- @type string|nil
-M._runtime_mode_config = nil
-
 --- The setup option `binary` (spec §19.16 "Host binary"), checked.
 --- @type loomworks.provision.BinarySetting|nil
 M._binary_config = nil
@@ -232,19 +187,8 @@ function M.host_binary_selection()
     return sel
 end
 
---- The editor's runtime mode (spec §19.1, step 5s) and the source that
---- decided: `daemon` by default; the setup option `runtime.mode =
---- "in-process"` selects the deprecated in-process editor. The environment
---- and lw's `runtime-mode` setting do not apply to the editor. In `daemon`
---- mode the editor is a client of the workspace daemon (spec §19.16).
---- @return string mode, loomworks.daemon.RuntimeSource source
-function M.runtime_mode()
-    local sel = require("loomworks.daemon.runtime").editor_select({ configured = M._runtime_mode_config })
-    return sel.mode, sel.source
-end
-
 --- The tasks observed in the workspace daemon (spec §19.16), in start order;
---- empty in the `in-process` mode. Never loads the daemon modules.
+--- empty while no observer runs. Never loads the daemon modules.
 --- @return loomworks.RemoteTask[]
 function M.get_daemon_tasks()
     local mod = package.loaded["loomworks.daemon.observer"]
@@ -252,10 +196,9 @@ function M.get_daemon_tasks()
     return obs and obs:tasks() or {}
 end
 
---- The status page's Runtime line (spec/ui.md §1.1): the runtime mode, the
---- source that selected it and the observer's state or note; nil when the
---- default picked `in-process` with nothing to report. `warn` selects the
---- warning highlight.
+--- The status page's Runtime line (spec/ui.md §1.1): the observer's state
+--- or note; nil while no observer runs. `warn` selects the warning
+--- highlight.
 --- @return string|nil text, boolean warn
 function M.daemon_runtime_line()
     return require("loomworks.daemon.observer").runtime_line()
@@ -265,40 +208,32 @@ end
 --- launching it when none is live. Returns false + why when it cannot.
 --- @return boolean ok, string|nil why
 function M.daemon_connect()
-    if M.runtime_mode() ~= "daemon" then
-        return false, "the runtime mode is in-process (setup option runtime.mode)"
-    end
     local root = M.workspace_root()
     if not root then return false, "no workspace loaded" end
     local observer = require("loomworks.daemon.observer")
-    local obs = observer.current() or observer.attach(root, { configured = M._runtime_mode_config,
-        binary = M._binary_config })
-    if not obs then return false, "the runtime mode is in-process (setup option runtime.mode)" end
+    local obs = observer.current() or observer.attach(root, { binary = M._binary_config })
+    if not obs then return false, "no workspace loaded" end
     obs:start(true)
     return true
 end
 
---- The daemon-mode facade while the editor's runtime selection is `daemon`
---- (it then holds no model, spec §19.16 "Public API"): the getters answer
---- from the daemon's views through it. nil in `in-process` mode.
---- @return table|nil
+--- The daemon-mode facade (spec §19.16 "Public API"): the getters answer
+--- from the daemon's views through it (the editor holds no model).
+--- @return table
 local function daemon_rows()
-    local facade = require("loomworks.daemon.facade")
-    return facade.active() and facade or nil
+    return require("loomworks.daemon.facade")
 end
 
---- Get the merged active configuration set. In `daemon` mode the
---- `view.Workspace/1` `config_sets` record whose `active` is true (a copy,
---- with its id; nil while the view is not held).
---- @return loomworks.ActiveSet|loomworks.ViewConfigSet|nil
+--- Get the active configuration set: the `view.Workspace/1` `config_sets`
+--- record whose `active` is true (a copy, with its id; nil while the view is
+--- not held).
+--- @return loomworks.ViewConfigSet|nil
 function M.get_active_configuration_set()
-    local d = daemon_rows()
-    if d then return d.active_configuration_set() end
-    return core:get_active_configuration_set()
+    return daemon_rows().active_configuration_set()
 end
 
---- Get the active workspace; always nil in `daemon` mode (the editor holds
---- no model, spec §19.16 "Public API").
+--- Get the active workspace: always nil (the editor holds no model, spec
+--- §19.16 "Public API"; its remaining callers go with the UI and overseer).
 --- @return loomworks.Workspace|nil
 function M.get_workspace()
     return core:get_workspace()
@@ -320,7 +255,7 @@ function M.lsp_ready()
 end
 
 --- The configured workspace root, known synchronously even during async init
---- (spec §9.7); in `daemon` mode the root the editor observes the daemon of.
+--- (spec §9.7): the root the editor observes the daemon of.
 --- nil when setup was never called for a root.
 --- @return string|nil
 function M.workspace_root()
@@ -328,21 +263,18 @@ function M.workspace_root()
 end
 
 --- The root of the workspace the editor has loaded (auto-load's "already
---- loaded" check): in `daemon` mode the root it observes the daemon of (it
---- holds no model, step 6b-α), in the `in-process` mode its model's root;
---- nil when nothing is loaded.
+--- loaded" check): the root it observes the daemon of (it holds no model,
+--- step 6b-α); nil when nothing is loaded.
 --- @return string|nil
 function M.loaded_root()
     local mod = package.loaded["loomworks.daemon.observer"]
     local obs = type(mod) == "table" and mod.current() or nil
-    if obs then return obs.root end
-    local ws = core:get_workspace()
-    return ws and ws.root or nil
+    return obs and obs.root or nil
 end
 
 --- Tear down what the editor has loaded (`:LoomworksReload`): the workspace
---- daemon's observer (the daemon keeps running, §19.11) and an in-process
---- model.
+--- daemon's observer (the daemon keeps running, §19.11) and the pending
+--- root.
 function M.shutdown()
     local mod = package.loaded["loomworks.daemon.observer"]
     if type(mod) == "table" then mod.detach() end
@@ -380,92 +312,63 @@ end
 -- Object factories
 -- ---------------------------------------------------------------------------
 
--- In `daemon` mode (spec §19.16 "Public API", a breaking change) the getters
--- below return plain copies of the daemon's view rows, with their ids, instead
--- of objects, and nil while the view they read is not held.
+-- The getters below (spec §19.16 "Public API") return plain copies of the
+-- daemon's view rows, with their ids, and nil while the view they read is
+-- not held.
 
---- Get the active Profile object. In `daemon` mode the `view.Workspace/1`
---- `profiles` record whose `active` is true.
---- @return loomworks.Profile|loomworks.ViewProfile|nil
+--- Get the active profile: the `view.Workspace/1` `profiles` record whose
+--- `active` is true.
+--- @return loomworks.ViewProfile|nil
 function M.get_active_profile()
-    local d = daemon_rows()
-    if d then return d.active_profile() end
-    return core:get_active_profile()
+    return daemon_rows().active_profile()
 end
 
---- Get all Profile objects as a dict. In `daemon` mode the
---- `view.Workspace/1` `profiles` records, by key (nil while not held).
---- @return table<string, loomworks.Profile|loomworks.ViewProfile>|nil
+--- Get all profiles: the `view.Workspace/1` `profiles` records, by key (nil
+--- while not held).
+--- @return table<string, loomworks.ViewProfile>|nil
 function M.get_profiles()
-    local d = daemon_rows()
-    if d then return d.profiles() end
-    return core:get_profiles()
+    return daemon_rows().profiles()
 end
 
---- Get tool entries for the configuration sets UI. In `daemon` mode, per
---- configuration set name, the `view.Workspace/1` `profiles` records of
---- that set (nil while not held).
---- @return table<string, loomworks.ToolEntry[]|loomworks.ViewProfile[]>|nil set_name -> entries
+--- Get tool entries for the configuration sets UI: per configuration set
+--- name, the `view.Workspace/1` `profiles` records of that set (nil while
+--- not held).
+--- @return table<string, loomworks.ViewProfile[]>|nil set_name -> entries
 function M.get_tool_entries()
-    local d = daemon_rows()
-    if d then return d.tool_entries() end
-    return core:get_tool_entries()
+    return daemon_rows().tool_entries()
 end
 
---- Get all Project objects from the active set as a dict. In `daemon` mode
---- the `view.Workspace/1` `projects` records, by key (nil while not held).
---- @return table<string, loomworks.Project|loomworks.ViewProject>|nil
+--- Get all projects: the `view.Workspace/1` `projects` records, by key (nil
+--- while not held).
+--- @return table<string, loomworks.ViewProject>|nil
 function M.get_projects()
-    local d = daemon_rows()
-    if d then return d.projects() end
-    return core:get_projects()
+    return daemon_rows().projects()
 end
 
---- Get all ConfigurationSet objects. In `daemon` mode the
---- `view.Workspace/1` `config_sets` records, by name (nil while not held).
---- @return table<string, loomworks.ConfigurationSet|loomworks.ViewConfigSet>|nil
+--- Get all configuration sets: the `view.Workspace/1` `config_sets`
+--- records, by name (nil while not held).
+--- @return table<string, loomworks.ViewConfigSet>|nil
 function M.get_config_sets()
-    local d = daemon_rows()
-    if d then return d.config_sets() end
-    return core:get_config_sets()
+    return daemon_rows().config_sets()
 end
 
 -- ---------------------------------------------------------------------------
 -- Profile management
 -- ---------------------------------------------------------------------------
 
---- Re-scan tools from all modules and remerge.
-function M.rescan_tools()
-    core:rescan_tools()
-end
-
---- Scan for connected devices from all device-capable modules (in `daemon`
---- mode a `Devices/1.scan` task of the workspace daemon; refused or failed:
+--- Scan for connected devices from all device-capable modules (a
+--- `Devices/1.scan` task of the workspace daemon; refused or failed:
 --- notified, `callback(nil, err)`).
 --- @param callback? fun(devices: loomworks.DeviceRecord[]|nil, err: string|nil)
 function M.scan_devices(callback)
     require("loomworks.device_source").scan(M.get_workspace(), callback)
 end
 
---- Get the current list of discovered devices (in `daemon` mode the
---- daemon's registry, `Devices/1.list`, as last read).
+--- Get the current list of discovered devices (the daemon's registry,
+--- `Devices/1.list`, as last read).
 --- @return loomworks.DeviceRecord[]
 function M.get_devices()
     return require("loomworks.device_source").list(M.get_workspace())
-end
-
---- Force-reload loomworks.json from disk and remerge.
---- Use after programmatic writes to avoid waiting for file watcher.
-function M.reload_config()
-    core:reload_config()
-end
-
---- Nuke the cache: delete .nvim/build/ and loomworks.cache.json, then reload.
---- Caller must confirm with the user before calling this.
---- @param root string workspace root to nuke
---- @return boolean ran the removal ran (false: refused, notified)
-function M.nuke_cache(root)
-    return core:nuke_cache(root)
 end
 
 --- Would a nuke of `root` run now (no other process's build or workspace
@@ -483,12 +386,6 @@ end
 function M.user_prefs_root()
     local err = M.get_setup_error()
     return (err and err.root) or require("loomworks.workspace").resolve_root()
-end
-
---- Delete user.json and reload the workspace.
---- @param root string
-function M.delete_user_prefs(root)
-    core:delete_user_prefs(root)
 end
 
 --- Review a working copy that is not signed by this machine and, on
@@ -553,26 +450,18 @@ function M.trust_user_prefs(root, opts)
     return "cancelled"
 end
 
---- Get detected tools organized by module type. In `daemon` mode, per
---- module type, the distinct `{ module, key?, label }` tool rows the
---- `view.Workspace/1` `profiles` records select (nil while not held); the
---- toolchains a module detects are the `Toolchains/1.list` call.
---- @return table<string, loomworks.DetectedTool[]|loomworks.ViewProfileTool[]>|nil
+--- Get detected tools organized by module type: per module type, the
+--- distinct `{ module, key?, label }` tool rows the `view.Workspace/1`
+--- `profiles` records select (nil while not held); the toolchains a module
+--- detects are the `Toolchains/1.list` call.
+--- @return table<string, loomworks.ViewProfileTool[]>|nil
 function M.get_tools_by_type()
-    local d = daemon_rows()
-    if d then return d.tools_by_type() end
-    return core:get_tools_by_type()
+    return daemon_rows().tools_by_type()
 end
 
 -- ---------------------------------------------------------------------------
 -- Running task tracking
 -- ---------------------------------------------------------------------------
-
---- Check if any tasks are currently running.
---- @return boolean
-function M.has_running_tasks()
-    return core:has_running_tasks()
-end
 
 --- Snapshot every active task across the workspace.
 --- @return loomworks.ActiveTaskInfo[]
@@ -600,13 +489,6 @@ function M.cancel_task(task_id)
     return core:cancel_task(task_id)
 end
 
---- Cancel every running task for a Project (cascade-friendly).
---- @param project loomworks.Project
---- @return integer cancelled
-function M.cancel_tasks_for_project(project)
-    return core:cancel_tasks_for_project(project)
-end
-
 --- Cancel every running task for a Profile's units (cascade-friendly).
 --- @param profile loomworks.Profile
 --- @return integer cancelled
@@ -614,20 +496,18 @@ function M.cancel_tasks_for_profile(profile)
     return core:cancel_tasks_for_profile(profile)
 end
 
---- Get effective LSP options for a server (defaults applied). In `daemon`
---- mode a copy of that server's options in the held `LspConfig/1` state
---- (nil while it is not held).
+--- Get effective LSP options for a server (defaults applied): a copy of
+--- that server's options in the held `LspConfig/1` state (nil while it is
+--- not held).
 --- @param server string
 --- @return table|nil
 function M.get_lsp_options(server)
-    local d = daemon_rows()
-    if d then return d.lsp_options(server) end
-    return core:get_lsp_options(server)
+    return daemon_rows().lsp_options(server)
 end
 
---- Set a single LSP option and persist to user.json. In `daemon` mode
---- (spec §19.16 "LSP configuration") it is written only by the workspace
---- daemon's `LspConfig/1.set_option`: this returns true once the call is
+--- Set a single LSP option and persist to user.json (spec §19.16 "LSP
+--- configuration"): it is written only by the workspace daemon's
+--- `LspConfig/1.set_option`: this returns true once the call is
 --- sent and `cb` learns the outcome; not carried, refused or failed is an
 --- error (notified) and nothing is written.
 --- @param server string
@@ -637,21 +517,7 @@ end
 --- @return boolean ok false when not saved (notified)
 --- @return string|nil err
 function M.set_lsp_option(server, key, value, cb)
-    local source = require("loomworks.lsp_source")
-    if source.mode() == "daemon" then return source.set_option(server, key, value, cb) end
-    local ok, err = core:set_lsp_option(server, key, value)
-    if cb then cb(ok, err) end
-    return ok, err
-end
-
--- ---------------------------------------------------------------------------
--- Task results
--- ---------------------------------------------------------------------------
-
---- Record a task result and update the cache.
---- @param result loomworks.TaskResult
-function M.record_task_result(result)
-    core:record_task_result(result)
+    return require("loomworks.lsp_source").set_option(server, key, value, cb)
 end
 
 -- ---------------------------------------------------------------------------
@@ -670,14 +536,6 @@ function M.after_deletions(fn)
     core:after_deletions(fn)
 end
 
---- Execute a deletion plan.
---- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
---- @param on_done? function
-function M.execute_deletion(plan, opts, on_done)
-    core:execute_deletion(plan, opts, on_done)
-end
-
 --- Create an Operation for a profile action.
 --- @param profile loomworks.Profile
 --- @param action string
@@ -689,52 +547,33 @@ function M.create_operation(profile, action, units, target_states, opts)
     return core:create_operation(profile, action, units, target_states, opts)
 end
 
---- Find running task IDs that match a list of project+config items.
---- @param items loomworks.DeletionItem[]
---- @return table<number, loomworks.RunningTaskInfo>
-function M.find_running_tasks_for_items(items)
-    return core:find_running_tasks_for_items(items)
-end
-
 --- Get orphaned cached configs (configs with state not referenced by any
---- profile). In `daemon` mode the `view.Workspace/1`
---- `orphaned.configurations` records `{ id, key, build_dir? }` (nil while
---- not held).
---- @return loomworks.OrphanedConfig[]|{ id?: string, key: string, build_dir?: string }[]|nil
+--- profile): the `view.Workspace/1` `orphaned.configurations` records
+--- `{ id, key, build_dir? }` (nil while not held).
+--- @return { id?: string, key: string, build_dir?: string }[]|nil
 function M.get_orphaned_configs()
-    local d = daemon_rows()
-    if d then return d.orphaned_configs() end
-    return core:get_orphaned_configs()
+    return daemon_rows().orphaned_configs()
 end
 
 -- ---------------------------------------------------------------------------
 -- Queries
 -- ---------------------------------------------------------------------------
 
---- Find the project containing a buffer's file. In `daemon` mode a copy
---- of the buffer's `view.ProjectsIndex/1` record, as `lw.buf_project`.
+--- Find the project containing a buffer's file: a copy of the buffer's
+--- `view.ProjectsIndex/1` record, as `lw.buf_project`.
 --- @param bufnr number
---- @return loomworks.Project|loomworks.ViewProjectRecord|nil
+--- @return loomworks.ViewProjectRecord|nil
 function M.project_for_buf(bufnr)
-    local d = daemon_rows()
-    if d then return d.project_for_buf(bufnr) end
-    return core:project_for_buf(bufnr)
+    return daemon_rows().project_for_buf(bufnr)
 end
 
 --- Resolve the compile command loomworks' owned LSP database uses (or would
---- use) for an absolute file, under the active profile (spec §14). Delegates
---- to the active workspace's generic resolver; when no workspace is loaded the
---- result reads as "no active profile" (there is no profile without one).
---- In `daemon` mode it is refused (`status = "refused"`, spec §19.16
---- "Public API"): no compilation database or model is read.
+--- use) for an absolute file (spec §14): refused (`status = "refused"`, spec
+--- §19.16 "Public API"): no compilation database or model is read.
 --- @param file string absolute source or header path
 --- @return loomworks.CompileCommandResult
 function M.compile_command_for_file(file)
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return { status = "refused", message = facade.COMPILE_COMMAND_REFUSAL } end
-    local ws = core:get_workspace()
-    if not ws then return { status = "no_profile" } end
-    return ws:compile_command_for_file(file)
+    return { status = "refused", message = require("loomworks.daemon.facade").COMPILE_COMMAND_REFUSAL }
 end
 
 --- The buffer's project as its `loomworks.view.ProjectsIndex/1` record (spec
@@ -749,7 +588,7 @@ function M.buf_project(bufnr)
 end
 
 --- The always-warm header (`loomworks.view.Header/1`): the daemon's while
---- the editor is subscribed to it, otherwise built in-process.
+--- the editor is subscribed to it (loomworks.views.get).
 --- @return loomworks.ViewHeader|nil
 function M.view_header()
     return views.header()
@@ -786,21 +625,18 @@ end
 -- UI
 -- ---------------------------------------------------------------------------
 
---- Create a new workspace (loomworks.json) at the given root.
+--- Create a new workspace (loomworks.json) at the given root: refused,
+--- nothing written (spec §19.16 "Model writes": `lw init` creates it).
 --- @param root string workspace root directory
 --- @param name? string workspace name
---- In `daemon` mode refused, nothing written (spec §19.16 "Model writes":
---- `lw init` creates it).
 --- @return boolean ok, string|nil err
 function M.create_workspace(root, name)
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return false, facade.CREATE_REFUSAL end
-    return require("loomworks.workspace").create_workspace_config(root, name)
+    return false, require("loomworks.daemon.facade").CREATE_REFUSAL
 end
 
 --- Open the project browser for adding projects.
 function M.open_project_browser()
-    -- (`daemon` mode: the root the editor observes the daemon of, step 6b-α.)
+    -- (The root the editor observes the daemon of, step 6b-α.)
     local root = M.loaded_root()
     if not root then
         vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
@@ -819,350 +655,41 @@ function M.toggle()
     require("loomworks.ui.status").toggle()
 end
 
---- Build the active profile's default target.
---- Shows a picker if no default is set or the target is stale. In `daemon`
---- mode `Launch/1.build` of the default target of `Launch/1.targets`
---- (loomworks.daemon.facade, spec §19.16 "Public API").
+--- Build the active profile's default target: `Launch/1.build` of the
+--- default target of `Launch/1.targets`, the picker first when there is
+--- none (loomworks.daemon.facade, spec §19.16 "Public API").
 function M.build_target()
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return facade.build_target() end
-    local profile = M.get_active_profile()
-    if not profile then
-        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
-        return
-    end
-    local ok, err = profile:assert_buildable()
-    if not ok then
-        vim.notify("loomworks: " .. err, vim.log.levels.WARN)
-        return
-    end
-
-    local function do_build(target)
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_op_action("Building " .. target:display_name())
-        fidget.report(handle, "building...")
-        target:build()
-            :next(function() fidget.finish(handle, "built") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-
-    local launch_target = profile:default_target()
-
-    if launch_target and launch_target:is_valid() then
-        do_build(launch_target)
-        return
-    end
-
-    if launch_target and not launch_target:is_valid() then
-        vim.notify("loomworks: target '" .. launch_target:display_name()
-            .. "' no longer available", vim.log.levels.WARN)
-        profile:clear_default_target()
-    end
-
-    M._pick_target(profile, function(project, target_id)
-        if project and target_id then
-            profile:set_default_target(project, target_id)
-        end
-        -- Re-resolve (the picker may have set launch or device descriptor directly)
-        local new_target = profile:default_target()
-        if new_target and new_target:is_buildable() then
-            do_build(new_target)
-        end
-    end)
+    require("loomworks.daemon.facade").build_target()
 end
 
---- Build the full active profile (all targets). In `daemon` mode
---- `Build/1.build` of the active profile row (loomworks.daemon.facade).
+--- Build the full active profile (all targets): `Build/1.build` of the
+--- active profile row (loomworks.daemon.facade).
 function M.build_profile()
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return facade.build_profile() end
-    local profile = M.get_active_profile()
-    if not profile then
-        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
-        return
-    end
-    local ok, err = profile:assert_buildable()
-    if not ok then
-        vim.notify("loomworks: " .. err, vim.log.levels.WARN)
-        return
-    end
-    profile:build()
+    require("loomworks.daemon.facade").build_profile()
 end
 
---- Show a picker for selecting the active profile.
---- Lists all profiles with status, marks the active one.
---- Includes "None" to deactivate when a profile is active. In `daemon` mode
---- the `profiles` rows, the choice sent as `Profiles/1.set_active` (no
---- "None": loomworks.daemon.facade).
+--- Show a picker for selecting the active profile: the `profiles` rows, the
+--- choice sent as `Profiles/1.set_active` (no "None": loomworks.daemon.facade).
 function M.pick_profile()
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return facade.pick_profile() end
-    local all = M.get_profiles()
-    if not all or not next(all) then
-        vim.notify("loomworks: no profiles available", vim.log.levels.WARN)
-        return
-    end
-
-    local active = M.get_active_profile()
-
-    local sorted = {}
-    for _, profile in pairs(all) do
-        sorted[#sorted + 1] = profile
-    end
-    table.sort(sorted, function(a, b) return a.key < b.key end)
-
-    local items = {}
-    for _, profile in ipairs(sorted) do
-        local status_label = profile:status()
-        local marker = profile == active and "● " or "  "
-        items[#items + 1] = {
-            label = marker .. profile.key .. " (" .. status_label .. ")"
-                .. require("loomworks.ui.helpers").picker_summary(profile.description),
-            profile = profile,
-        }
-    end
-
-    if active then
-        items[#items + 1] = {
-            label = "  None (deactivate)",
-            profile = nil,
-        }
-    end
-
-    vim.ui.select(items, {
-        prompt = "Select profile:",
-        format_item = function(item) return item.label end,
-    }, function(choice)
-        if not choice then return end
-        if choice.profile then
-            choice.profile:activate()
-        elseif active then
-            active:deactivate()
-        end
-    end)
+    require("loomworks.daemon.facade").pick_profile()
 end
 
---- Show an action picker for the current target line: "Build" runs
---- the build chain, "Switch target" opens the target picker. When
---- there's no current target or it's not resolvable, the action
---- picker is skipped — only "Switch" makes sense in that state, so
---- we go straight to the target picker.
----
---- "Build" route uses Profile:assert_buildable through the existing
---- `M.build_target` flow, which surfaces the validity reasons via
---- vim.notify if the target is invalid. Consistent with `<leader>wb`.
---- In `daemon` mode on the active profile's row (loomworks.daemon.facade).
---- @param profile? loomworks.Profile defaults to active profile
-function M.pick_target_action(profile)
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return facade.pick_target_action() end
-    profile = profile or M.get_active_profile()
-    if not profile then
-        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
-        return
-    end
-    local current = profile:default_target()
-    if not current or not current:is_valid() then
-        M.pick_target(profile)
-        return
-    end
-    vim.ui.select({ "Build", "Switch target" }, {
-        prompt = "Target: " .. current:display_name(),
-    }, function(choice)
-        if not choice then return end
-        if choice == "Build" then
-            M.build_target()
-        else
-            M.pick_target(profile)
-        end
-    end)
+--- Show an action picker for the active profile's default target: "Build"
+--- builds it, "Switch target" opens the target picker; with no default
+--- target straight to the picker (loomworks.daemon.facade).
+function M.pick_target_action()
+    require("loomworks.daemon.facade").pick_target_action()
 end
 
---- Open the target picker; persist the user's selection without
---- starting a build. Used by the status-page action picker's
---- "Switch target" branch and by callers that want the picker
---- without the build-on-resolve behaviour of `M.build_target`.
---- In `daemon` mode the active profile's `Launch/1.targets`, the choice
---- stored with `Profiles/1.set_default_target` (loomworks.daemon.facade).
---- @param profile? loomworks.Profile defaults to active profile
-function M.pick_target(profile)
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return facade.pick_target_only() end
-    profile = profile or M.get_active_profile()
-    if not profile then
-        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
-        return
-    end
-    M._pick_target(profile, function(project, target_id)
-        if project and target_id then
-            profile:set_default_target(project, target_id)
-        end
-        -- The picker's "launch" / "device" / "clear" branches
-        -- already persist via `profile:set_default_target_*` and
-        -- emit `active_set_changed`. Nothing more to do.
-    end)
-end
-
---- Show a picker for selecting a default target from the active profile.
---- Includes "None" to clear and optionally "Default: X" if loomworks.json
---- defines a default that the user has overridden.
---- @param profile loomworks.Profile
---- @param on_select fun(project: loomworks.Project|nil, target_id: string|nil)
-function M._pick_target(profile, on_select)
-    local ws = M.get_workspace()
-    local items = {}
-
-    items[#items + 1] = {
-        label = "None (clear target)",
-        action = "clear",
-    }
-
-    if ws then
-        local user_has_override = profile:has_default_target_override()
-        local config_default = nil -- default targets from shared config are not currently supported
-        if user_has_override and config_default then
-            items[#items + 1] = {
-                label = "Default (" .. config_default.project .. ": " .. config_default.target .. ")",
-                action = "reset_to_default",
-            }
-        end
-    end
-
-    if ws then
-        for _, pp in ipairs(profile:projects()) do
-            local project = pp._project
-            if not project then goto next_pp end
-            for _, launch in ipairs(project:launch_configs()) do
-                local launch_name = launch.name
-                items[#items + 1] = {
-                    label = project.key .. " [launch: " .. launch_name .. "]"
-                        .. require("loomworks.ui.helpers").picker_summary(
-                            launch.description),
-                    project = project,
-                    launch_name = launch_name,
-                    action = "launch",
-                }
-            end
-            ::next_pp::
-        end
-    end
-
-    for _, pp in ipairs(profile:projects()) do
-        local unit = pp._config_unit
-        if unit and unit.targets then
-            local project = pp._project
-            if project then
-                for target_id, target in pairs(unit.targets) do
-                    if target:is_executable() then
-                        items[#items + 1] = {
-                            label = project.key .. ": " .. target:display_name(),
-                            project = project,
-                            target_id = target_id,
-                            action = "select",
-                        }
-                    end
-                end
-            end
-        end
-    end
-
-    for _, pp in ipairs(profile:projects()) do
-        local project = pp._project
-        if not project then goto next_device_pp end
-        local mod = project._module and project._module.impl
-        if mod and mod.has_devices and mod.device_targets then
-            local config_name = pp._configuration and pp._configuration.name
-            if config_name then
-                local device_tgts = mod.device_targets({
-                    name = project.key,
-                    path = project.path or project.key,
-                    workspace_root = ws and ws.root or "",
-                    tool_data = pp._config_unit and pp._config_unit._tool_data or {},
-                    configurations = project._configurations,
-                }, config_name)
-                for _, dt in ipairs(device_tgts or {}) do
-                    items[#items + 1] = {
-                        label = project.key .. " [device: " .. dt.label .. "]",
-                        project = project,
-                        device_target = dt.id,
-                        device_target_label = dt.label,
-                        action = "device",
-                    }
-                end
-            end
-        end
-        ::next_device_pp::
-    end
-
-    vim.ui.select(items, {
-        prompt = "Select default target:",
-        format_item = function(item) return item.label end,
-    }, function(choice)
-        if not choice then return end -- cancelled
-        local ws = profile._workspace
-        if choice.action == "clear" then
-            profile:clear_default_target()
-        elseif choice.action == "reset_to_default" then
-            profile:clear_default_target()
-        elseif choice.action == "launch" then
-            profile:set_default_target(choice.project, nil, choice.launch_name)
-            ws._core._deps.events.emit("active_set_changed", ws._active_set)
-            on_select(nil, nil) -- signal that default was set, trigger re-resolve
-        elseif choice.action == "select" then
-            on_select(choice.project, choice.target_id)
-        elseif choice.action == "device" then
-            profile:set_default_target_descriptor({
-                project = choice.project.key,
-                device_target = choice.device_target,
-                device_target_label = choice.device_target_label,
-            })
-            ws._core._deps.events.emit("active_set_changed", ws._active_set)
-            on_select(nil, nil)
-        end
-    end)
-end
-
---- Resolve the default target and start a run via session_tracker. In
---- `daemon` mode the default target of `Launch/1.targets`, as a LaunchRef
---- (loomworks.daemon.facade).
---- @param mode "launch"|"debug"
-local function resolve_and_start(mode)
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then return facade.launch(mode) end
-    local profile = M.get_active_profile()
-    if not profile then
-        vim.notify("loomworks: no active profile", vim.log.levels.WARN)
-        return
-    end
-
-    local tracker = require("loomworks.session_tracker")
-
-    local launch_target = profile:default_target()
-
-    if launch_target and launch_target:is_valid() and launch_target:is_launchable() then
-        tracker.start(launch_target, mode)
-        return
-    end
-
-    if launch_target and not launch_target:is_valid() then
-        vim.notify("loomworks: target '" .. launch_target:display_name()
-            .. "' no longer available", vim.log.levels.WARN)
-        profile:clear_default_target()
-    end
-
-    M._pick_target(profile, function(project, target_id)
-        if project and target_id then
-            profile:set_default_target(project, target_id)
-        end
-        local new_target = profile:default_target()
-        if new_target and new_target:is_launchable() then
-            tracker.start(new_target, mode)
-        end
-    end)
+--- Open the target picker; persist the user's selection without starting a
+--- build: the active profile's `Launch/1.targets`, the choice stored with
+--- `Profiles/1.set_default_target` (loomworks.daemon.facade).
+function M.pick_target()
+    require("loomworks.daemon.facade").pick_target_only()
 end
 
 function M.launch_target()
-    resolve_and_start("launch")
+    require("loomworks.daemon.facade").launch("launch")
 end
 
 function M.debug_target()
@@ -1171,10 +698,10 @@ function M.debug_target()
         vim.notify(
             "loomworks: nvim-dap not installed; launching without debugger",
             vim.log.levels.WARN)
-        resolve_and_start("launch")
+        M.launch_target()
         return
     end
-    resolve_and_start("debug")
+    require("loomworks.daemon.facade").launch("debug")
 end
 
 --- Stop the active launch or debug session.

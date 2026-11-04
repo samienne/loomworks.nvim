@@ -10,7 +10,7 @@ local remote_task = require("loomworks.daemon.remote_task")
 local function set_daemon(obs)
     local observer = require("loomworks.daemon.observer")
     observer._current = obs
-    observer._selection = obs and { mode = "daemon", source = "default", daemon = true } or nil
+    observer._attached_root = obs and "/w" or nil
 end
 
 
@@ -294,17 +294,6 @@ describe("Profiles section by row id (step 5o C2d-2)", function()
             model.call(ws, "Projects/1.unit_options", { unit = bare.units[2] }, function(x) got = x end)
             assert.equals("refused", got.outcome)
             assert.equals(1, #obs.requests)
-        end)
-
-        it("in-process: the bound unit's options, synchronously", function()
-            local ss = require("loomworks.status_source")
-            local unit = { options = function() return { { key = "B", value = "2" } } end }
-            local row = prow()
-            ss.bind(row, setmetatable({}, {}))
-            ss.bind(row.units[1], setmetatable({ _config_unit = unit }, {}))
-            ws = { root = "/w" }
-            render({ profiles = { row } }, "in-process").unit("dev", "app").on_options()
-            assert.same({ { { key = "B", value = "2" } }, "app" }, opened)
         end)
     end)
 

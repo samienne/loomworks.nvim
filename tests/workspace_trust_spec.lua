@@ -306,33 +306,6 @@ describe("a refused working copy that becomes valid loads again (§17.4)", funct
         return core, trackers, signed
     end
 
-    it(":LoomworksTrust on a working copy restored valid loads the refused workspace", function()
-        local files = {}
-        local core, _, signed = refused(files)
-        files["loomworks.json"] = h.make_config_json()
-        files["loomworks.user.json"] = signed -- restored byte-identical
-        local lw = require("loomworks")
-        local gc = lw._core()
-        local saved = { gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root }
-        gc._deps, gc._workspace, gc._setup_error, gc._state =
-            core._deps, nil, core:get_setup_error(), "uninitialized"
-        -- The in-process model is what reloads here: a `daemon`-mode editor
-        -- (the default) loads no model of its own (step 6b-α).
-        local saved_mode = lw._runtime_mode_config
-        lw._runtime_mode_config = "in-process"
-        local ok, res = pcall(lw.trust_user_prefs, "/root", {
-            confirm = function() error("no prompt for a valid file") end })
-        lw._runtime_mode_config = saved_mode
-        local ws, serr = gc._workspace, gc._setup_error
-        gc:shutdown()
-        gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root =
-            saved[1], saved[2], saved[3], saved[4], saved[5]
-        assert.is_true(ok, tostring(res))
-        assert.equals("valid", res)
-        assert.is_nil(serr)
-        assert.is_not_nil(ws)
-    end)
-
     it("a refused working copy restored on disk loads without user action", function()
         local files = {}
         local core, trackers, signed = refused(files)

@@ -55,16 +55,14 @@ local function render_fn(tree)
             tree:blank()
             tree:leaf(tostring(hdr.error or ""), "DiagnosticWarn")
             if hdr.trust then
-                -- A refused .nvim file (spec §17.4): its actions. In `daemon`
-                -- mode the keys are refused while no workspace is loaded
-                -- (§19.16 "Model writes"): the lw commands instead.
+                -- A refused .nvim file (spec §17.4): its actions. The keys
+                -- are refused while no workspace is loaded (§19.16 "Model
+                -- writes"): the lw commands instead.
                 tree:blank()
-                local daemon = lw.runtime_mode() == "daemon"
                 if hdr.trust == "user" then
-                    tree:leaf(daemon and "lw trust  ·  lw trust --discard"
-                        or "[T] review & trust  [U] discard working copy", "Comment")
+                    tree:leaf("lw trust  ·  lw trust --discard", "Comment")
                 else
-                    tree:leaf(daemon and "lw nuke" or "[<C-n>] reset build cache", "Comment")
+                    tree:leaf("lw nuke", "Comment")
                 end
             end
         else
@@ -111,7 +109,7 @@ local function render_fn(tree)
     end
     tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
     -- The header's last line (spec/ui.md §1.1, core §19.1, §19.16): the
-    -- runtime mode, its source and the observer's state or one current note.
+    -- observer's state or one current note.
     local runtime_line, runtime_warn = lw.daemon_runtime_line()
     if runtime_line then
         tree:leaf("Runtime:   " .. runtime_line, runtime_warn and "DiagnosticWarn" or "Comment")

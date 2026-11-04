@@ -35,7 +35,7 @@ describe("the daemon-mode facade (§19.16 Public API, step 6b-alpha)", function(
             opts = { environ = function() return { PATH = "x" } end },
         }, observer.Observer)
         observer._current = o
-        observer._selection = { mode = "daemon", source = "default", daemon = true }
+        observer._attached_root = "/w"
         views.set(o, "header", { root = "/w", state = "loaded" })
         views.set(o, "workspace", {
             profiles = {
@@ -82,7 +82,7 @@ describe("the daemon-mode facade (§19.16 Public API, step 6b-alpha)", function(
         end
         views.clear(obs)
         observer._current = nil
-        observer._selection = nil
+        observer._attached_root = nil
         obs = nil
     end)
 

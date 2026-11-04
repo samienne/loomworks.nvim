@@ -149,7 +149,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
         if obs then
             views.clear(obs)
             observer._current = nil
-            require("loomworks.daemon.observer")._selection = nil
+            require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
         pcall(function() core:shutdown() end)

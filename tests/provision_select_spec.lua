@@ -255,29 +255,23 @@ describe(":checkhealth loomworks", function()
         local h, out = capture()
         local _, _, sel = run({ path = "/p/lw" })
         require("loomworks.health").check(h, {
-            runtime_mode = function() return "daemon", "setup" end,
-            daemon_runtime_line = function() return "daemon (setup) — observing daemon pid 7" end,
+            daemon_runtime_line = function() return "observing daemon pid 7" end,
             host_binary_selection = function() return sel end,
         })
         local text = table.concat(out, "\n")
-        assert.truthy(text:find("info: runtime mode: daemon (setup)", 1, true), text)
+        assert.truthy(text:find("info: status: observing daemon pid 7", 1, true), text)
         assert.truthy(text:find("ok: would launch the workspace daemon from /p/lw (lw on PATH)", 1, true), text)
         assert.truthy(text:find("info: plugin-managed lw: not tried", 1, true), text)
     end)
 
-    it("warns when daemon mode has no binary, informs otherwise", function()
+    it("warns when there is no binary", function()
         local _, _, sel = run({})
         local h, out = capture()
-        local lw = { runtime_mode = function() return "daemon", "env" end,
-            daemon_runtime_line = function() return nil end,
+        local lw = { daemon_runtime_line = function() return nil end,
             host_binary_selection = function() return sel end }
         require("loomworks.health").check(h, lw)
-        assert.truthy(table.concat(out, "\n"):find("warn: no lw host binary (", 1, true))
-        h, out = capture()
-        lw.runtime_mode = function() return "in-process", "default" end
-        require("loomworks.health").check(h, lw)
         local text = table.concat(out, "\n")
-        assert.is_nil(text:find("warn:", 1, true), text)
-        assert.truthy(text:find("only used in daemon mode", 1, true), text)
+        assert.truthy(text:find("warn: no lw host binary (", 1, true), text)
+        assert.truthy(text:find("info: status: no workspace daemon observed", 1, true), text)
     end)
 end)

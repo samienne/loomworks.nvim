@@ -38,7 +38,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
         vim.notify = orig_notify
         local obs = require("loomworks.daemon.observer")._current
         if obs then views.clear(obs) end
-        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._selection = nil, nil
+        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._attached_root = nil, nil
         loomtest.unregister_adapter("loomworks")
         loomtest.clear()
         adapter_mod._reset()

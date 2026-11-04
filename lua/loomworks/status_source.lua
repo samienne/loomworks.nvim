@@ -6,21 +6,16 @@
 --- the view does not carry: build progress (API.md §14.4 "Progress is not
 --- in the view").
 ---
---- One source per runtime mode (as loomworks/test_source.lua and
---- loomworks/lsp_source.lua):
----   * `daemon` mode: **only** the daemon's view as the observer holds it
----     (loomworks.views). Nothing of it is built in-process: while the view is
----     not held, `why` says why and each section is one `unavailable — <why>`
----     line. Progress comes from the tasks observed through `Tasks/1` (the
----     observer's remote and editor-owned tasks: their `start` meta names the
----     profile and units by id, matched to the rows' ids — never by key;
----     `progress` frames the percent, `start` the elapsed time). The
----     sections' actions go through loomworks/ui/model_calls.lua, which names
----     a row's entity by the row's id (step 5o C2), and match tasks to rows by
----     the same ids (C2d-2): no row reaches the editor's model.
----   * `in-process` mode (transition, until step 6b): the view built from the
----     editor's own model (Workspace:view_workspace), each row bound to the
----     object it describes; progress from the objects' task tracking.
+--- The source is **only** the daemon's view as the observer holds it
+--- (loomworks.views). Nothing of it is built in-process: while the view is
+--- not held, `why` says why and each section is one `unavailable — <why>`
+--- line. Progress comes from the tasks observed through `Tasks/1` (the
+--- observer's remote and editor-owned tasks: their `start` meta names the
+--- profile and units by id, matched to the rows' ids — never by key;
+--- `progress` frames the percent, `start` the elapsed time). The sections'
+--- actions go through loomworks/ui/model_calls.lua, which names a row's
+--- entity by the row's id (step 5o C2), and match tasks to rows by the same
+--- ids (C2d-2): no row reaches the editor's model.
 
 local M = {}
 
@@ -54,51 +49,15 @@ function M.object_of(row)
 end
 
 --- @class loomworks.StatusBody
---- @field mode "daemon"|"in-process"
---- @field view loomworks.ViewWorkspace|nil nil in `daemon` mode while the view is not held
---- @field why string|nil why the view is not held (`daemon` mode)
+--- @field mode "daemon"
+--- @field view loomworks.ViewWorkspace|nil nil while the view is not held
+--- @field why string|nil why the view is not held
 --- @field loaded boolean whether the workspace is loaded where the view comes from
 --- @field profile_progress fun(row: loomworks.ViewProfile): { pct: integer|nil, elapsed: number|nil }|nil
 --- @field unit_progress fun(u: table): { progress: table|nil, elapsed: number|nil }|nil
 
---- Whether `ws` is in `daemon` mode, and its observer (nil when none is
---- attached any more).
---- @param ws loomworks.Workspace
---- @return boolean daemon, loomworks.daemon.Observer|nil obs
-local function daemon_of(ws)
-    return require("loomworks.daemon.editor_ops").daemon_of(ws)
-end
-
 -- ---------------------------------------------------------------------------
--- In-process
--- ---------------------------------------------------------------------------
-
---- @param ws loomworks.Workspace
---- @return loomworks.StatusBody
-local function in_process(ws)
-    local view = ws:view_workspace({ bind = M.bind })
-    local refs = bound
-    return {
-        mode = "in-process", view = view, loaded = true,
-        -- A busy profile's percent and elapsed time and a running unit's
-        -- step progress: the rows' domain objects (their operations, units
-        -- and observed tasks).
-        profile_progress = function(row)
-            local profile = refs[row]
-            if not profile then return nil end
-            return { pct = profile:operation_pct(), elapsed = profile:operation_elapsed() }
-        end,
-        unit_progress = function(u)
-            local pp = refs[u]
-            local unit = pp and pp._config_unit
-            if not unit then return nil end
-            return { progress = unit:progress(), elapsed = unit:elapsed() }
-        end,
-    }
-end
-
--- ---------------------------------------------------------------------------
--- Daemon
+-- The daemon's view
 -- ---------------------------------------------------------------------------
 
 --- Whether a task observed through `Tasks/1` runs the unit row `u`, by the
@@ -192,36 +151,33 @@ end
 -- API
 -- ---------------------------------------------------------------------------
 
---- The status page's body source for `ws`.
---- @param ws loomworks.Workspace
+--- The editor's observer (nil when none is attached any more).
+--- @return loomworks.daemon.Observer|nil
+local function observer()
+    return select(2, require("loomworks.daemon.editor_ops").daemon_of())
+end
+
+--- The status page's body source.
 --- @return loomworks.StatusBody
-function M.read(ws)
-    local is_daemon, obs = daemon_of(ws)
-    if is_daemon then return daemon(obs) end
-    return in_process(ws)
+function M.read()
+    return daemon(observer())
 end
 
 --- Whether the workspace has changes not published (the status buffer's
---- 'modified', which makes Vim refuse `:e` with E37). In `daemon` mode
---- publish and revert (`:w`, `:e!`) run in the daemon (step 5o C2a), as does
---- every other status-page write (C2c-2): the daemon's view's `modified`
---- while that view is held; while it is not (connecting, waiting for it,
---- lost, a daemon without it, not connected at all) it is not known and the
---- buffer is not marked — a `daemon`-mode editor holds no model to ask
---- (step 6b-α), and an unmarked buffer never blocks `:qa`. The flag can
---- still lag the daemon (another client's write): a plain `:e` in `daemon`
---- mode therefore never reverts (ui/status.lua `_on_revert`), only `:e!`
---- does. In the `in-process` mode the editor's model's.
---- @param ws loomworks.Workspace|nil
+--- 'modified', which makes Vim refuse `:e` with E37). Publish and revert
+--- (`:w`, `:e!`) run in the daemon (step 5o C2a), as does every other
+--- status-page write (C2c-2): the daemon's view's `modified` while that view
+--- is held; while it is not (connecting, waiting for it, lost, a daemon
+--- without it, not connected at all) it is not known and the buffer is not
+--- marked — the editor holds no model to ask (step 6b-α), and an unmarked
+--- buffer never blocks `:qa`. The flag can still lag the daemon (another
+--- client's write): a plain `:e` therefore never reverts (ui/status.lua
+--- `_on_revert`), only `:e!` does.
 --- @return boolean
-function M.modified(ws)
-    local is_daemon, obs = daemon_of(ws)
-    if is_daemon then
-        local view = obs and obs:workspace_view() or nil
-        return type(view) == "table" and view.modified == true
-    end
-    if not ws then return false end
-    return ws:has_any_modified() and true or false
+function M.modified()
+    local obs = observer()
+    local view = obs and obs:workspace_view() or nil
+    return type(view) == "table" and view.modified == true
 end
 
 return M

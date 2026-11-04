@@ -23,7 +23,7 @@ end
 local function trap_ws(obs)
     local observer = require("loomworks.daemon.observer")
     observer._current = obs
-    observer._selection = obs and { mode = "daemon", source = "default", daemon = true } or nil
+    observer._attached_root = obs and "/w" or nil
     return nil
 end
 
@@ -216,69 +216,11 @@ describe("status page reads in daemon mode (WP-B)", function()
     end)
 end)
 
-describe("ConfigSets/1 dialog mappings in-process (WP-B)", function()
-    -- The dialog's mappings are project rows -> configuration choices
-    -- (`{ name }`); in-process each is the object the in-process view bound
-    -- to its row or choice, never looked up by name.
-    local saved, calls
-    local ss = require("loomworks.status_source")
-    local WS, CS, PR = { root = "/w" }, {}, { key = "app" }
-    local CFG, OTHER = { name = "Debug", _project = PR }, { name = "Debug", _project = { key = "lib" } }
-    local PRROW, CSROW, CHOICE, FOREIGN = { key = "app" }, { name = "cs" }, { name = "Debug" }, { name = "Debug" }
-    ss.bind(PRROW, PR); ss.bind(CSROW, CS); ss.bind(CHOICE, CFG); ss.bind(FOREIGN, OTHER)
-    before_each(function()
-        calls = {}
-        saved = { package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
-        package.loaded["loomworks.workspace_view"] = setmetatable({}, { __index = function(_, name)
-            return function(...)
-                calls[#calls + 1] = { name, ... }
-                return true
-            end
-        end })
-        package.loaded["loomworks"] = { runtime_mode = function() return "in-process" end }
-    end)
-    after_each(function()
-        package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] = saved[1], saved[2]
-    end)
-    local function run(method, params)
-        local got
-        model.call(WS, method, params, function(r) got = r end)
-        return got
-    end
-
-    it("passes the bound objects", function()
-        run("ConfigSets/1.update", { config_set = CSROW, name = "D2", mappings = { [PRROW] = CHOICE } })
-        assert.same({ { "execute_edit_config_set", CS, "D2", { [PR] = CFG } } }, calls)
-    end)
-
-    it("refuses a choice bound to nothing (never resolved by its name), writing nothing", function()
-        local r = run("ConfigSets/1.update", { config_set = CSROW, name = "D2",
-            mappings = { [PRROW] = { name = "Debug" } } })
-        assert.equals("refused", r.outcome)
-        assert.equals("no configuration 'Debug' in project 'app'", r.message)
-        assert.same({}, calls)
-    end)
-
-    it("refuses another project's configuration, writing nothing", function()
-        local r = run("ConfigSets/1.update", { config_set = CSROW, name = "D2", mappings = { [PRROW] = FOREIGN } })
-        assert.equals("refused", r.outcome)
-        assert.equals("configuration 'Debug' is not of project 'app'", r.message)
-        assert.same({}, calls)
-    end)
-
-    it("add { candidate } adds the automatic set the entry stands for", function()
-        local r = run("ConfigSets/1.add", { candidate = { name = "Auto", auto = true, candidate = "auto:x" } })
-        assert.equals("ok", r.outcome)
-        assert.same({ { "execute_create_config_set_from_candidate", WS, "auto:x" } }, calls)
-    end)
-end)
-
 describe("configuration set dialogs offer cmake presets (WP-B)", function()
     -- A preset configuration (`preset:<name>`, cmake) is a real
     -- configuration of its project: the view lists it under the project
     -- row's `presets`, not `configurations[]`. The dialogs offer it, and a
-    -- mapping to it saves in both modes (by the preset row's id, or its
-    -- bound object in-process).
+    -- mapping to it saves by the preset row's id.
     local saved_editor, saved_select, saved_notify, opened, notes
     before_each(function()
         opened, notes = nil, {}
@@ -331,87 +273,6 @@ describe("configuration set dialogs offer cmake presets (WP-B)", function()
         assert.same({ { method = "ConfigSets/1.update",
             args = { config_set = { id = "cs:1" }, name = "P2",
                 mappings = { { project = { id = "pr:1" }, configuration = { id = "c:2" } } } } } }, obs.requests)
-    end)
-
-    describe("in-process, a real cmake workspace with a preset", function()
-        _G.LOOMWORKS_CLI_NO_AUTORUN = true
-        local cli = require("loomworks.cli")
-        local ss = require("loomworks.status_source")
-        local root, ws
-
-        local function find_set(name)
-            for _, cs in pairs(ws._config_sets) do if cs.name == name and not cs._removed then return cs end end
-        end
-        local function app_project()
-            for _, p in pairs(ws._projects) do if p.key == "App" then return p end end
-        end
-        local function app_row(view)
-            for _, p in ipairs(view.projects) do if p.key == "App" then return p end end
-        end
-        local function page()
-            local view = ws:view_workspace({ bind = ss.bind })
-            return render({ mode = "in-process", view = view, ws = ws, lw = {} }), view
-        end
-
-        before_each(function()
-            root = vim.fn.tempname():gsub("\\", "/")
-            vim.fn.mkdir(root .. "/App", "p")
-            io.open(root .. "/App/CMakeLists.txt", "w"):close()
-            local f = assert(io.open(root .. "/App/CMakePresets.json", "w"))
-            f:write(vim.json.encode({ version = 3, configurePresets = { { name = "dev", generator = "Ninja",
-                binaryDir = "${sourceDir}/build/dev", cacheVariables = { CMAKE_BUILD_TYPE = "Debug" } } } }))
-            f:close()
-            f = assert(io.open(root .. "/loomworks.json", "w"))
-            f:write(vim.json.encode({ projects = { App = { cmake = vim.empty_dict() } },
-                configuration_sets = { P = { App = "preset:dev" } } }))
-            f:close()
-            ws = assert(cli._load_workspace(root, false))
-        end)
-
-        it("create offers the preset; saving a set mapped to it adds the set", function()
-            local p, view = page()
-            p.item("Create configuration set").on_enter()
-            assert.is_table(opened)
-            local app = app_row(view)
-            local choices = opened.available_configs[app]
-            assert.is_truthy(vim.tbl_contains(names(choices), "preset:dev"), vim.inspect(names(choices)))
-            local preset
-            for _, c in ipairs(choices) do if c.name == "preset:dev" then preset = c end end
-            opened.on_accept({ name = "New", mappings = { [app] = preset } })
-            for _, n in ipairs(notes) do assert.is_true(n.level < vim.log.levels.WARN, n.msg) end
-            local cs = assert(find_set("New"))
-            assert.equals("preset:dev", cs:configuration(app_project()).name)
-        end)
-
-        it("edit of a set mapped to the preset shows it and saves it (a rename)", function()
-            local p, view = page()
-            p.set("P").on_enter()
-            local app = app_row(view)
-            assert.equals("preset:dev", opened.mappings[app].name)
-            assert.is_truthy(vim.tbl_contains(opened.available_configs[app], opened.mappings[app]))
-            opened.on_accept({ name = "P2", mappings = opened.mappings })
-            for _, n in ipairs(notes) do assert.is_true(n.level < vim.log.levels.WARN, n.msg) end
-            local cs = assert(find_set("P2"))
-            assert.equals("preset:dev", cs:configuration(app_project()).name)
-        end)
-
-        it("an unbound or removed configuration is refused as the daemon refuses it", function()
-            local model = require("loomworks.ui.model_calls")
-            local _, view = page()
-            local app = app_row(view)
-            local got
-            model.call(ws, "ConfigSets/1.add", { name = "X", mappings = { [app] = { name = "Gone" } } },
-                function(r) got = r end)
-            assert.same({ outcome = "refused", message = "no configuration 'Gone' in project 'App'" }, got)
-            -- A removed configuration, even with a choice bound to it.
-            local cfg = app_project():get_configuration("preset:dev")
-            cfg._removed = true
-            local CHOICE = { name = "preset:dev" }
-            ss.bind(CHOICE, cfg)
-            model.call(ws, "ConfigSets/1.add", { name = "X", mappings = { [app] = CHOICE } }, function(r) got = r end)
-            assert.same({ outcome = "refused", message = "no configuration 'preset:dev' in project 'App'" }, got)
-            assert.is_nil(find_set("X"))
-        end)
     end)
 
     it("no view held: the dialogs refuse with a notice, nothing opened", function()
@@ -480,61 +341,6 @@ describe("the profile row's + Add tool (protocol ids)", function()
         assert.is_nil(add_tool(trap_ws(obs), profile_row({ orphaned_set = true })))
     end)
 
-    describe("in-process", function()
-        -- The row is bound to its profile; the set is the profile's own
-        -- (helpers.profile_set), never looked up by the row's set name.
-        local ss = require("loomworks.status_source")
-        local saved, calls
-        local WS, CS = { root = "/w" }, { name = "dev" }
-        local PROFILE = { key = "dev:gcc", _config_set_ref = CS }
-        before_each(function()
-            calls = {}
-            saved = { package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
-            package.loaded["loomworks.workspace_view"] = {
-                profile_tool_choices = function(ws, set)
-                    calls[#calls + 1] = { "profile_tool_choices", ws, set }
-                    return { outcome = "ok", tools = {
-                        { tool_key = "gcc", tool_label = "GCC", tool_mod_type = "cmake" },
-                        { sdk = { key = "ohos-1" }, tool_label = "OHOS" },
-                        { tool_key = "ohos-clang", tool_label = "OHOS clang", tool_mod_type = "cmake",
-                            sdk_key = "ohos-1" },
-                        { tool_key = "clang", tool_label = "Clang", tool_mod_type = "cmake" } } }
-                end,
-                add_profile_tool = function(profile, key)
-                    calls[#calls + 1] = { "add_profile_tool", profile, key }
-                    return true
-                end,
-            }
-            package.loaded["loomworks"] = { runtime_mode = function() return "in-process" end }
-        end)
-        after_each(function()
-            package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] = saved[1], saved[2]
-        end)
-
-        it("asks tool_choices of the bound profile's set and adds the picked toolchain to the bound profile",
-            function()
-            -- The in-process view carries no ids.
-            local row = profile_row({ config_set = "not-the-set" })
-            row.id, row.config_set_id = nil, nil
-            ss.bind(row, PROFILE)
-            local tree, nodes = fake_tree()
-            package.loaded["loomworks.ui.sections.profiles"] = nil
-            require("loomworks.ui.sections.profiles")(tree, { mode = "in-process", ws = WS, lw = {},
-                view = { profiles = { row }, projects = { { key = "app" } }, config_sets = {} } })
-            local opts
-            for _, n in ipairs(nodes) do if n.label == "+ Add tool" then opts = n.opts end end
-            assert.is_table(opts)
-            opts.on_enter()
-            -- The module toolchains the profile lacks, kit ones included; not
-            -- the SDK's own entry.
-            assert.same({ "Clang", "OHOS clang" }, offered)
-            assert.equals(2, #calls)
-            assert.equals("profile_tool_choices", calls[1][1])
-            assert.equals(WS, calls[1][2])
-            assert.equals(CS, calls[1][3])
-            assert.same({ "add_profile_tool", PROFILE, "clang" }, calls[2])
-        end)
-    end)
 end)
 
 describe("the create-profile tool picker (protocol ids)", function()
@@ -551,7 +357,7 @@ describe("the create-profile tool picker (protocol ids)", function()
     after_each(function()
         vim.notify, vim.ui.select = saved_notify, saved_select
         local observer = require("loomworks.daemon.observer")
-        observer._current, observer._selection = nil, nil
+        observer._current, observer._attached_root = nil, nil
     end)
 
     it("skips the SDKs' kit toolchains (sdk_key): the SDK's own entry stands for them", function()
@@ -568,85 +374,10 @@ describe("the create-profile tool picker (protocol ids)", function()
     end)
 end)
 
-describe("ConfigSets/1.candidates in-process (protocol ids)", function()
-    -- An automatic set's mappings (project key → configuration name, as
-    -- generated) are resolved once, in model_calls: each bound to its
-    -- project and configuration objects, ordered by project key; a name
-    -- that resolves to no configuration (or a removed project) left out.
-    _G.LOOMWORKS_CLI_NO_AUTORUN = true
-    local cli = require("loomworks.cli")
-    local ss = require("loomworks.status_source")
-    local root, ws
-
-    before_each(function()
-        root = vim.fn.tempname():gsub("\\", "/")
-        for _, k in ipairs({ "Zed", "App" }) do
-            vim.fn.mkdir(root .. "/" .. k, "p")
-            io.open(root .. "/" .. k .. "/CMakeLists.txt", "w"):close()
-        end
-        local f = assert(io.open(root .. "/loomworks.json", "w"))
-        f:write(vim.json.encode({ projects = { Zed = { cmake = vim.empty_dict() }, App = { cmake = vim.empty_dict() } },
-            configuration_sets = { Mine = { App = "variant:Debug" } } }))
-        f:close()
-        ws = assert(cli._load_workspace(root, false))
-        -- The generated sets (file data: project key → configuration name);
-        -- the resolution of their names is what is under test.
-        ws.generate_default_config_sets = function()
-            return { Both = { Zed = "variant:Debug", App = "variant:Debug" },
-                Partial = { Zed = "Gone", App = "variant:Release" } }
-        end
-    end)
-    after_each(function() vim.fn.delete(root, "rf") end)
-
-    local function project(key)
-        for _, p in pairs(ws._projects) do if p.key == key then return p end end
-    end
-    local function candidates()
-        local got
-        model.call(ws, "ConfigSets/1.candidates", {}, function(r) got = r end)
-        assert.equals("ok", got.outcome, vim.inspect(got))
-        local by = {}
-        for _, s in ipairs(got.sets) do by[s.name] = s end
-        return got.sets, by
-    end
-    local function check(m, pkey, cname)
-        assert.same({ key = pkey }, m.project)
-        assert.same({ key = cname }, m.configuration)
-        local po, co = ss.object_of(m.project), ss.object_of(m.configuration)
-        assert.equals(project(pkey), po)
-        assert.equals(po:get_configuration(cname), co)
-        assert.is_not_nil(co)
-    end
-
-    it("binds each automatic mapping to its project and configuration, ordered by project key", function()
-        local sets, by = candidates()
-        assert.same({ "Mine", "Both", "Partial" }, { sets[1].name, sets[2].name, sets[3].name })
-        -- The declared set's row is bound to its object and carries no mappings.
-        assert.is_false(by.Mine.auto)
-        assert.equals("Mine", ss.object_of(by.Mine).name)
-        assert.is_nil(by.Mine.mappings)
-        assert.is_true(by.Both.auto)
-        assert.is_string(by.Both.candidate)
-        assert.equals(2, #by.Both.mappings)
-        check(by.Both.mappings[1], "App", "variant:Debug")
-        check(by.Both.mappings[2], "Zed", "variant:Debug")
-        -- A generated name no configuration has is left out.
-        assert.equals(1, #by.Partial.mappings)
-        check(by.Partial.mappings[1], "App", "variant:Release")
-    end)
-
-    it("leaves out a removed project's mapping", function()
-        project("Zed")._removed = true
-        local _, by = candidates()
-        assert.equals(1, #by.Both.mappings)
-        check(by.Both.mappings[1], "App", "variant:Debug")
-    end)
-end)
-
 describe("configuration rename effects (protocol ids)", function()
     -- The configuration editor's rename effects: the sets whose mapping
-    -- names the renamed configuration (helpers.same_entity: its id in
-    -- `daemon` mode, the bound object in-process; never its name) and the
+    -- names the renamed configuration (helpers.same_entity: its id; never
+    -- its name) and the
     -- declaration's configurations inheriting it.
     local saved_dialog, saved_notify, opened
     before_each(function()
@@ -660,8 +391,7 @@ describe("configuration rename effects (protocol ids)", function()
         package.loaded["loomworks.ui.config_editor_dialog"] = saved_dialog
         vim.notify = saved_notify
         local observer = require("loomworks.daemon.observer")
-        observer._current, observer._selection = nil, nil
-        observer.set_loaded_workspace(nil)
+        observer._current, observer._attached_root = nil, nil
     end)
 
     local function open_editor(ctx, project_key, config_key)
@@ -706,33 +436,6 @@ describe("configuration rename effects (protocol ids)", function()
         assert.is_nil(o.rename_effects(""))
     end)
 
-    it("in-process: lists the sets mapping the bound configuration, not a same-named one", function()
-        _G.LOOMWORKS_CLI_NO_AUTORUN = true
-        local root = vim.fn.tempname():gsub("\\", "/")
-        for _, k in ipairs({ "App", "Lib" }) do
-            vim.fn.mkdir(root .. "/" .. k, "p")
-            io.open(root .. "/" .. k .. "/CMakeLists.txt", "w"):close()
-        end
-        local f = assert(io.open(root .. "/loomworks.json", "w"))
-        f:write(vim.json.encode({
-            projects = { App = { cmake = { configurations = { Debug = { variant = "Debug" },
-                Child = { inherits = "Debug" } } } },
-                Lib = { cmake = { configurations = { Debug = { variant = "Debug" } } } } },
-            configuration_sets = { Both = { App = "Debug", Lib = "Debug" }, LibOnly = { Lib = "Debug" } } }))
-        f:close()
-        local ws = assert(require("loomworks.cli")._load_workspace(root, false))
-        local observer = require("loomworks.daemon.observer")
-        observer._current, observer._selection = nil, nil
-        observer.set_loaded_workspace(ws)
-        local ss = require("loomworks.status_source")
-        local ok, err = xpcall(function()
-            local view = ws:view_workspace({ bind = ss.bind })
-            local o = open_editor({ mode = "in-process", view = view, ws = ws, lw = {} }, "App", "Debug")
-            assert.same({ "Config set 'Both' mapping → Dbg", "Config 'Child' inherits → Dbg" }, o.rename_effects("Dbg"))
-        end, debug.traceback)
-        vim.fn.delete(root, "rf")
-        assert(ok, err)
-    end)
 end)
 
 describe("status page actions in daemon mode with no model (A1a)", function()
@@ -757,7 +460,7 @@ describe("status page actions in daemon mode with no model (A1a)", function()
         require("loomworks").get_workspace = saved_get
         vim.ui.select = saved_select
         local observer = require("loomworks.daemon.observer")
-        observer._current, observer._selection = nil, nil
+        observer._current, observer._attached_root = nil, nil
     end)
 
     local function methods()
@@ -849,7 +552,7 @@ describe("the Add project row in daemon mode with no model (A1a)", function()
         local observer = require("loomworks.daemon.observer")
         local obs = { root = "/ws/root", state = "connected" }
         observer._current = obs
-        observer._selection = { mode = "daemon", source = "default", daemon = true }
+        observer._attached_root = "/w"
         local lw = require("loomworks")
         local saved_get = lw.get_workspace
         lw.get_workspace = function() return nil end
@@ -866,7 +569,7 @@ describe("the Add project row in daemon mode with no model (A1a)", function()
         end)
         lw.get_workspace = saved_get
         package.loaded["loomworks.ui.project_browser"] = saved_browser
-        observer._current, observer._selection = nil, nil
+        observer._current, observer._attached_root = nil, nil
         assert(ok, err)
         assert.equals("/ws/root", opened)
     end)

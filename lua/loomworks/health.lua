@@ -1,4 +1,4 @@
---- loomworks/health.lua — `:checkhealth loomworks`: the runtime mode and the
+--- loomworks/health.lua — `:checkhealth loomworks`: the observer's state and the
 --- `lw` host binary the editor would launch the workspace daemon from, with
 --- every source it tried and why each was not chosen (spec §19.16 "Host
 --- binary"), the state of a download of the plugin-managed lw and the last
@@ -17,36 +17,29 @@ function M.check(h, lw)
     local binsel = require("loomworks.provision.select")
 
     h.start("loomworks: runtime")
-    local mode, source = lw.runtime_mode()
-    h.info(string.format("runtime mode: %s (%s)", tostring(mode), tostring(source)))
     local line = lw.daemon_runtime_line()
-    if line then h.info("status: " .. line) end
+    h.info("status: " .. (line or "no workspace daemon observed"))
 
     h.start("loomworks: lw host binary")
     local sel = lw.host_binary_selection()
-    local daemon = mode == "daemon"
     if sel.path then
         h.ok("would launch the workspace daemon from " .. binsel.describe(sel))
     elseif sel.download then
         -- The plugin-managed lw is wanted but not installed (step 5h.3): the
-        -- observer downloads it in daemon mode; checkhealth never does.
+        -- observer downloads it; checkhealth never does.
         local state = require("loomworks.provision.fetch").describe(sel.download.sha256)
         if state and state:match("^could not") then
             h.warn(state, { "Check the network or binary.release_url / LOOMWORKS_RELEASE_URL, then "
                 .. ":LoomworksDaemon connect; or install lw on PATH" })
         elseif state then
             h.info(state)
-        elseif daemon then
-            h.info("would download " .. binsel.describe(sel) .. ", then launch the workspace daemon from it")
         else
-            h.info("no lw host binary (only used in daemon mode): " .. binsel.none_note(sel))
+            h.info("would download " .. binsel.describe(sel) .. ", then launch the workspace daemon from it")
         end
-    elseif daemon then
+    else
         h.warn(binsel.none_note(sel), {
             "Install lw on PATH, or set LOOMWORKS_LW or setup({ binary = { path = ... } })",
         })
-    else
-        h.info("no lw host binary (only used in daemon mode): " .. binsel.none_note(sel))
     end
     for _, c in ipairs(sel.candidates or {}) do
         local what = c.label .. ": " .. c.verdict

@@ -83,7 +83,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         package.loaded["overseer"] = orig_overseer
         if obs then
             observer._current = nil
-            require("loomworks.daemon.observer")._selection = nil
+            require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
         pcall(function() core:shutdown() end)
@@ -276,7 +276,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
     end)
 
     it("daemon mode with no observer (stopped): a build and a clean are refused, never in-process", function()
-        require("loomworks.daemon.observer")._selection = { mode = "daemon", source = "default", daemon = true }
+        require("loomworks.daemon.observer")._attached_root = "/w"
         obs = fake_observer()
         obs:stop()
         obs = nil
@@ -289,7 +289,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         assert.equals("clean: the workspace is no longer loaded", st3.err)
         vim.wait(100)
         assert.equals(0, #created)
-        require("loomworks.daemon.observer")._selection = nil
+        require("loomworks.daemon.observer")._attached_root = nil
     end)
 
     it("connected but not carrying it: a specific reason, never the Runtime line", function()

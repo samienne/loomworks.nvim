@@ -1,11 +1,9 @@
 -- Saving from an editor dialog changes ONLY the fields the dialog edits; every
--- other declared field of the item survives exactly (the configuration
--- editor, the launch editor, and the configuration-set editor's rename). Each
--- spec drives the real dialog widget — View is stubbed so no window opens —
--- edits one shown field through its row, accepts, and hands the result to the
--- same workspace_view save the status page uses (the configuration editor is
--- opened from the status page's projects section itself). The on-disk
--- working copy is then re-read from a fresh load.
+-- other declared field of the item survives exactly (the launch editor and
+-- the configuration-set editor's rename). Each spec drives the real dialog
+-- widget — View is stubbed so no window opens — edits one shown field through
+-- its row, accepts, and hands the result to workspace_view's save. The
+-- on-disk working copy is then re-read from a fresh load.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
@@ -99,125 +97,6 @@ local function enter_row(tree, pattern, answer)
   vim.ui.input = orig
   assert(ok, err)
 end
-
---- Open the configuration editor on App/<name> exactly as the status page
---- does: the projects section rendered from the in-process view, <CR> on the
---- configuration's row (the editor reads Projects/1.declaration and saves
---- through Projects/1.configuration_save). `on_saved(ok, msg)` gets the
---- save's notification once the dialog is accepted.
-local function open_config_editor(ws, name, on_saved)
-  -- (Loaded as the editor's setup does, in the in-process mode: the page's
-  -- calls given no workspace go to it.)
-  require("loomworks.daemon.observer").attach(ws.root, { configured = "in-process" })
-  require("loomworks.daemon.observer").set_loaded_workspace(ws)
-  local ss = require("loomworks.status_source")
-  local view = ws:view_workspace({ bind = ss.bind })
-  local ctx = { lw = require("loomworks"), view = view, ref = ss.object_of, ws = ws, mode = "in-process" }
-  local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
-  setmetatable(page._folds, { __index = function() return true end })
-  local lines = page:render()
-  local row
-  for i, l in ipairs(lines) do
-    if l:find("[▼▸] %+?" .. vim.pesc(name) .. "%f[^%w_:%-]") and page.line_meta[i] and page.line_meta[i].on_enter then
-      row = i; break
-    end
-  end
-  assert(row, "no configuration row " .. name .. " in:\n" .. table.concat(lines, "\n"))
-  local tree
-  local orig = View.new
-  View.new = function(vopts)
-    tree = vopts.widget
-    return { open = function() end, close = function() end, refresh = function() end }
-  end
-  local ok, err = pcall(page.line_meta[row].on_enter)
-  View.new = orig
-  assert(ok, err)
-  assert(tree, "the configuration editor did not open")
-  local on_key = tree.on_key
-  tree.on_key = function(self, action, line)
-    local notify = vim.notify
-    vim.notify = function(msg, level)
-      if tostring(msg):find("configuration '", 1, true) or level == vim.log.levels.ERROR then
-        on_saved(level == vim.log.levels.INFO, msg)
-      else
-        notify(msg, level)
-      end
-    end
-    local kok, r = pcall(on_key, self, action, line)
-    vim.notify = notify
-    assert(kok, r)
-    return r
-  end
-  return tree
-end
-
-local function assert_dev_fields(cfg, name)
-  assert.is_table(cfg, name .. " missing from user.json")
-  assert.same({ FOO = "bar" }, cfg.env)
-  assert.same({ gcc = { out = "z" } }, cfg.overrides)
-  assert.same({ out = "y" }, cfg.variables)
-  assert.equals("tc.cmake", cfg.toolchain)
-  assert.equals("m", cfg.myfield)
-  assert.same({ "c", "c++" }, cfg.languages)
-  assert.equals("variant:Debug", cfg.inherits)
-  assert.equals("Dev build\n\nbody", cfg.description)
-end
-
-describe("configuration editor dialog save", function()
-  it("changes only the edited option; every other declared field survives", function()
-    local root = make_ws()
-    local ws = load(root)
-    local intent = find_project(ws, "App"):get_configuration("Dev")._intent
-    local saved
-    local tree = open_config_editor(ws, "Dev", function(ok, err) saved = { ok, err } end)
-    enter_row(tree, "^%s*OPT=1", "2")
-    tree:on_key("accept", 1)
-    assert.is_true(saved[1], saved[2])
-
-    local cfg = read_user(root).projects.App.cmake.configurations.Dev
-    assert.same({ OPT = "2" }, cfg.options)
-    assert_dev_fields(cfg, "Dev")
-    -- A fresh load agrees, and the save did not change the item's intent.
-    local dev = find_project(load(root), "App"):get_configuration("Dev")
-    assert.same({ FOO = "bar" }, dev.env)
-    assert.equals(intent, dev._intent)
-  end)
-
-  it("a published configuration keeps every field and its intent", function()
-    local root = make_ws()
-    capture(function() cli.cmd_configuration("publish", root, "App", "Dev") end)
-    local published = read_json(root .. "/loomworks.json")
-    local ws = load(root)
-    local intent = find_project(ws, "App"):get_configuration("Dev")._intent
-    assert.equals("local+shared", intent)
-    local saved
-    local tree = open_config_editor(ws, "Dev", function(ok, err) saved = { ok, err } end)
-    enter_row(tree, "^%s*OPT=1", "2")
-    tree:on_key("accept", 1)
-    assert.is_true(saved[1], saved[2])
-
-    local cfg = read_user(root).projects.App.cmake.configurations.Dev
-    assert.same({ OPT = "2" }, cfg.options)
-    assert_dev_fields(cfg, "Dev")
-    -- The published snapshot is only rewritten by an explicit publish.
-    assert.same(published, read_json(root .. "/loomworks.json"))
-    assert.equals(intent, find_project(load(root), "App"):get_configuration("Dev")._intent)
-  end)
-
-  it("a rename through the dialog keeps every declared field", function()
-    local root = make_ws()
-    local saved
-    local tree = open_config_editor(load(root), "Dev", function(ok, err) saved = { ok, err } end)
-    enter_row(tree, "^%s*Name ", "Dev2")
-    tree:on_key("accept", 1)
-    assert.is_true(saved[1], saved[2])
-
-    local cfgs = read_user(root).projects.App.cmake.configurations
-    assert.is_nil(cfgs.Dev)
-    assert.same({ OPT = "1" }, cfgs.Dev2.options)
-    assert_dev_fields(cfgs.Dev2, "Dev2")
-  end)
-end)
 
 describe("launch editor dialog save", function()
   it("keeps the device block and other fields it does not show", function()

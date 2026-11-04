@@ -677,9 +677,6 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
             function P.match_version() return true end
             return P
         end
-        local lw = require("loomworks")
-        local rescan_saved = lw.rescan_tools
-        lw.rescan_tools = function() error("in-process rescan in daemon mode") end
         local ok_, err_ = pcall(function()
             serve()
             local r = call("Sdks/1.detect", { provider = "fake_c2c" })
@@ -714,7 +711,6 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
             -- The editor's model never declared it.
             for _, sdk in ipairs(ws:sdks() or {}) do assert.not_equals(skey, sdk.key) end
         end)
-        lw.rescan_tools = rescan_saved
         package.preload["loomworks.sdks.fake_c2c"] = nil
         package.loaded["loomworks.sdks.fake_c2c"] = nil
         assert(ok_, err_)
@@ -847,32 +843,5 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         ov.run_profile_action, ov.run_configuration_action, ov.run_configuration_clean = saved[1], saved[2], saved[3]
         rt.new = rt_new
         assert(ok_, err_)
-    end)
-
-    -- Step 5o C2c-2: the project row's `D` means the same in the deprecated
-    -- `in-process` mode (no observer): its build state, then its declaration.
-    it("in-process mode: the project row's D confirms, then deletes its build state and its declaration", function()
-        local uv = vim.uv or vim.loop
-        assert.is_nil(observer.current())
-        cws = ws
-        local unit
-        for _, p in pairs(ws._profiles) do
-            if p.key == "dev" and not p._removed then unit = p:projects()[1]._config_unit end
-        end
-        local bd = assert(unit and unit:build_dir(), "the dev profile's unit has a build dir")
-        vim.fn.mkdir(bd, "p")
-        local fh = assert(io.open(bd .. "/out.txt", "w")); fh:write("x"); fh:close()
-        local prow
-        for _, x in ipairs(status_source.read(ws).view.projects) do
-            if x.key == "app" then prow = x end
-        end
-        assert.is_not_nil(prow)
-        local c = call("Maintenance/1.execute_deletion", { target = { project = prow } })
-        assert.equals("confirm", c.outcome, vim.inspect(c))
-        assert.is_not_nil(uv.fs_stat(bd))
-        local r = call("Maintenance/1.execute_deletion", { target = { project = prow }, plan = c.plan, yes = true })
-        assert.equals("ok", r.outcome, vim.inspect(r))
-        assert.is_nil(uv.fs_stat(bd))
-        for _, proj in pairs(ws:get_projects()) do assert.not_equals("app", proj.key) end
     end)
 end)

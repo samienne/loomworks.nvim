@@ -18,8 +18,8 @@ local M = {}
 M.IN_PROCESS = "in-process"
 M.DAEMON = "daemon"
 
---- The CLI's transition default (spec §19.1; the editor's is `daemon`,
---- `editor_select`).
+--- The CLI's transition default (spec §19.1; the editor has no runtime
+--- mode: it is always a client of the workspace daemon, §19.16).
 M.DEFAULT = M.IN_PROCESS
 
 M.MODES = { M.IN_PROCESS, M.DAEMON }
@@ -139,40 +139,6 @@ function M.select(configured, opts)
     end
     if truthy(getenv("CI")) then return { daemon = false, mode = mode, reason = "CI", warning = warning } end
     return { daemon = true, mode = mode, warning = warning }
-end
-
---- @alias loomworks.daemon.RuntimeSource "setup"|"default"
-
---- @class loomworks.daemon.EditorSelection
---- @field mode string the effective mode (`in-process` | `daemon`)
---- @field source loomworks.daemon.RuntimeSource the source that decided
---- @field daemon boolean the editor is a client of the workspace daemon
---- @field deprecated boolean|nil the deprecated in-process editor (the Runtime line's note)
---- @field warning string|nil an ignored setup value (the Runtime line's note)
-
---- The Runtime line's note on the deprecated in-process editor (spec/ui.md §1.1).
-M.DEPRECATED_NOTE = "deprecated: the in-process editor will be removed"
-
---- The editor's runtime mode (spec §19.1, step 5s). `daemon` is the default;
---- of the setup option `runtime.mode` only `"in-process"` changes it — the
---- deprecated in-process editor, until step 6b — and an explicit `"daemon"`
---- is shown as `setup`. The environment (`LOOMWORKS_RUNTIME`,
---- `LOOMWORKS_NO_DAEMON`, `CI`) and lw's `runtime-mode` setting do not apply
---- to the editor. An invalid value is reported in `warning` and ignored.
---- @param opts? { configured?: string }
---- @return loomworks.daemon.EditorSelection
-function M.editor_select(opts)
-    local configured = opts and opts.configured
-    if configured == M.IN_PROCESS then
-        return { mode = M.IN_PROCESS, source = "setup", daemon = false, deprecated = true }
-    end
-    if configured == M.DAEMON then return { mode = M.DAEMON, source = "setup", daemon = true } end
-    local sel = { mode = M.DAEMON, source = "default", daemon = true }
-    if configured ~= nil and configured ~= "" then
-        sel.warning = string.format("runtime.mode '%s' is not one of in-process|daemon; ignoring it",
-            tostring(configured))
-    end
-    return sel
 end
 
 return M

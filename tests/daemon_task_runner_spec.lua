@@ -39,7 +39,7 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
             opts = { environ = function() return { PATH = "x" } end },
         }, observer.Observer)
         observer._current = o
-        observer._selection = { mode = "daemon", source = "default", daemon = true }
+        observer._attached_root = "/w"
         return o
     end
 
@@ -104,7 +104,7 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
         package.loaded["overseer.util"] = saved.util
         if obs then
             observer._current = nil
-            require("loomworks.daemon.observer")._selection = nil
+            require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
         pcall(function() core:shutdown() end)

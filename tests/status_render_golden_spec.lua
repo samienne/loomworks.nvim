@@ -1,7 +1,9 @@
 -- The status page body renders the same lines, highlights and line actions
 -- whatever source its state comes from (spec §19.13 "Two sources, one
--- shape"): these fixtures pin the in-process page, every fold open, against
--- recorded output (tests/fixtures/status_golden/<name>.txt). Regenerate a
+-- shape"): these fixtures pin the page, every fold open, against recorded
+-- output (tests/fixtures/status_golden/<name>.txt). The page reads the
+-- fixture's view as the daemon's (a fake observer holds it; the view is
+-- built by the daemon's view_state from a fixture model). Regenerate a
 -- recording only for an intended change of the page:
 --   LOOMWORKS_UPDATE_GOLDEN=1 make test-file FILE=tests/status_render_golden_spec.lua
 
@@ -221,12 +223,42 @@ local function render_fixture_impl(name)
     if core.view_workspace then patch("view_workspace", function() return core:view_workspace() end) end
     patch("daemon_runtime_line", function() return nil end)
 
+    -- The fixture's view held as the daemon's, by a fake observer.
+    local observer, views = require("loomworks.daemon.observer"), require("loomworks.views")
+    local n = 0
+    local view = core:get_workspace():view_workspace({ id = function() n = n + 1; return "o" .. n end })
+    local obs = { state = "connected", root = "/root" }
+    function obs:workspace_view() return view end
+    function obs:tasks() return {} end
+    function obs:_clock() return 0 end
+    -- (Only the body reads it: every other section keeps its own source.)
+    local ss = require("loomworks.status_source")
+    local orig_read = ss.read
+    ss.read = function(...)
+        local saved_obs = { observer._current, observer._attached_root }
+        observer._current, observer._attached_root = obs, "/root"
+        local rok, body = pcall(orig_read, ...)
+        observer._current, observer._attached_root = saved_obs[1], saved_obs[2]
+        if not rok then error(body, 0) end
+        return body
+    end
+    views.set(obs, "header", lw.view_header())
+    -- The debug adapter records as `DebugConfig/1.adapters` answers them
+    -- (the daemon builds them from the same working copy).
+    local eo = require("loomworks.daemon.editor_ops")
+    local orig_adapters = eo.debug_adapters
+    eo.debug_adapters = function()
+        return require("loomworks.debug_config").adapter_records(core:get_workspace())
+    end
+
     local ok, text = pcall(function()
         local tree = Tree.new(require("loomworks.ui.status")._render_fn)
         tree.width = 100
         setmetatable(tree._folds, { __index = function() return true end })
         return render_text(tree)
     end)
+    views.clear(obs)
+    ss.read, eo.debug_adapters = orig_read, orig_adapters
     for k, v in pairs(saved) do lw[k] = v end
     assert(ok, text)
     return text
@@ -365,35 +397,28 @@ describe("status page rendering (golden)", function()
     end
 end)
 
--- The refused-state hint (spec ui.md §1.4): the keys in the `in-process`
--- mode; in `daemon` mode, where those keys are refused while no workspace is
--- loaded (core §19.16 "Model writes"), the lw commands instead.
+-- The refused-state hint (spec ui.md §1.4): the keys are refused while no
+-- workspace is loaded (core §19.16 "Model writes"): the lw commands instead.
 describe("status page refused-state hint", function()
-    local function render(mode, trust)
+    local function render(trust)
         local lw = require("loomworks")
-        local saved = { lw.get_workspace, lw.view_header, lw.runtime_mode }
+        local saved = { lw.get_workspace, lw.view_header }
         lw.get_workspace = function() return nil end
         lw.view_header = function()
             return { state = "refused", root = "/root", error = "refused", trust = trust, version = "test" }
         end
-        lw.runtime_mode = function() return mode end
         local ok, lines = pcall(function()
             local tree = Tree.new(require("loomworks.ui.status")._render_fn)
             tree.width = 100
             return (tree:render())
         end)
-        lw.get_workspace, lw.view_header, lw.runtime_mode = saved[1], saved[2], saved[3]
+        lw.get_workspace, lw.view_header = saved[1], saved[2]
         assert(ok, lines)
         return lines[#lines]
     end
 
-    it("names the keys in the in-process mode", function()
-        assert.matches("[T] review & trust  [U] discard working copy", render("in-process", "user"), 1, true)
-        assert.matches("[<C-n>] reset build cache", render("in-process", "cache"), 1, true)
-    end)
-
-    it("names the lw commands in daemon mode", function()
-        assert.equals("lw trust  ·  lw trust --discard", vim.trim(render("daemon", "user")))
-        assert.equals("lw nuke", vim.trim(render("daemon", "cache")))
+    it("names the lw commands", function()
+        assert.equals("lw trust  ·  lw trust --discard", vim.trim(render("user")))
+        assert.equals("lw nuke", vim.trim(render("cache")))
     end)
 end)

@@ -355,24 +355,6 @@ describe("the observer (§19.16)", function()
         end
     end
 
-    it("does nothing in the (deprecated) in-process mode", function()
-        assert.is_nil(observer.attach(ws.root, { configured = "in-process" }))
-        assert.is_true(observer.selection().deprecated)
-        assert.is_nil(observer.current())
-        assert.same({}, require("loomworks").get_daemon_tasks())
-    end)
-
-    it("an in-process attach after a daemon one leaves daemon mode for the views too", function()
-        local views = require("loomworks.views")
-        obs = attach({ relay = stub_relay({}) })
-        assert.is_table(obs)
-        assert.equals("unloaded", views.get("header").state)
-        assert.is_nil(observer.attach(ws.root, { configured = "in-process" }))
-        assert.is_nil(observer.current())
-        -- The views are built in-process again (the loaded model's header).
-        assert.equals("loaded", views.get("header").state)
-    end)
-
     it("subscribes to /tasks and /workspace when offered (step 5g.3) and observes through them", function()
         s = new_server(root)
         obs = attach()
@@ -560,9 +542,9 @@ describe("the observer (§19.16)", function()
     it("takes the views' initial state, applies each update, re-gets after a seq gap (step 5j)", function()
         local lw = require("loomworks")
         local store = require("loomworks.views")
-        -- In-process (no subscription yet): built from the loaded model.
-        assert.equals("in-process", store.source("header"))
-        assert.equals("loaded", lw.view_header().state)
+        -- Nothing attached yet: no view, nothing built in-process.
+        assert.is_nil(store.source("header"))
+        assert.is_nil(lw.view_header())
         s = new_server(root)
         obs = attach()
         assert.is_true(vim.wait(10000, function()
@@ -603,17 +585,18 @@ describe("the observer (§19.16)", function()
             local rec = store.projects_index().projects[1]
             return rec and rec.active.state == "built"
         end, 10))
-        -- Stopping drops the daemon's tables; still in `daemon` mode nothing
-        -- is built in-process (step 6b-alpha): unloaded, no project index.
+        -- Stopping drops the daemon's tables; the root still attached,
+        -- nothing is built in-process (step 6b-alpha): unloaded, no project
+        -- index.
         obs:stop()
-        assert.equals("in-process", store.source("header"))
-        assert.equals("in-process", store.source("projects"))
+        assert.is_nil(store.source("header"))
+        assert.is_nil(store.source("projects"))
         assert.equals("unloaded", lw.view_header().state)
         assert.equals(ws.root, lw.view_header().root)
         assert.is_nil(store.projects_index())
-        -- Detached (the deprecated in-process editor): built from its model.
+        -- Detached: no view at all.
         observer.detach()
-        assert.equals("loaded", lw.view_header().state)
+        assert.is_nil(lw.view_header())
     end)
 
     it("a removed /views drops the daemon's views and re-renders the status page (daemon_view_changed)", function()
@@ -627,7 +610,7 @@ describe("the observer (§19.16)", function()
         on("daemon_view_changed", function(d) seen[#seen + 1] = d and d.view or "all" end)
         s.srv:registry():unmount("/views")
         assert.is_true(vim.wait(5000, function()
-            return store.source("header") == "in-process" and store.source("projects") == "in-process"
+            return store.source("header") == nil and store.source("projects") == nil
         end, 10))
         table.sort(seen)
         assert.same({ "header", "projects", "tests", "workspace" }, seen)
@@ -646,7 +629,7 @@ describe("the observer (§19.16)", function()
         local seen = 0
         on("daemon_view_changed", function() seen = seen + 1 end)
         obs:stop()
-        assert.equals("in-process", store.source("header"))
+        assert.is_nil(store.source("header"))
         assert.equals(1, seen)
     end)
 
@@ -1666,12 +1649,11 @@ describe("the editor's load (step 6b-alpha)", function()
     end)
     after_each(function()
         observer.attach = orig_attach
-        lw._runtime_mode_config = nil
         observer.detach()
         pcall(function() core:shutdown() end)
     end)
 
-    it("in daemon mode attaches by root and loads, scans and tracks nothing in-process", function()
+    it("attaches by root and loads, scans and tracks nothing in-process", function()
         local initializing = 0
         local function on_init() initializing = initializing + 1 end
         events.on("workspace_initializing", on_init)
@@ -1685,15 +1667,5 @@ describe("the editor's load (step 6b-alpha)", function()
         assert.equals("uninitialized", core:state())
         assert.equals(0, initializing)
         assert.is_nil(lw.get_workspace())
-    end)
-
-    it("in the deprecated in-process mode loads the model as before (and records the selection)", function()
-        lw._runtime_mode_config = "in-process"
-        lw._load(root)
-        assert.equals(1, #attached)
-        assert.equals("in-process", attached[1].opts.configured)
-        assert.is_true(vim.wait(30000, function() return core:state() == "initialized" end, 20))
-        assert.is_not_nil(core:get_workspace())
-        assert.equals(core:get_workspace(), observer.loaded_workspace())
     end)
 end)

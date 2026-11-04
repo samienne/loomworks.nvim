@@ -39,17 +39,6 @@ describe("runtime mode (§19.1)", function()
         assert.equals("daemon", m)
         assert.truthy(w)
     end)
-    it("the plugin option resolves the same way and is inert", function()
-        local lw = require("loomworks")
-        local saved, saved_ci = lw._runtime_mode_config, vim.env.CI
-        vim.env.CI = nil
-        lw._runtime_mode_config = "daemon"
-        local mode, source = lw.runtime_mode()
-        lw._runtime_mode_config = saved
-        vim.env.CI = saved_ci
-        assert.equals("daemon", mode)
-        assert.equals("setup", source)
-    end)
 end)
 
 describe("version identity (§19.9)", function()

@@ -42,7 +42,6 @@ return {
         ["lua/loomworks/daemon/observer.lua"] = {
             "loomworks.daemon.client",
             "loomworks.daemon.inspect",
-            "loomworks.daemon.runtime",
         },
         ["lua/loomworks/daemon/remote_task.lua"] = {
             "loomworks.operation",
@@ -55,7 +54,6 @@ return {
         },
         ["lua/loomworks/init.lua"] = {
             "loomworks.core",
-            "loomworks.daemon.runtime",
             "loomworks.events",
             "loomworks.log",
             "loomworks.modules",
@@ -150,8 +148,10 @@ return {
         -- goes to the view itself, not the workspace's logger.
         -- 59 -> 57, auto_load.lua / reload.lua / plugin/loomworks.lua 1 -> 0:
         -- step 6b-α A1a (`daemon` mode loads no model: the observer by root,
-        -- `lw.loaded_root`, `lw.shutdown`); 57 -> 55: A1b (the facade).
-        ["lua/loomworks/init.lua"] = 55,
+        -- `lw.loaded_root`, `lw.shutdown`); 57 -> 55: A1b (the facade);
+        -- 55 -> 26: the plugin runs in daemon mode only (no in-process
+        -- branches, getters or pickers).
+        ["lua/loomworks/init.lua"] = 26,
         -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
         -- routes the test adapters' reads through test_source.lua; its one
         -- site is the in-process source's model read (the daemon source
@@ -204,7 +204,6 @@ return {
         -- Nothing is built or run in-process for either.
         ["lua/loomworks/daemon/facade.lua"] = 1,
         ["lua/loomworks/daemon/launch_ref.lua"] = 1,
-        ["lua/loomworks/init.lua"] = 4,
         -- 5 -> 4: step 5k C2 — LaunchTarget:debug resolves one spec for
         -- run and debug (§8.9.6): one nvim-dap start, not one per kind.
         ["lua/loomworks/launch_target.lua"] = 4,
@@ -217,12 +216,8 @@ return {
         ["lua/loomworks/profile.lua"] = 3,
         ["lua/loomworks/session_tracker.lua"] = 5,
         ["lua/loomworks/target.lua"] = 3,
-        -- ui/actions.lua 12 -> 0 (deleted), ui/model_calls.lua 0 -> 6: step 5o
-        -- C2d-1 moves the status page's in-process builds, configures and
-        -- cleans (the `in-process` mode's bodies of Build/1.build / configure
-        -- / clean) to ui/model_calls.lua; in `daemon` mode they are only calls
-        -- by row id.
-        ["lua/loomworks/ui/model_calls.lua"] = 6,
+        -- ui/actions.lua 12 -> 0, ui/model_calls.lua 0 -> 6 -> 0 (deleted): step 5o
+        -- C2d-1 moved the in-process bodies there; daemon-only removed them.
     },
     -- observer.lua: conn:call(M.ROOT.object, M.ROOT.iface, ...) for describe
     -- and subscribe, the subscribe args `iface = want.iface` (want is one of

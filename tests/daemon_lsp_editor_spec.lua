@@ -43,7 +43,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
         handlers = {}
         local obs = require("loomworks.daemon.observer")._current
         if obs then views.clear(obs) end
-        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._selection = nil, nil
+        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._attached_root = nil, nil
         views.daemon_root(nil)
         lsp._reset_gate()
         lsp._reset_withheld()
@@ -76,7 +76,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
         -- Never spawn a relay from a test: a lost connection only records.
         function obs:_spawn() end
         require("loomworks.daemon.observer")._current = obs
-        require("loomworks.daemon.observer")._selection = { mode = "daemon", source = "default", daemon = true }
+        require("loomworks.daemon.observer")._attached_root = "/w"
         -- (What attach does: no view is built in-process, step 6b-alpha.)
         views.daemon_root(ws.root)
         return obs, calls
@@ -396,7 +396,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
 
         it("a lost connection unloads the workspace until the daemon reports loaded", function()
             local obs = fake_obs(function(m) if m == "get" then return dstate() end end)
-            require("loomworks.daemon.observer")._selection = { mode = "daemon", source = "env", daemon = true }
+            require("loomworks.daemon.observer")._attached_root = "/w"
             obs:_fetch_lsp()
             wait_phase("loaded")
             local seen = 0
@@ -795,9 +795,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
     end)
 
     describe("views and launches while unloaded (§19.13, §19.16)", function()
-        it("the views are never built from the model in daemon mode", function()
-            assert.equals("loaded", views.header().state)
-            assert.equals(1, #views.projects_index().projects)
+        it("the views are never built from the model", function()
             local obs = fake_obs()
             assert.equals("unloaded", views.header().state)
             assert.is_nil(views.projects_index())

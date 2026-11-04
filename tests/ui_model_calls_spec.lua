@@ -38,209 +38,6 @@ describe("ui.model_calls", function()
         assert.has_error(function() model.call(nil, "set_active", {}) end)
     end)
 
-    -- C0: each method's body is the in-process write the editor ran before.
-    -- The view-model and the loomworks API are stubbed to record what each
-    -- method passes and to check how its answer becomes the outcome. From
-    -- C2a an entity param is a row: in-process, the object bound to it.
-    describe("in-process bodies", function()
-        local saved, calls
-        local function recorder(ret)
-            return setmetatable({}, { __index = function(_, name)
-                return function(...)
-                    calls[#calls + 1] = { name, ... }
-                    if type(ret[name]) == "function" then return ret[name](...) end
-                    return true
-                end
-            end })
-        end
-        local WS, P, CS, PR, CFG, L, SDK, U = { root = "/w" }, {}, {}, {}, {}, {}, {}, {}
-        -- The rows the in-process view bound to the objects (step 5o C2a).
-        local ss = require("loomworks.status_source")
-        local PROW, CSROW, LROW, CROW = { key = "p" }, { name = "cs" }, { key = "l" }, { key = "c" }
-        local SDKROW = { key = "ohos-1" }
-        ss.bind(PROW, P); ss.bind(CSROW, CS); ss.bind(LROW, L); ss.bind(CROW, CFG); ss.bind(SDKROW, SDK)
-        before_each(function()
-            calls = {}
-            saved = { package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
-            package.loaded["loomworks.workspace_view"] = recorder({
-                set_description = function() return false end,
-                execute_create_profile = function() return P end,
-                execute_create_config_set = function() return nil, "taken" end,
-                execute_create_config_set_from_candidate = function() return CS end,
-                execute_add_project = function() return true, nil, PR end,
-                execute_save_launch_config = function() return true, nil, L end,
-                add_sdk = function() return SDK end,
-                remove_sdk = function() return false, "in use" end,
-                sdk_detect = function() return { outcome = "ok", providers = { { id = "ohos", label = "OHOS",
-                    found = { { path = "/sdk", version = "5" } } } } } end,
-                -- Confirms without `yes`; with it, ends (ok) through `cb`.
-                execute_deletion = function(_, _, plan, yes, cb)
-                    if not yes then return cb({ outcome = "confirm", lines = { "Delete x:" }, plan = "T" }) end
-                    cb({ outcome = plan == "T" and "ok" or "refused" })
-                end,
-                nuke = function(_, _, yes)
-                    if not yes then return { outcome = "confirm", lines = { "Will delete" }, plan = "N" } end
-                    return { outcome = "ok" }
-                end,
-            })
-            package.loaded["loomworks"] = recorder({
-                trust_user_prefs = function() return "trusted" end,
-            })
-            -- (With no workspace given or loaded, the setup selection: in-process.)
-            rawset(package.loaded["loomworks"], "runtime_mode", function() return "in-process" end)
-            rawset(package.loaded["loomworks"], "get_workspace", function() return nil end)
-        end)
-        after_each(function()
-            package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] = saved[1], saved[2]
-        end)
-        local function run(ws, method, params)
-            local got
-            model.call(ws, method, params, function(r) got = r end)
-            return got
-        end
-
-        it("passes each method's params to the write the editor ran before", function()
-            local m = { a = 1 }
-            local r = {}
-            r[#r + 1] = run(WS, "Workspace/1.publish", {})
-            r[#r + 1] = run(WS, "Workspace/1.set_intent", { item = PROW, intent = "shared" })
-            r[#r + 1] = run(WS, "Workspace/1.set_description", { item = { _kind = "launch", _row = LROW }, text = "t" })
-            r[#r + 1] = run(WS, "Profiles/1.add_tool", { profile = PROW, tool = "gcc" })
-            r[#r + 1] = run(WS, "Profiles/1.set_active", { profile = PROW })
-            -- The dialog's mappings: project row -> configuration choice,
-            -- each bound to its object (never resolved by name); the write
-            -- gets the objects (WP-B).
-            local PRJROW, CHOICE = { key = "app" }, { name = "c" }
-            ss.bind(PRJROW, PR)
-            CFG._project = PR
-            ss.bind(CHOICE, CFG)
-            local dm = { [PRJROW] = CHOICE }
-            local pm = { [PR] = CFG }
-            r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Dev", mappings = dm })
-            r[#r + 1] = run(WS, "ConfigSets/1.add", { candidate = { name = "Auto", auto = true, candidate = "auto:t" } })
-            r[#r + 1] = run(WS, "ConfigSets/1.update", { config_set = CSROW, name = "D2", mappings = dm })
-            r[#r + 1] = run(WS, "Projects/1.add", { key = "app", type = "cmake", path = "app", mappings = m, tool = m })
-            r[#r + 1] = run(nil, "Projects/1.configuration_save",
-                { project = PROW, configuration = CROW, name = "Debug", fields = m })
-            r[#r + 1] = run(nil, "Projects/1.launch_save", { project = PROW, launch = LROW, name = "run", data = m })
-            r[#r + 1] = run(nil, "Projects/1.variable_save", { project = PROW, variable = "v", name = "w", data = m })
-            r[#r + 1] = run(nil, "Projects/1.type_config_set", { project = PROW, field = "f", value = 3 })
-            r[#r + 1] = run(nil, "Projects/1.deploy_save", { project = PROW, deploy = m })
-            r[#r + 1] = run(WS, "Sdks/1.add", { provider = "ohos", path = "/sdk" })
-            r[#r + 1] = run(WS, "Sdks/1.remove", { sdk = SDKROW })
-            assert.same({
-                { "publish", WS },
-                { "set_intent", P, "shared" },
-                { "set_description", L, "t" },
-                { "add_profile_tool", P, "gcc" },
-                { "activate_profile", P },
-                { "execute_create_config_set", WS, "Dev", pm },
-                { "execute_create_config_set_from_candidate", WS, "auto:t" },
-                { "execute_edit_config_set", CS, "D2", pm },
-                { "execute_add_project", WS, "app", "cmake", "app", { mappings = m, tool_entry = m } },
-                { "execute_save_configuration", P, CFG, "Debug", m },
-                { "execute_save_launch_config", P, L, "run", m },
-                { "execute_save_variable", P, "v", "w", m },
-                { "save_type_config_field", P, "f", 3 },
-                { "save_deploy", P, m },
-                { "add_sdk", WS, "ohos", "/sdk" },
-                { "remove_sdk", WS, SDK },
-            }, calls)
-            assert.same({ outcome = "ok" }, r[1])
-            assert.same({ outcome = "ok", changed = false }, r[3])
-            assert.same({ outcome = "refused", message = "taken" }, r[6])
-            assert.equals(CS, r[7].config_set)
-            assert.equals(PR, r[9].project)
-            assert.equals(L, r[11].launch)
-            assert.equals(SDK, r[15].sdk)
-            assert.same({ outcome = "refused", message = "in use" }, r[16])
-        end)
-
-        it("names a project's configuration, launch and variable by their rows (step 5o C2b)", function()
-            local r = {}
-            r[#r + 1] = run(nil, "Projects/1.configuration_remove", { project = PROW, configuration = CROW })
-            r[#r + 1] = run(nil, "Projects/1.launch_remove", { project = PROW, launch = LROW })
-            r[#r + 1] = run(nil, "Projects/1.variable_remove", { project = PROW, variable = "v" })
-            r[#r + 1] = run(WS, "Projects/1.candidates", { path = "/w/sub/app", type = "cmake" })
-            -- A row the in-process view did not bind names nothing: refused,
-            -- nothing written.
-            r[#r + 1] = run(nil, "Projects/1.launch_remove", { project = PROW, launch = { key = "l" } })
-            r[#r + 1] = run(nil, "Projects/1.type_config_set", { project = { key = "p" }, field = "f" })
-            assert.same({ "execute_delete_configuration", P, CFG }, calls[1])
-            assert.same({ "execute_delete_launch_config", P, L }, calls[2])
-            assert.same({ "execute_delete_variable", P, "v" }, calls[3])
-            assert.same({ "derive_key_and_path", "/w", "/w/sub/app", "app" }, calls[4])
-            assert.equals(4, #calls)
-            assert.equals("ok", r[4].outcome)
-            assert.equals("refused", r[5].outcome)
-            assert.equals("refused", r[6].outcome)
-        end)
-
-        it("resolves each deletion target's row to its object; confirm, then the deletion with its plan (step 5o C2c-2)", function()
-            local BD, UNIT = {}, setmetatable({ mark_deleting = function() end }, {})
-            local OROW, UROW, PRROW = { key = "gone/Debug" }, { project = "p" }, { key = "app" }
-            ss.bind(OROW, { build_dir_obj = BD }); ss.bind(UROW, { _config_unit = UNIT }); ss.bind(PRROW, PR)
-            local c = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW } })
-            assert.same({ outcome = "confirm", lines = { "Delete x:" }, plan = "T" }, c)
-            local r = {}
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW }, plan = "T", yes = true })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { unit = UROW }, plan = "T", yes = true })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { build_dir = OROW }, plan = "T", yes = true })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { project = PRROW }, plan = "T", yes = true })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion",
-                { target = { stray_dir = "/w/.nvim/build/x" }, plan = "T", yes = true })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { orphans = true }, plan = "old", yes = true })
-            assert.same({ { outcome = "ok" }, { outcome = "ok" }, { outcome = "ok" }, { outcome = "ok" },
-                { outcome = "ok" }, { outcome = "refused" } }, r)
-            local targets = {}
-            for i, call in ipairs(calls) do
-                assert.equals("execute_deletion", call[1])
-                assert.equals(WS, call[2])
-                targets[i] = call[3]
-            end
-            assert.same({ { profile = P }, { profile = P }, { unit = UNIT }, { build_dir = BD }, { project = PR },
-                { stray_dir = "/w/.nvim/build/x" }, { orphans = true } }, targets)
-            assert.same({ nil, false }, { calls[1][4], calls[1][5] })
-            assert.same({ "T", true }, { calls[2][4], calls[2][5] })
-        end)
-
-        it("refuses a deletion of an unbound row, of no single target, and `yes` without the plan; nothing runs", function()
-            local r = {}
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = { key = "p" } } })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { unit = { project = "p" } } })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = {} })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW, orphans = true } })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW }, yes = true })
-            r[#r + 1] = run(WS, "Maintenance/1.nuke", { yes = true })
-            for i, x in ipairs(r) do assert.equals("refused", x.outcome, i) end
-            assert.same({}, calls)
-        end)
-
-        it("detects SDKs; an SDK row the in-process view did not bind is refused, nothing removed (step 5o C2c-1)", function()
-            local r = run(WS, "Sdks/1.detect", { provider = "ohos" })
-            assert.same({ { "sdk_detect", "ohos" } }, calls)
-            assert.same({ { path = "/sdk", version = "5" } }, r.providers[1].found)
-            r = run(WS, "Sdks/1.remove", { sdk = { key = "ohos-1" } })
-            assert.equals("refused", r.outcome)
-            assert.equals(1, #calls)
-        end)
-
-        it("runs the trust review and the rescan as before; the nuke confirms, then runs with its plan", function()
-            assert.same({ outcome = "ok", trust = "trusted" }, run(WS, "Workspace/1.trust_accept", {}))
-            run(WS, "Toolchains/1.rescan", {})
-            assert.same({ outcome = "confirm", lines = { "Will delete" }, plan = "N" }, run(nil, "Maintenance/1.nuke", {}))
-            assert.same({ outcome = "ok" }, run(nil, "Maintenance/1.nuke", { plan = "N", yes = true, root = "/x" }))
-            assert.same({ { "trust_user_prefs" }, { "rescan_tools" }, { "nuke", nil, nil, false },
-                { "nuke", nil, "N", true } }, calls)
-        end)
-
-        it("names an unbound row's entity by nothing (refused by the command), never by its key", function()
-            package.loaded["loomworks.workspace_view"] = saved[1]
-            local got = run(WS, "Workspace/1.set_intent", { item = { key = "p" }, intent = "shared" })
-            assert.equals("refused", got.outcome)
-        end)
-    end)
-
     -- Step 5o C2c-1: in `daemon` mode the SDK section's Sdks/1 calls and
     -- `L`'s Toolchains/1.rescan are calls to the workspace daemon (a fake
     -- observer here; the real one in tests/daemon_model_calls_e2e_spec.lua):
@@ -522,25 +319,23 @@ describe("ui.model_calls", function()
     end)
 
     -- Step 5o: with no workspace loaded in the editor (its load failed, or a
-    -- trust or schema refusal unloaded it) the mode is the setup selection;
-    -- in `daemon` mode every method is refused — nothing sent, nothing run
-    -- in-process — and the recovery methods name their lw command (spec
-    -- §19.16 "Model writes").
+    -- trust or schema refusal unloaded it) every method is refused — nothing
+    -- sent, nothing run in-process — and the recovery methods name their lw
+    -- command (spec §19.16 "Model writes").
     describe("daemon mode: no loaded workspace", function()
-        local saved, ran, sent, mode, loaded
+        local saved, ran, sent, loaded
         before_each(function()
-            ran, sent, mode, loaded = {}, {}, "daemon", nil
+            ran, sent, loaded = {}, {}, nil
             saved = { package.loaded["loomworks.daemon.observer"], package.loaded["loomworks.daemon.editor_ops"],
                 package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
             package.loaded["loomworks.daemon.observer"] = {
                 current = function() return nil end,
-                loaded_workspace = function() return nil end,
                 -- (Any request reaching an observer would be a send.)
                 request = function(_, method) sent[#sent + 1] = method end,
             }
             package.loaded["loomworks.daemon.editor_ops"] = {
-                -- A root attached in `daemon` mode (`loaded`) whose observer
-                -- is gone: the editor holds no model (step 6b-alpha).
+                -- A root attached (`loaded`) whose observer is gone: the
+                -- editor holds no model (step 6b-alpha).
                 daemon_of = function() return loaded ~= nil, nil end,
                 carrier = function() return nil end,
             }
@@ -548,7 +343,6 @@ describe("ui.model_calls", function()
                 return function()
                     if name == "get_workspace" then return nil end
                     ran[#ran + 1] = name
-                    if name == "runtime_mode" then return mode end
                     return { outcome = "ok" }
                 end
             end
@@ -566,9 +360,7 @@ describe("ui.model_calls", function()
             assert.equals(1, n)
             return got
         end
-        local function bodies()
-            return vim.tbl_filter(function(n) return n ~= "runtime_mode" end, ran)
-        end
+        local function bodies() return ran end
 
         it("refuses the nuke, naming lw nuke; nothing sent or run", function()
             local r = run("Maintenance/1.nuke")
@@ -599,17 +391,8 @@ describe("ui.model_calls", function()
             assert.same({}, sent)
         end)
 
-        it("in the in-process mode the bodies still run on the root fallback", function()
-            mode = "in-process"
-            run("Maintenance/1.nuke")
-            run("Workspace/1.trust_accept")
-            run("Workspace/1.delete_user_prefs")
-            assert.same({ "nuke", "trust_user_prefs", "delete_user_prefs" }, bodies())
-        end)
-
-        it("an attached root whose observer is gone is refused as before (no setup selection read)", function()
+        it("an attached root whose observer is gone is refused as no longer loaded", function()
             loaded = { root = "/w" }
-            mode = "in-process"
             assert.same({ outcome = "refused", message = "nuke: the workspace is no longer loaded" },
                 run("Maintenance/1.nuke"))
             assert.same({}, ran)

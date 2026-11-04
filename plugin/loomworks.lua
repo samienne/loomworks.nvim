@@ -97,7 +97,7 @@ vim.api.nvim_create_user_command("LoomworksDaemon", function(cmd)
   elseif sub == "status" then
     -- With the host binary a launch would use, and why (spec §19.16).
     local sel = lw.host_binary_selection()
-    vim.notify("loomworks runtime: " .. (lw.daemon_runtime_line() or "in-process (default)")
+    vim.notify("loomworks runtime: " .. (lw.daemon_runtime_line() or "no workspace daemon observed")
       .. "\nhost lw: " .. require("loomworks.provision.select").describe(sel), vim.log.levels.INFO)
   else
     vim.notify("loomworks: unknown :LoomworksDaemon subcommand '" .. sub .. "' (connect, status)",

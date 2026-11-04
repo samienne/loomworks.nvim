@@ -2,8 +2,8 @@
 ---
 --- Covers the shared `reserved_compiler` helper plus the strip-at-build
 --- enforcement in the cmake and meson modules. Reject-at-edit
---- (`Project:save_configuration`) is exercised in integration_spec.lua where
---- a real Workspace/Project is already assembled.
+--- (`Project:save_configuration`) is the workspace daemon's, tested in the
+--- loomworks repository.
 
 local reserved = require("loomworks.reserved_compiler")
 local cmake = require("loomworks.modules.cmake")

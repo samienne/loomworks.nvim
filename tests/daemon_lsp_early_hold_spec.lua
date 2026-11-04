@@ -18,7 +18,7 @@ local H = require("tests.daemon_helpers")
 local LSP_FEATURE = observer.LSP.feature
 
 describe("daemon mode: a buffer held before the workspace loads (§9.7)", function()
-    local root, core, real_attach, saved_mode, saved_deps
+    local root, core, real_attach, saved_deps
     local obs, calls
 
     --- What `observer.attach` does, without a daemon: an observer of `r`,
@@ -39,7 +39,7 @@ describe("daemon mode: a buffer held before the workspace loads (§9.7)", functi
         }, observer.Observer)
         function obs:_spawn() end
         observer._current = obs
-        observer._selection = { mode = "daemon", source = "default", daemon = true }
+        observer._attached_root = "/w"
         views.daemon_root(r)
         return obs
     end
@@ -53,7 +53,6 @@ describe("daemon mode: a buffer held before the workspace loads (§9.7)", functi
         pcall(function() core:shutdown() end)
         real_attach = observer.attach
         observer.attach = function(r) return stub_attach(r) end
-        saved_mode = lw._runtime_mode_config
         -- setup's hard dependencies, where the test environment lacks them.
         saved_deps = { overseer = package.loaded["overseer"], snacks = package.loaded["snacks"] }
         for _, dep in ipairs({ "overseer", "snacks" }) do
@@ -67,12 +66,11 @@ describe("daemon mode: a buffer held before the workspace loads (§9.7)", functi
     after_each(function()
         observer.attach = real_attach
         if observer._current then views.clear(observer._current) end
-        observer._current, observer._selection = nil, nil
+        observer._current, observer._attached_root = nil, nil
         views.daemon_root(nil)
         lsp.register("fakesrv", {})
         lsp._reset_gate()
         lsp._reset_withheld()
-        lw._runtime_mode_config = saved_mode
         package.loaded["overseer"], package.loaded["snacks"] = saved_deps.overseer, saved_deps.snacks
         pcall(function() core:shutdown() end)
     end)
@@ -92,10 +90,9 @@ describe("daemon mode: a buffer held before the workspace loads (§9.7)", functi
         local closed = 0
         local function on_closed() closed = closed + 1 end
         events.on("workspace_closed", on_closed)
-        lw.setup({ root = root, lsp = false, keys = false, runtime = { mode = "daemon" } })
+        lw.setup({ root = root, lsp = false, keys = false })
         events.off("workspace_closed", on_closed)
 
-        assert.equals("daemon", (lw.runtime_mode()))
         assert.equals(obs, observer.current())
         -- A load with a successor closes nothing: the hold stays, no stock
         -- server and no managed one starts.

@@ -42,7 +42,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
     end)
     after_each(function()
         if obs then views.clear(obs) end
-        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._selection = nil, nil
+        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._attached_root = nil, nil
         views.daemon_root(nil)
         obs = nil
         pcall(function() core:shutdown() end)
@@ -67,7 +67,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         }, observer.Observer)
         function obs:_spawn() end
         require("loomworks.daemon.observer")._current = obs
-        require("loomworks.daemon.observer")._selection = { mode = "daemon", source = "default", daemon = true }
+        require("loomworks.daemon.observer")._attached_root = "/w"
         views.daemon_root(ws.root)
         return obs
     end
@@ -81,22 +81,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         v.profiles[1].description = "from the daemon"
         if mutate then mutate(v) end
         return v
-    end
-
-    --- Load the workspace into the editor's own core (the deprecated
-    --- `in-process` editor), counting its in-process builds again.
-    local function load_in_editor()
-        core:shutdown()
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
-        built = 0
-        local orig = ws.view_workspace
-        ws.view_workspace = function(...)
-            built = built + 1
-            return orig(...)
-        end
     end
 
     local function header(state)
@@ -645,7 +629,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         -- Selected for daemon mode but not connected at all: not known.
         views.clear(obs)
         require("loomworks.daemon.observer")._current = nil
-        require("loomworks.daemon.observer")._selection = { daemon = true }
+        require("loomworks.daemon.observer")._attached_root = "/w"
         obs = nil
         assert.is_false(status_source.modified(nil))
     end)
@@ -665,11 +649,9 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(1, #reverts)
     end)
 
-    it("a routed write with no workspace given is decided by the runtime selection: refused with the observer gone, never in-process", function()
-        -- The loaded workspace selected for daemon mode, its observer gone
-        -- (stopped: no longer current, detached from the workspace).
-        observer.attach(ws.root, { configured = "in-process" })
-        require("loomworks.daemon.observer")._selection = { daemon = true }
+    it("a routed write with a root attached and its observer gone is refused, never in-process", function()
+        -- A root attached, its observer gone (stopped: no longer current).
+        require("loomworks.daemon.observer")._attached_root = "/w"
         require("loomworks.daemon.observer")._current = nil
         assert.is_nil(observer.current())
         local lw = require("loomworks")
@@ -717,67 +699,5 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_not_nil(p)
         assert.equals(65, math.floor(p.elapsed + 0.5))
         assert.is_not_nil(body.profile_progress(row))
-    end)
-
-    it("in-process mode still builds the view from the editor's model", function()
-        load_in_editor()
-        assert.equals("in-process", status_source.read(ws).mode)
-        assert.equals(1, built)
-        local _, text = render()
-        assert.equals(2, built)
-        assert.is_nil(text:find("unavailable —", 1, true))
-    end)
-
-    it("in-process mode: a launch row's editor opens on the declaration, its preview answered at once (5o C2b2-2)", function()
-        root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
-        load_in_editor()
-        -- (Loaded as the editor's setup does, in the in-process mode: its
-        -- calls given no workspace go to it.)
-        require("loomworks.daemon.observer").attach(ws.root, { configured = "in-process" })
-        -- (A preview expands under the active profile.)
-        assert(require("loomworks.workspace_view").activate_profile(ws:get_profiles()[1]))
-        local body = status_source.read(ws)
-        assert.equals("in-process", body.mode)
-        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
-        local page = Tree.new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
-        setmetatable(page._folds, { __index = function() return true end })
-        local enter
-        for i, l in ipairs(page:render()) do
-            if l:find("run ", 1, true) and page.line_meta[i] and page.line_meta[i].on_enter then
-                enter = page.line_meta[i].on_enter
-                break
-            end
-        end
-        assert.is_function(enter)
-        local le = require("loomworks.ui.launch_editor")
-        local orig, got = le.open, nil
-        le.open = function(o) got = o end
-        local ok, err = pcall(enter)
-        le.open = orig
-        assert(ok, err)
-        assert.is_table(got)
-        assert.equals("run", got.name)
-        assert.equals("tool", got.command)
-        assert.same({ "-v" }, got.args)
-        local value
-        got.preview("${workspace_root}/w", function(v) value = v end)
-        assert.equals(vim.fs.normalize(ws.root) .. "/w", vim.fs.normalize(value))
-        -- The preview is the project's, outside a launch target: ${target_dir}
-        -- is unresolved there (§8.7) and stays as written (API.md §19).
-        got.preview("${target_dir}/w", function(v) value = v end)
-        assert.equals("${target_dir}/w", value)
-        -- In-process the debug adapter records are the working copy's.
-        assert.is_table(got.debug_adapters())
-    end)
-
-    it("an in-process row no longer reaches its object once its workspace is torn down", function()
-        local body = status_source.read(ws)
-        local row = body.view.profiles[1]
-        local profile = status_source.object_of(row)
-        assert.is_not_nil(profile)
-        assert.equals(ws, profile._workspace)
-        core:shutdown()
-        assert.is_nil(status_source.object_of(row))
-        assert.is_nil(body.profile_progress(row))
     end)
 end)

@@ -145,7 +145,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         if obs then
             views.clear(obs)
             observer._current = nil
-            require("loomworks.daemon.observer")._selection = nil
+            require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
         pcall(function() core:shutdown() end)
@@ -1106,7 +1106,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
 
     after_each(function()
         observer._current = nil
-        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._selection = nil, nil
+        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._attached_root = nil, nil
         pcall(function() core:shutdown() end)
     end)
 
@@ -1128,16 +1128,6 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
 
     local REC = { language = "c++", adapter = "cppdbg", default = "codelldb", known = { "codelldb", "cppdbg" },
         overridden = true }
-
-    it("in-process: the working copy's mapping; a change writes user.json", function()
-        local recs = editor_ops.debug_adapters(ws)
-        assert.same(require("loomworks.debug_config").adapter_records(ws), recs)
-        local ok
-        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(r) ok = r end)
-        assert.is_true(ok)
-        assert.equals("cppdbg", require("loomworks.debug_config").resolve_adapter(ws, "c++"))
-        assert.same({}, sent)
-    end)
 
     it("carried: read from `adapters` (never the in-process mapping), re-read on `changed`", function()
         connect()
@@ -1180,14 +1170,6 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.is_true(res)
         -- Read again at once (and on the `changed` that follows).
         assert.equals("adapters", sent[3].method)
-    end)
-
-    it("in-process: the debug languages are every known language, not only the modules'", function()
-        local langs
-        editor_ops.debug_languages(ws, function(l) langs = l end)
-        assert.same(require("loomworks.debug_config").workspace_languages(ws), langs)
-        assert.truthy(vim.tbl_contains(langs, "typescript"))
-        assert.same({}, sent)
     end)
 
     it("carried: the debug languages are `known_languages` (never the in-process list)", function()

@@ -1,9 +1,8 @@
 -- Step 5o C2d-1: the Profiles section's builds, configures, cleans and
--- rebuilds go through ui/model_calls.lua naming their rows — in `daemon`
--- mode a `Build/1` call by the profile row's id or the unit rows' `unit_id`s
+-- rebuilds go through ui/model_calls.lua naming their rows — a `Build/1`
+-- call by the profile row's id or the unit rows' `unit_id`s
 -- (editor_ops.run_ids, a task the editor owns, never by key and never
--- in-process), in the `in-process` mode the rows' bound objects. The
--- artifact-conflict question comes from the unit rows' `artifact_block`;
+-- in-process). The artifact-conflict question comes from the unit rows' `artifact_block`;
 -- the clean confirmation from the rows; owned calls record the unit ids,
 -- and a RemoteTask reads `profile_id` / `units[].id` from its meta.
 
@@ -14,7 +13,7 @@ local remote_task = require("loomworks.daemon.remote_task")
 local function set_daemon(obs)
     local observer = require("loomworks.daemon.observer")
     observer._current = obs
-    observer._selection = obs and { mode = "daemon", source = "default", daemon = true } or nil
+    observer._attached_root = obs and "/w" or nil
 end
 
 
@@ -297,6 +296,8 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
             return nodes
         end
         local OPS = { "on_build", "on_build_serial", "on_rebuild", "on_clean", "on_configure", "on_delete" }
+        -- No observer: no task runs on any row.
+        before_each(function() set_daemon(nil) end)
 
         it("gates the operations on the row's id", function()
             local view = { projects = { {} }, profiles = {
@@ -332,59 +333,6 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
         end)
     end)
 
-    describe("in-process mode", function()
-        local ss = require("loomworks.status_source")
-        local fut = require("loomworks.future")
-        local saved, calls
-        before_each(function()
-            calls = {}
-            saved = package.loaded["loomworks.overseer"]
-            package.loaded["loomworks.overseer"] = {
-                run_configuration_action = function(unit, action, _, opts)
-                    calls[#calls + 1] = { "unit", unit, action, opts }
-                    return fut.resolved(true)
-                end,
-            }
-        end)
-        after_each(function() package.loaded["loomworks.overseer"] = saved end)
-        local function run(method, params)
-            local got
-            model.call({ root = "/w" }, method, params, function(r) got = r end)
-            vim.wait(100, function() return got ~= nil end)
-            return got
-        end
-
-        it("runs the bound objects' operations", function()
-            local P = setmetatable({}, {})
-            function P:build(opts) calls[#calls + 1] = { "build", opts }; return fut.resolved(true) end
-            function P:configure() calls[#calls + 1] = { "configure" }; return fut.resolved(true) end
-            function P:clean() calls[#calls + 1] = { "clean" }; return fut.rejected("boom") end
-            local U = setmetatable({ mark_deleting = function() end }, {})
-            function U:clean() calls[#calls + 1] = { "uclean" }; return fut.resolved(true) end
-            local prow, urow = { key = "dev" }, { project = "app" }
-            ss.bind(prow, P); ss.bind(urow, setmetatable({ _config_unit = U }, {}))
-            assert.same({ outcome = "ok" }, run("Build/1.build", { profile = prow }))
-            assert.same({ outcome = "ok" }, run("Build/1.build", { profile = prow, jobs = 1 }))
-            assert.same({ outcome = "ok" }, run("Build/1.configure", { profile = prow }))
-            local r = run("Build/1.clean", { profile = prow })
-            assert.same({ "refused", "boom" }, { r.outcome, r.message })
-            assert.same({ outcome = "ok" }, run("Build/1.build", { units = { urow }, jobs = 1 }))
-            assert.same({ outcome = "ok" }, run("Build/1.configure", { units = { urow } }))
-            assert.same({ outcome = "ok" }, run("Build/1.clean", { units = { urow } }))
-            assert.same({ { "build" }, { "build", { parallel_jobs = 1 } }, { "configure" }, { "clean" },
-                { "unit", U, "build", { parallel_jobs = 1 } }, { "unit", U, "configure" }, { "uclean" } }, calls)
-        end)
-
-        it("refuses an unbound row and a unit row with no unit yet; nothing runs", function()
-            local bare = { project = "lib" }
-            ss.bind(bare, setmetatable({}, {}))
-            assert.equals("refused", run("Build/1.build", { profile = { key = "dev" } }).outcome)
-            assert.equals("refused", run("Build/1.clean", { units = { { project = "x" } } }).outcome)
-            assert.equals("refused", run("Build/1.configure", { units = { bare } }).outcome)
-            assert.same({}, calls)
-        end)
-    end)
-
     describe("the clean confirmation", function()
         local actions = require("loomworks.ui.actions")
 
@@ -402,13 +350,6 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
             assert.falsy(text:find("lib / Debug", 1, true), text)
         end)
 
-        it("in-process: the rows' running builds and configures", function()
-            local rows = { { project = "app", configuration = "Debug", state = "building", build_dir = "/b" } }
-            local ctx = actions.clean_confirmation({ root = "/w" }, "Rebuild: app / Debug", nil, rows, true)
-            local text = table.concat(ctx.lines, "\n")
-            assert.truthy(text:find("    app: build Debug", 1, true), text)
-            assert.truthy(text:find("then rebuild", 1, true), text)
-        end)
     end)
 
     it("a RemoteTask reads the meta's profile_id and units[].id and matches rows by them", function()

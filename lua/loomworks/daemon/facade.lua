@@ -1,7 +1,7 @@
 --- loomworks/daemon/facade.lua — the plugin's public build, launch and
---- picker functions in `daemon` mode (spec §19.16 "Public API", step 6b-α).
+--- picker functions (spec §19.16 "Public API", step 6b-α).
 ---
---- The editor holds no model in `daemon` mode, so `lw.build_profile`,
+--- The editor holds no model, so `lw.build_profile`,
 --- `lw.build_target`, `lw.pick_profile`, `lw.pick_target`,
 --- `lw.pick_target_action`, `lw.launch_target` and `lw.debug_target` act by
 --- calls to the workspace daemon, naming its entities by the ids of
@@ -25,11 +25,11 @@
 
 local M = {}
 
---- Whether the facade acts by calls: the editor's runtime selection is
---- `daemon` (editor_ops.daemon_of with no model).
+--- Whether the editor has a workspace root attached (editor_ops.daemon_of):
+--- the facade's calls then go to its daemon, refused while not carried.
 --- @return boolean
 function M.active()
-    return (require("loomworks.daemon.editor_ops").daemon_of(nil))
+    return (require("loomworks.daemon.editor_ops").daemon_of())
 end
 
 local function warn(msg) vim.notify("loomworks: " .. msg, vim.log.levels.WARN) end
@@ -81,7 +81,7 @@ local function request(method, args, verb, cb)
     local ops = require("loomworks.daemon.editor_ops")
     local obs = ops.carrier(method, nil)
     if not obs then
-        local _, mode_obs = ops.daemon_of(nil)
+        local _, mode_obs = ops.daemon_of()
         return warn(verb .. ": " .. (mode_obs and mode_obs.state ~= "stopped" and mode_obs:refusal(method)
             or "the workspace is no longer loaded"))
     end
@@ -130,7 +130,7 @@ function M.set_default_target(row, ref, cb)
     request("Profiles/1.set_default_target", args, "default target", function() if cb then cb() end end)
 end
 
---- The picker's line of a target (as the in-process picker's).
+--- The picker's line of a target.
 --- @param ref loomworks.daemon.LaunchRef
 --- @return string
 local function item_label(ref)
@@ -430,11 +430,11 @@ function M.lsp_options(server)
     return type(opts) == "table" and copy(opts) or {}
 end
 
---- `lw.compile_command_for_file` in `daemon` mode (§19.16 "Public API"):
+--- `lw.compile_command_for_file` (§19.16 "Public API"):
 --- refused, nothing read.
 M.COMPILE_COMMAND_REFUSAL = "not available with the workspace daemon"
 
---- The status page's `N` in `daemon` mode (§19.16 "Model writes"): refused,
+--- The status page's `N` (§19.16 "Model writes"): refused,
 --- nothing written.
 M.CREATE_REFUSAL = "creating a workspace is not available with the workspace daemon — run lw init in a terminal"
 
