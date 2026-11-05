@@ -3,7 +3,8 @@
 js-debug's Node.js mode. Default adapter for the `typescript`
 language. Also covers plain JavaScript launch configs.
 
-> **Note:** Adapter pluggability is on the BACKLOG. This file
+> **Note:** Adapter pluggability is on the backlog
+> ([#405](https://github.com/samienne/loomworks.nvim/issues/405)). This file
 > documents the adapter-specific request-shape transformation
 > currently implemented in `lua/loomworks/debug.lua`.
 

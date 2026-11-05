@@ -4,7 +4,8 @@ Microsoft's C/C++ debug adapter (vscode-cpptools). Alternative to
 codelldb for `c++` on platforms where the user prefers GDB or has an
 existing cppdbg setup.
 
-> **Note:** Adapter pluggability is on the BACKLOG. This file
+> **Note:** Adapter pluggability is on the backlog
+> ([#405](https://github.com/samienne/loomworks.nvim/issues/405)). This file
 > documents current adapter-specific behavior in
 > `lua/loomworks/debug.lua`.
 

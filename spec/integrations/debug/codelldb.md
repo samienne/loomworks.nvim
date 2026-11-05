@@ -4,7 +4,7 @@ Native C/C++/Rust/Zig debugger using LLDB under the hood. Default
 adapter for the `c++` language.
 
 > **Note:** Debug adapters are not yet pluggable through a registry
-> (backlog: "Pluggable debug adapter architecture"). Until that
+> ([#405](https://github.com/samienne/loomworks.nvim/issues/405)). Until that
 > refactor lands, this file documents adapter-specific behavior
 > implemented inside `lua/loomworks/debug.lua`. After the refactor it
 > will move to `lua/loomworks/integrations/debug/codelldb.lua`.
