@@ -6,15 +6,14 @@ The Neovim plugin of loomworks: a thin client of the `lw` workspace daemon.
 It keeps the daemon client, the UI, loomtest, the LSP/DAP integrations, the
 provisioning of the managed `lw` and its Lua bundle, and a few files vendored
 from loomworks. The daemon, the `lw` CLI, the modules, the SDK providers and
-the workspace engine live in **samienne/loomworks** (local checkout
-`C:/src/loomworks`, its own spec and workflow). The plugin holds no workspace
+the workspace engine live in **samienne/loomworks** (its own checkout, spec
+and workflow). The plugin holds no workspace
 model and never builds, detects toolchains or removes build directories
 itself; protocol-only coupling, no plugin-side fallbacks.
 
-The plugin lives at `C:/src/nvim-plugins/loomworks.nvim` and is loaded via the
-owner's Neovim config (C:/Users/samie/AppData/Local/nvim, branch `loomworks`),
-which auto-loads every subdirectory of `C:/src/nvim-plugins` as a lazy.nvim dev
-plugin.
+The plugin checkout lives at `<plugins dir>/loomworks.nvim` and is loaded via
+the owner's Neovim config (branch `loomworks`), which auto-loads every
+subdirectory of `<plugins dir>` as a lazy.nvim dev plugin.
 
 ## Authoritative Documents
 
