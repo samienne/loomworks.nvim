@@ -118,7 +118,7 @@ current directory but stops at a git repository's or a linked worktree's root.
 | `:LoomworksInit [path]` | Initialise the workspace at `path` (default: cwd) |
 | `:LoomworksDaemon [connect\|status]` | Connect to the workspace daemon (launching it when none runs), or show the runtime line and the `lw` a launch would use |
 | `:LoomworksTrust` | Review a refused working copy, then trust (re-sign), discard or cancel |
-| `:LoomworksCompileCommand [file]` | Show the compile command the language server uses for a file |
+| `:LoomworksCompileCommand [file]` | Not available with the workspace daemon: refuses and says so |
 | `:LoomworksLog` | Open the workspace log |
 | `:LoomworksFidgetClear` | Clear stuck fidget progress |
 | `:LoomworksReload` | Development: tear down and reload the plugin (lazy.nvim) |
@@ -145,7 +145,7 @@ On the status page (`?` shows them all): `<Tab>`/`<S-Tab>` move, `l`/`h`
 open/close a fold, `<CR>` activates a profile, `b` builds (`<C-b>` serially),
 `c` configures, `R` rebuilds, `C` cleans, `D` deletes, `t` shows a task, `o`
 shows build options, `e` edits a description, `P` cycles publish intent, `N`
-creates a workspace, `L` loads, `<C-n>` resets the workspace, `U` discards the
+refuses to create a workspace and points at `lw init`, `L` loads, `<C-n>` resets the workspace, `U` discards the
 working copy, `T` reviews trust, `K` hovers, `q` closes. `:w` publishes the
 working copy to `loomworks.json`; `:e!` reverts it.
 
