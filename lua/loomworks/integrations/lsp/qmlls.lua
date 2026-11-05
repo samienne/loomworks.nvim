@@ -184,7 +184,7 @@ end
 --- uses the loomworks project's qmlls entry root_dir when the buffer's
 --- project has one. Falls through to the provided fallback otherwise. Skips
 --- excluded buffers (see `loomworks.lsp.excluded`) before any resolution.
---- Routed through the readiness gate (core §9.7): a buffer under the workspace
+--- Routed through the readiness gate (spec/plugin.md §9.7): a buffer under the workspace
 --- root is held until the workspace resolves, so qmlls starts once with the
 --- resolved build dir. Resolution behavior is unchanged — only WHEN it runs is
 --- deferred. Excluded buffers take the immediate fall-through, never held.

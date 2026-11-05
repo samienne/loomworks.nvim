@@ -10,7 +10,7 @@
 ---   lualine_x = { "lsp_status", "loomworks_lsp" }
 ---
 --- Renders (in DiagnosticError's foreground on the section's own background,
---- through lualine's component `color` option; spec/ui.md §4):
+--- through lualine's component `color` option; spec/plugin.md UI §4):
 ---   withheld_unconfigured → "(unconfigured)"
 ---   withheld_no_db        → "(no db)"
 ---   withheld_error        → "(ws error)"

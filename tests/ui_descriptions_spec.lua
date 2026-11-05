@@ -1,4 +1,4 @@
--- Editor side of descriptions (spec/ui.md §1.16): the summary on a node line
+-- Editor side of descriptions (spec/plugin.md UI §1.16): the summary on a node line
 -- (fitted to the window, inert, LoomworksDescription), the expanded
 -- description leaves (8-line cap + "more" leaf), `K` hover, the `e` /
 -- "Edit description" action and picker summaries.

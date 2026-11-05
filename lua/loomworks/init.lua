@@ -225,7 +225,7 @@ function M.get_daemon_tasks()
     return obs and obs:tasks() or {}
 end
 
---- The status page's Runtime line (spec/ui.md §1.1): the observer's state
+--- The status page's Runtime line (spec/plugin.md UI §1.1): the observer's state
 --- or note; nil while no observer runs. `warn` selects the warning
 --- highlight.
 --- @return string|nil text, boolean warn

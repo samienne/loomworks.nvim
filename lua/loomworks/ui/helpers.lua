@@ -331,7 +331,7 @@ function M.render_grouped(tree, items, render_fn, default)
     end
 end
 
---- A description summary for a picker / dialog entry (spec/ui.md §1.16):
+--- A description summary for a picker / dialog entry (spec/plugin.md UI §1.16):
 --- "  <summary>" fitted to 40 display columns, rendered inert, as a plain
 --- string (no highlight markup). "" when there is no description.
 --- @param desc string|nil
@@ -344,7 +344,7 @@ function M.picker_summary(desc, cols)
     return "  " .. d.fit(d.inert_line(sum), cols or 40)
 end
 
---- Render a `Description ▸ <summary>` row in an editor dialog (spec/ui.md
+--- Render a `Description ▸ <summary>` row in an editor dialog (spec/plugin.md UI
 --- §1.16). `<CR>` opens the description editor for `item`; the description
 --- is saved by the editor itself (independently of the dialog's accept), and
 --- `refresh` re-renders the dialog afterwards. Nothing for a nil item (a set
@@ -367,7 +367,7 @@ function M.description_row(t, item, label, refresh)
     })
 end
 
---- The chunks of a project's launch rows (spec/ui.md §1.8): `{name}  {summary}
+--- The chunks of a project's launch rows (spec/plugin.md UI §1.8): `{name}  {summary}
 --- {runs}`, the summaries forming a column (at most 36 display columns, blank
 --- when absent) before the open-ended command line, which is cut to `width`.
 --- @param launches { name: string, config: table }[]
@@ -407,7 +407,7 @@ function M.launch_row_chunks(launches, width)
     return out
 end
 
---- Add the description affordances to a describable node's opts (spec/ui.md
+--- Add the description affordances to a describable node's opts (spec/plugin.md UI
 --- §1.16): the summary on the node line (`description`, render-only), `K`
 --- showing the full text (`hover`, only when there is one), and the `e` /
 --- "Edit description" action (`on_describe`). Returns `opts`.
@@ -503,7 +503,7 @@ function M.describe_action(opts, item)
     return opts
 end
 
---- The read-only saved test-targets line (spec/ui.md "Saved test targets
+--- The read-only saved test-targets line (spec/plugin.md UI "Saved test targets
 --- line", core §1.3.4) as `{text, hl}` chunks, or nil when nothing is
 --- declared along the chain. Formats a resolved view
 --- (`Project:saved_tests_view`): names in list order, cut with `+N` to

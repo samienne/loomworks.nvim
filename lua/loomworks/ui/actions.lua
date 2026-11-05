@@ -92,7 +92,7 @@ local function cleanable(rows)
     return out
 end
 
---- The confirmation of a clean or rebuild (step 5o C2d, spec/ui.md §1.10),
+--- The confirmation of a clean or rebuild (step 5o C2d, spec/plugin.md UI §1.10),
 --- built from the view rows, never the editor's model: the running tasks
 --- the clean stops first — the editor's own calls on the profile or its
 --- units (another client's are never stopped: the clean meets their

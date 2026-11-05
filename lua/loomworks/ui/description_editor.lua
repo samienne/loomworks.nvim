@@ -1,5 +1,5 @@
 --- loomworks/ui/description_editor.lua — git-commit-style description editor
---- (spec/ui.md §1.16).
+--- (spec/plugin.md UI §1.16).
 ---
 --- A floating scratch buffer (`buftype=acwrite`, filetype
 --- `loomworks_description`) pre-filled with the item's description and `#`

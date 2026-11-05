@@ -8,7 +8,7 @@
 ---   tree:render()              → lines, highlights, line_meta, needs_frame
 ---   tree:on_key(action, line)  → { refresh?, restore_fold? }
 
---- Hover content for a description (spec/ui.md §1.16): the full text, one
+--- Hover content for a description (spec/plugin.md UI §1.16): the full text, one
 --- entry per line, rendered inert; a module default says where it came from.
 --- @param desc string
 --- @param from_module boolean|nil
@@ -53,7 +53,7 @@ local RENDER_KEYS = {
     description = true,
 }
 
---- Summary fit on a node line (spec/ui.md §1.16): at most this many display
+--- Summary fit on a node line (spec/plugin.md UI §1.16): at most this many display
 --- columns, omitted when fewer than MIN remain.
 local SUMMARY_MAX, SUMMARY_MIN = 60, 12
 --- Description lines shown under an expanded node before the "more" leaf.
@@ -558,7 +558,7 @@ function Tree:_set_hover(hover)
         or function() return hover end
 end
 
---- Append a description's summary to the line just added (spec/ui.md §1.16):
+--- Append a description's summary to the line just added (spec/plugin.md UI §1.16):
 --- two spaces, then the summary fitted to the window's remaining width (at
 --- most 60 display columns), highlighted `LoomworksDescription`. Omitted when
 --- fewer than 12 columns remain or there is no description. The text is
@@ -582,7 +582,7 @@ function Tree:_append_summary(desc)
 end
 
 --- Render a description in full as leaves at the current indentation (the
---- first child of an expanded describable node, spec/ui.md §1.16): one
+--- first child of an expanded describable node, spec/plugin.md UI §1.16): one
 --- `LoomworksDescription` leaf per line (the blank line between summary and
 --- body kept), each cut to the window width, at most 8 lines, then a
 --- "… N more lines — [K] full description" leaf. `K` on any of these leaves

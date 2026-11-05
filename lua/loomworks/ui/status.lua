@@ -95,8 +95,8 @@ local function render_fn(tree)
             "DiagnosticWarn")
     end
     tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
-    -- The header's last line (spec/ui.md §1.1, core §19.1, §19.16): the
-    -- observer's state or one current note.
+    -- The header's last line (spec/plugin.md UI §1.1 and Part I §19.16, core
+    -- §19.1): the observer's state or one current note.
     local runtime_line, runtime_warn = lw.daemon_runtime_line()
     if runtime_line then
         tree:leaf("Runtime:   " .. runtime_line, runtime_warn and "DiagnosticWarn" or "Comment")
@@ -128,7 +128,7 @@ local function render_fn(tree)
     if view then
         require("loomworks.ui.sections.diagnostics")(tree, ctx)
 
-        -- Suggestions (spec/ui.md §1.1): a single compact advisory line pointing at
+        -- Suggestions (spec/plugin.md UI §1.1): a single compact advisory line pointing at
         -- `lw health`, shown only when the framework has findings. Not a diagnostic
         -- — it never gates anything; the page keeps only the count (of the
         -- actionable items, headless §16.31).

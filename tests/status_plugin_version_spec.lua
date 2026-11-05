@@ -1,4 +1,4 @@
--- The status page header shows the running loomworks version (spec/ui.md:
+-- The status page header shows the running loomworks version (spec/plugin.md UI:
 -- "plugin version") — never a stale hard-coded constant. While the daemon's
 -- `loomworks.view.Header/1` is held the page prints that view's `version`
 -- (spec §19.13 "Views"); before, the unloaded header carries the plugin's own

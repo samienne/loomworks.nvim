@@ -140,7 +140,7 @@ function M.adopt(entry, clock, now_wall)
     return self
 end
 
---- The origin marker (spec/ui.md §1.9): `lw` for the CLI, `editor` for
+--- The origin marker (spec/plugin.md UI §1.9): `lw` for the CLI, `editor` for
 --- another editor; nil when the daemon did not say.
 --- @return string|nil
 function RemoteTask:origin_label()

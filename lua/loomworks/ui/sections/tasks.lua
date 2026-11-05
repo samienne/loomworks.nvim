@@ -1,7 +1,7 @@
 --- loomworks/ui/sections/tasks.lua — Tasks section.
 ---
 --- Surfaces the runtime state of long-running operations: every task
---- observed through `Tasks/1` (core §19.16) — the editor's own and other
+--- observed through `Tasks/1` (spec/plugin.md §19.16) — the editor's own and other
 --- clients'. The section is the diagnostic surface for "why is my build
 --- still running?".
 ---
@@ -31,7 +31,7 @@ end
 
 --- Rows of a remote task (one per unit; one for the profile when it has
 --- none): `▸ <project> : <configuration> — <kind>`, then `{pct}%`, the
---- elapsed time and the dimmed origin marker as the last token (spec/ui.md
+--- elapsed time and the dimmed origin marker as the last token (spec/plugin.md UI
 --- §1.9).
 --- @param task loomworks.RemoteTask
 --- @param now number
@@ -49,7 +49,7 @@ local function remote_rows(task, now)
         return chunks
     end
     -- A task carrying steps (a launch target's build or preparation, step
-    -- 5t) keeps one row, which follows its current step (spec/ui.md §1.9).
+    -- 5t) keeps one row, which follows its current step (spec/plugin.md UI §1.9).
     if task.steps then
         local step = task:step_text()
         return { row(string.format("▸ %s — %s%s", task.profile_name or task.name, task.kind,
@@ -65,7 +65,7 @@ local function remote_rows(task, now)
     return rows
 end
 
---- A remote task's rows (core §19.16): Enter offers `Show output`, `Open
+--- A remote task's rows (spec/plugin.md §19.16): Enter offers `Show output`, `Open
 --- overseer` while overseer lists it (step 5k C1b, loomworks.daemon.task_runner)
 --- and, for a task the editor itself started through a call (step 5k,
 --- `task.owned`), `Cancel task` (`Tasks/1.cancel`); another client's task
@@ -83,7 +83,7 @@ local function render_remote(tree, task, now)
                 local runner = require("loomworks.daemon.task_runner")
                 local choices = { "Show output" }
                 if task.owned then choices[#choices + 1] = "Cancel task" end
-                -- Its single overseer task (core §19.16 "Tasks in the task
+                -- Its single overseer task (spec/plugin.md §19.16 "Tasks in the task
                 -- runner"), unless overseer cannot host it.
                 if runner.overseer_task(task) then choices[#choices + 1] = "Open overseer" end
                 vim.ui.select(choices, {

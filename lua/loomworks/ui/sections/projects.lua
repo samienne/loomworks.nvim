@@ -995,7 +995,7 @@ local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
     if brief_str ~= "" then
         config_chunks[#config_chunks + 1] = { brief_str, "Comment" }
     end
-    -- Overwritten marker (spec/ui.md §1.8): a config unit
+    -- Overwritten marker (spec/plugin.md UI §1.8): a config unit
     -- under this configuration was built but another unit's
     -- build has since overwritten its shared output artifact.
     -- Matches the profile-side rendering (§1.5).

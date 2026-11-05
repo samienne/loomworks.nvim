@@ -218,7 +218,7 @@ function View:refresh()
         end
     end
 
-    -- The widget fits description summaries to the window (spec/ui.md §1.16).
+    -- The widget fits description summaries to the window (spec/plugin.md UI §1.16).
     self._widget.width = vim.api.nvim_win_get_width(win)
     local lines, highlights, _, needs_frame = self._widget:render()
 

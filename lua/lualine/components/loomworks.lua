@@ -19,7 +19,7 @@
 --- `create_hl`; lualine fills the background from the section, and the text
 --- after a marker switches back to the section highlight
 --- (`get_default_hl`), so markers fit any section of a statusline or winbar
---- (spec/ui.md §3). Raw `%#Group#…%*` escapes would reset to
+--- (spec/plugin.md UI §3). Raw `%#Group#…%*` escapes would reset to
 --- StatusLine/WinBar and carry the group's own (usually absent) background.
 ---
 --- Icons (nerd font glyphs) are prepended to each shown field. Set a
@@ -84,7 +84,7 @@ local STATUS_HL = {
     built            = "DiagnosticOk",
     -- Red: an unconfigured active unit means its language server is withheld
     -- (spec §9.8), not a neutral resting state. Mixed is amber — part of the
-    -- profile is usable, part is not (spec/ui.md §3).
+    -- profile is usable, part is not (spec/plugin.md UI §3).
     unconfigured     = "DiagnosticError",
     mixed            = "DiagnosticWarn",
     configure_failed = "DiagnosticError",
@@ -219,7 +219,7 @@ end
 --- Make workspace data inert in a statusline string: remove control
 --- characters and double every `%` so a name from a (possibly cloned)
 --- loomworks.json cannot inject statusline items, highlight groups or
---- expressions (spec/ui.md §3). Applied to data only — never to the
+--- expressions (spec/plugin.md UI §3). Applied to data only — never to the
 --- component's own highlight escapes, icons or join string.
 --- @param s any
 --- @return string

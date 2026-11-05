@@ -284,14 +284,14 @@ local function render_unit(tree, ctx, row, u)
         row_chunks[#row_chunks + 1] = { missing_suffix, "DiagnosticWarn" }
     end
     row_chunks[#row_chunks + 1] = { status_suffix .. progress_str, "Comment" }
-    -- Overwritten marker (spec/ui.md §1.5): another unit's build has
+    -- Overwritten marker (spec/plugin.md UI §1.5): another unit's build has
     -- clobbered this unit's shared output artifact. The built marker
     -- (✔) is retained; the tag signals the on-disk artifact is no
     -- longer this unit's, so it needs a rebuild to reclaim it.
     if u.overwritten then
         row_chunks[#row_chunks + 1] = { " [overwritten]", "LoomworksConflict" }
     end
-    -- Per-configuration compiler-cache mismatch (spec/ui.md): the
+    -- Per-configuration compiler-cache mismatch (spec/plugin.md UI): the
     -- resolved launcher differs from the one this unit was built
     -- with, so the next build reconfigures to apply the change.
     -- Resolved for THIS profile (its `cache` fill), not the active one.
@@ -414,7 +414,7 @@ local function render_profile_details(tree, ctx, row)
     end
 
     -- Compiler cache: one profile-level row, sibling to Toolchain, for a
-    -- profile that contains a C/C++-caching module (spec/ui.md). Informational
+    -- profile that contains a C/C++-caching module (spec/plugin.md UI). Informational
     -- in v1 (no picker) — policy is edited through the variable system. A
     -- launcher mismatch vs the configured units carries a [stale — reconfigure]
     -- hint (LoomworksStale).
@@ -526,7 +526,7 @@ return function(tree, ctx)
         end
 
         -- Head = key + text tags ([stale]/[incomplete]); tail = (status) + any
-        -- progress/message. A `[conflict]` tag (spec/ui.md §1.5) sits between
+        -- progress/message. A `[conflict]` tag (spec/plugin.md UI §1.5) sits between
         -- them and needs its own `LoomworksConflict` highlight, so the row
         -- becomes a chunk list when a conflict is present (otherwise a plain
         -- string, matching every other profile row).
@@ -538,14 +538,14 @@ return function(tree, ctx)
             head = head .. " [incomplete]"
         end
 
-        -- Static cross-profile output-artifact overlap (spec/ui.md §1.5):
+        -- Static cross-profile output-artifact overlap (spec/plugin.md UI §1.5):
         -- two profiles that would write the same output binary. Absent while
         -- the profile is unconfigured (artifacts unknown until configure).
         local has_conflict = row.artifact_conflict
 
         local tail = " (" .. status_label .. ")"
         -- A task observed in the workspace daemon counts as the profile's
-        -- active Operation (spec/ui.md §1.5), plus its origin marker.
+        -- active Operation (spec/plugin.md UI §1.5), plus its origin marker.
         local origin = row.origin
         -- A running operation's percent and elapsed time are not in the view
         -- (API.md §14.4): the page's progress source gives them. Otherwise

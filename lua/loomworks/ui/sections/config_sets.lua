@@ -164,7 +164,7 @@ local function delete_lines(view, row)
     table.sort(affected)
     local lines = { "  Delete configuration set: " .. row.name }
     local highlights = { { line = 1, hl_group = "DiagnosticWarn" } }
-    -- The set's description summary (spec/ui.md §1.16).
+    -- The set's description summary (spec/plugin.md UI §1.16).
     local summary = helpers.picker_summary(row.description, 70)
     if summary ~= "" then
         lines[#lines + 1] = "  " .. summary
@@ -263,7 +263,7 @@ end
 --- Create a new config set: offer the automatic sets
 --- `ConfigSets/1.candidates` lists (each with its mappings), then the custom
 --- option. A template's pick is `ConfigSets/1.add { candidate }`
---- (spec/ui.md §1.7).
+--- (spec/plugin.md UI §1.7).
 --- @param ctx table the page context
 local function create_config_set(ctx)
     if not ctx.view then return no_view() end

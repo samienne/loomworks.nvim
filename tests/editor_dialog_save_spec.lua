@@ -1,7 +1,7 @@
 -- Saving from an editor dialog hands on ONLY the fields the dialog edits (the
 -- launch editor, the configuration-set editor's rename): what it does not
 -- show (a launch's device block, a set's description and intent) is never
--- part of the result, so the daemon's save keeps it (spec/ui.md; the save
+-- part of the result, so the daemon's save keeps it (spec/plugin.md UI; the save
 -- itself is `Projects/1.launch_save` / `ConfigSets/1.update`, the daemon's).
 -- Each spec drives the real dialog widget — View is stubbed so no window
 -- opens — edits one shown field through its row and accepts.

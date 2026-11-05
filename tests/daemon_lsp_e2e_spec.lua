@@ -27,7 +27,7 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         root = H.shell_workspace()
         -- The working copy with `dev` active and a compile database declared
         -- (honored only from the working copy): the shell project's clangd
-        -- entry (spec/modules/shell.md).
+        -- entry (loomworks spec/modules/shell.md).
         local cfg = vim.json.decode(table.concat(vim.fn.readfile(root .. "/loomworks.json"), "\n"))
         cfg.projects.app.shell.compile_commands = "${build_dir}/compile_commands.json"
         local user = { _meta = { version = 2 }, active_profile = "dev",

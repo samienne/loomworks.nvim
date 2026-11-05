@@ -5,7 +5,7 @@
 local M = {}
 
 --- Open a remote task's kept output in a read-only scratch buffer that
---- follows the stream while the task runs (spec/ui.md §1.9).
+--- follows the stream while the task runs (spec/plugin.md UI §1.9).
 --- @param task loomworks.RemoteTask
 function M.show(task)
     local buf = vim.api.nvim_create_buf(false, true)

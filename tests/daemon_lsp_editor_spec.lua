@@ -863,7 +863,7 @@ describe("the observer subscribes to /lsp and reads it (a real daemon)", functio
 
     before_each(function()
         -- The working copy with `dev` active and app's compile database
-        -- declared: one clangd entry (spec/modules/shell.md).
+        -- declared: one clangd entry (loomworks spec/modules/shell.md).
         root = H.shell_workspace()
         local cfg = vim.json.decode(table.concat(vim.fn.readfile(root .. "/loomworks.json"), "\n"))
         cfg.projects.app.shell.compile_commands = "${build_dir}/compile_commands.json"

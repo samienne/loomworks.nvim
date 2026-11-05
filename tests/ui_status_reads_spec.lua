@@ -1,4 +1,4 @@
--- WP-B part 1 (6b-alpha, spec/core/daemon.md): the status page's remaining
+-- WP-B part 1 (6b-alpha, loomworks spec/core/daemon.md): the status page's remaining
 -- editor-model reads. In `daemon` mode the configuration-set dialogs read
 -- only the workspace view and daemon calls; the editor's model is never
 -- touched (a trap workspace errors on any read).

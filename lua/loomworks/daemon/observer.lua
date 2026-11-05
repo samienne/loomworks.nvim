@@ -97,7 +97,7 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- whether a check is due (CHANNEL_RETRY_S, the daily INTERVAL_S).
 M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 --- The Runtime line's note while a lost connection keeps the workspace
---- unloaded (§19.16 "Unloaded on disconnect", spec/ui.md §1.1).
+--- unloaded (§19.16 "Unloaded on disconnect", spec/plugin.md UI §1.1).
 M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting for it"
 
 --- @class loomworks.daemon.Observer
@@ -3072,7 +3072,7 @@ function Observer:lsp_phase()
     return "waiting", { why = self._lost and "disconnected" or "connecting" }
 end
 
---- The Runtime line's note for the LSP configuration (spec/ui.md §1.1), nil
+--- The Runtime line's note for the LSP configuration (spec/plugin.md UI §1.1), nil
 --- while the daemon's state is in use; `warn` for an unavailable one.
 --- @return string|nil note
 --- @return boolean warn
@@ -3287,7 +3287,7 @@ function Observer:runtime_line()
     return t
 end
 
---- The status page's Runtime line (spec/ui.md §1.1, core §19.16): the
+--- The status page's Runtime line (spec/plugin.md UI §1.1, spec/plugin.md §19.16): the
 --- observer's state or note; nil while no observer runs. `warn` is true
 --- while the observer is not connected (a version mismatch, no host binary,
 --- waiting), while a lost connection keeps the workspace unloaded and while

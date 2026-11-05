@@ -1339,7 +1339,7 @@ describe("remote task output cap (§19.16)", function()
     end)
 end)
 
-describe("status page Tasks section: remote tasks (spec/ui.md §1.9)", function()
+describe("status page Tasks section: remote tasks (spec/plugin.md UI §1.9)", function()
     local function render(remote)
         local rows = {}
         local tree = {

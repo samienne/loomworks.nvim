@@ -535,7 +535,7 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
     if not p.yes then
         return send(ws, method, { target = target }, function(r)
             -- The editor's own running tasks the confirmed deletion cancels
-            -- first (spec/ui.md §1.10), after the daemon's listing: every
+            -- first (spec/plugin.md UI §1.10), after the daemon's listing: every
             -- call editor_ops.cancel_owned_matching stops, a not-yet-started
             -- one by the ids it was sent with too.
             -- (The editor's observer: a `daemon`-mode editor holds no model.)

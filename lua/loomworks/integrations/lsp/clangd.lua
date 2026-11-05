@@ -75,7 +75,7 @@ end
 
 --- Resolve compile_commands_dir from an entry (verifies the .json exists).
 --- An entry whose unit is not configured on this machine never yields a
---- directory, even if a module set one (clangd spec §2, core §9.1): whatever
+--- directory, even if a module set one (clangd spec §2, spec/plugin.md §9.1): whatever
 --- database sits in such a build directory is stale or foreign.
 --- @param entry table|nil
 --- @return string|nil
@@ -302,7 +302,7 @@ end
 --- buffers (see `loomworks.lsp.excluded`) before any resolution — this
 --- is the primary gate that keeps LSP off non-file buffers (diffview,
 --- fugitive, quickfix, ...).
---- Routed through the readiness gate (core §9.7): for a buffer under the
+--- Routed through the readiness gate (spec/plugin.md §9.7): for a buffer under the
 --- workspace root, the start is HELD until the workspace resolves so clangd
 --- starts once with the correct binary + compile_commands_dir. The resolution
 --- itself (what root is chosen) is unchanged — only WHEN it runs is deferred.
@@ -319,7 +319,7 @@ function M.root_dir_factory(fallback)
     end
 end
 
---- Whether a clangd entry can back a running server (core §9.3/§9.8, clangd
+--- Whether a clangd entry can back a running server (spec/plugin.md §9.3/§9.8, clangd
 --- spec §3.1). nil → start; "unconfigured" → the unit supplying the database
 --- is not configured on this machine (or no active profile); "no_db" →
 --- configured here, but no compile_commands.json exists (yet).
@@ -557,7 +557,7 @@ function M.reconcile_on_attach(client)
     restart_clients({ client })
 end
 
---- Completion nudge (core §9.7 / cmake §12.4): the owned `compile_commands.json`
+--- Completion nudge (spec/plugin.md §9.7 / cmake §12.4): the owned `compile_commands.json`
 --- for this project's build dir was newly (re)written. Reuses the SAME check
 --- `reconcile_on_attach` uses (`_needs_restart_for_dir`): if a running client's
 --- recorded cmd lacks the now-resolvable `--compile-commands-dir`, restart it

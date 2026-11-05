@@ -109,7 +109,7 @@ describe("status page rendering (golden)", function()
 end)
 
 -- The refused-state hint (spec ui.md §1.4): the keys are refused while no
--- workspace is loaded (core §19.16 "Model writes"): the lw commands instead.
+-- workspace is loaded (spec/plugin.md §19.16 "Model writes"): the lw commands instead.
 describe("status page refused-state hint", function()
     local function render(trust)
         local lw = require("loomworks")

@@ -18,9 +18,9 @@ hl(0, "LoomworksRunning",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksDeleting",     { link = "DiagnosticError", default = true })
 hl(0, "LoomworksUnknown",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksActionable",   { link = "Normal",          default = true })
--- Output-artifact conflict / overwritten unit (spec/ui.md §1.5, §1.8, §2).
+-- Output-artifact conflict / overwritten unit (spec/plugin.md UI §1.5, §1.8, §2).
 hl(0, "LoomworksConflict",     { link = "DiagnosticWarn",  default = true })
--- `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (spec/ui.md §1.5).
+-- `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (spec/plugin.md UI §1.5).
 hl(0, "LoomworksStale",        { link = "DiagnosticHint",  default = true })
 
 -- Entity-color scheme:
