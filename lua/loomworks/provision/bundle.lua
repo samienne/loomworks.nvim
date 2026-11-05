@@ -11,7 +11,7 @@
 --- `lua-<version>/loomworks/cli.lua` is a regular file; any other state is
 --- never used, repaired or removed.
 ---
---- Deletion safety (CLAUDE.md "Deletion Safety"): the only removal here is
+--- Deletion safety (AGENTS.md "Deletion Safety"): the only removal here is
 --- of this process's own staging directory of a failed attempt — that exact
 --- path, a real directory whose realpath is a direct child of the realpath of
 --- `loomworks/bundle` (itself a real directory), its contents removed without

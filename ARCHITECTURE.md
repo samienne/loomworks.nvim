@@ -142,7 +142,7 @@ connection directly: reads go through a source, writes through a call module.
   slots (paused, samienne/loomworks#101).
 
 Deletion is limited to the plugin's own temporary files and staging
-directories; see the deletion-safety rules in `CLAUDE.md` and §19.16 of the
+directories; see the deletion-safety rules in `AGENTS.md` and §19.16 of the
 spec.
 
 ## Vendoring

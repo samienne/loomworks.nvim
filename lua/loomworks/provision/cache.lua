@@ -1,5 +1,5 @@
 --- loomworks/provision/cache.lua — pruning the plugin-managed host binaries
---- (spec §19.16 "Host binary", step 5h.3). DELETION CODE: see CLAUDE.md
+--- (spec §19.16 "Host binary", step 5h.3). DELETION CODE: see AGENTS.md
 --- "Deletion Safety", rule 11.
 ---
 --- `<stdpath("data")>/loomworks/lw/` holds one `<sha256>/lw[.exe]` per

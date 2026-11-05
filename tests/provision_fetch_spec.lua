@@ -1,7 +1,7 @@
 -- The plugin-managed lw (spec §19.16 "Host binary", step 5h.3): SHA-256 of
 -- binary data, the download into the managed slot (verify, then rename;
 -- nothing left behind on failure; one download per hash) and the pruning of
--- other managed binaries (deletion safety, CLAUDE.md rule 11).
+-- other managed binaries (deletion safety, AGENTS.md rule 2).
 
 local uv = vim.uv or vim.loop
 local sha256 = require("loomworks.provision.sha256")
