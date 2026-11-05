@@ -12,33 +12,17 @@
 -- a daemon of a given identity is retired at most once per workspace per
 -- editor session.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
-local server_mod = require("loomworks.daemon.server")
-local client = require("loomworks.daemon.client")
 local observer = require("loomworks.daemon.observer")
 local version = require("loomworks.daemon.client.version")
 local R = require("loomworks.daemon.editor_retire")
 local H = require("tests.daemon_helpers")
 local FR = require("tests.daemon_fake_relay")
 
-client.TIMEOUT_MS = 30000
-
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
     if name == "CI" or name == "LOOMWORKS_NO_DAEMON" then return nil end
     return os.getenv(name)
 end
-
---- The re-check tick for the tests against a real (in-process) daemon: far
---- past any test's length, so it never fires. The tick also bounds a
---- `status` (and `retire`) reply (an unanswered one at the next tick ends the
---- wait, §19.16), and the daemon shares this test's event loop: after a loop
---- stall longer than the tick, libuv runs the due timer before it reads the
---- reply, so any short tick reads as a daemon that stopped answering (seen on
---- Windows CI at 100 ms and at 1 s). These tests drive each re-check
---- themselves (`recheck`), once the previous `status` was answered; the
---- fake-daemon tests cover the tick itself.
-local REAL_RETIRE_CHECK_MS = 10 * 60 * 1000
 
 --- The editor's selection: the plugin-managed lw, whose pin names `v`.
 local function managed_selection(v)
@@ -132,22 +116,17 @@ describe("editor_retire (pure decisions, §19.16)", function()
 end)
 
 describe("the observer retires an incompatible idle daemon (step 5h.5)", function()
-    local root, core, ws, obs, s
+    local root, ws, obs
 
     before_each(function()
         R.reset()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
+        -- The workspace root as the editor resolves it (its real path).
+        ws = { root = vim.fs.normalize(vim.uv.fs_realpath(root)) }
     end)
     after_each(function()
         if obs then obs:stop() end
         obs = nil
-        if s and not s.srv.stopped then s.srv:stop("test end", 0) end
-        s = nil
-        pcall(function() core:shutdown() end)
         R.reset()
     end)
 
@@ -232,11 +211,8 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
 
     --- A remote task's `start` frame, delivered on the fake's connection.
     local function start_task(f, id)
-        local profile = ws:get_profiles()[1]
-        local pp = profile:projects()[1]
         f.copts.on_message({ kind = "task", phase = "start", task_id = id, meta = { name = "dev", kind = "build",
-            profile = profile.key, origin = "cli",
-            units = { { project = pp:project_key(), configuration = pp:config_key() } } } })
+            profile = "default", origin = "cli", units = { { project = "app", configuration = "Debug" } } } })
     end
 
     --- The fake's daemon is compatible and runs another code identity than
@@ -245,118 +221,6 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         f.daemons.old = { protocol = version.PROTOCOL, protocol_min = 10, lw_version = "0.0.1" }
         return f
     end
-
-    it("(a) a real idle incompatible daemon is retired once; the selected binary then launches", function()
-        s = { exited = nil }
-        s.srv = server_mod.new(root, { exit = function(c) s.exited = c end, tick_ms = 100, auth_timeout_ms = 30000 })
-        assert(s.srv:start())
-        local spawned, notes = 0, {}
-        local inspect = require("loomworks.daemon.inspect").state
-        local opts = vim.tbl_extend("force", managed_selection("9.9.9"), {
-            notify = function(m) notes[#notes + 1] = m end,
-            -- The daemon presents a transport the editor does not speak
-            -- and another lw_version.
-            connect = function(ep, copts, cb)
-                client.connect(ep, copts, function(c, e)
-                    if c then
-                        c.challenge = vim.tbl_extend("force", c.challenge,
-                            { protocol = 99, protocol_min = 99, lw_version = "0.0.1" })
-                    end
-                    cb(c, e)
-                end)
-            end,
-            inspect = function(r)
-                if s.exited == nil then return inspect(r) end
-                return { kind = "none" }
-            end,
-            launch = function() spawned = spawned + 1 end,
-            retire_check_ms = REAL_RETIRE_CHECK_MS,
-        })
-        obs = attach(opts)
-        assert.is_true(vim.wait(10000, function() return s.exited ~= nil end, 10), obs:runtime_line())
-        assert.is_true(s.srv.retiring)
-        assert.is_true(vim.wait(5000, function() return spawned == 1 end, 10), obs:runtime_line())
-        assert.equals(1, #notes)
-        assert.truthy(notes[1]:find("retired the workspace daemon (lw v0.0.1", 1, true), notes[1])
-        assert.truthy(notes[1]:find("starting lw v9.9.9", 1, true), notes[1])
-        assert.truthy(obs:runtime_line():find("retired the workspace daemon", 1, true), obs:runtime_line())
-        assert.is_true(R.was_retired(ws.root, "0.0.1"))
-        vim.wait(300)
-        assert.equals(1, spawned)
-    end)
-
-    it("(b) a real busy incompatible daemon is not retired until it is idle (re-checked)", function()
-        s = { exited = nil }
-        s.srv = server_mod.new(root, { exit = function(c) s.exited = c end, tick_ms = 100, auth_timeout_ms = 30000 })
-        assert(s.srv:start())
-        local cli = assert(client.session(s.srv.address))
-        local busy
-        for c in pairs(s.srv.conns) do
-            if c.authed and not c.closed and not c.observer then busy = c end
-        end
-        busy.in_flight = { [999] = true }
-        local statuses = 0
-        obs = attach(vim.tbl_extend("force", managed_selection("9.9.9"), {
-            connect = function(ep, copts, cb)
-                client.connect(ep, copts, function(c, e)
-                    if c then
-                        c.challenge = vim.tbl_extend("force", c.challenge, { protocol = 99, protocol_min = 99,
-                            lw_version = "0.0.1" })
-                        local request = c.request
-                        c.request = function(cc, msg, rcb)
-                            if msg.kind == "status" then statuses = statuses + 1 end
-                            return request(cc, msg, rcb)
-                        end
-                    end
-                    cb(c, e)
-                end)
-            end,
-            retire_check_ms = REAL_RETIRE_CHECK_MS,
-            launch = function() end }))
-        assert.is_true(vim.wait(10000, function()
-            return obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true) ~= nil
-        end, 10), obs:runtime_line())
-        -- One re-check (the tick, fired by the test): a new `status`, sent
-        -- only once the previous one was answered.
-        local function recheck()
-            local wait = assert(obs._retire, obs:runtime_line())
-            assert.is_nil(wait.asking)
-            local before = statuses
-            obs:_check_retire()
-            assert.equals(before + 1, statuses)
-        end
-        local function answered()
-            return vim.wait(10000, function() return not (obs._retire and obs._retire.asking) end, 10)
-        end
-        -- Two more re-checks: still busy, never retired.
-        for _ = 1, 2 do
-            recheck()
-            assert.is_true(answered(), obs:runtime_line())
-            assert.truthy(obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true),
-                obs:runtime_line())
-        end
-        assert.is_false(s.srv.retiring)
-        assert.is_false(R.was_retired(root, "0.0.1"))
-        busy.in_flight = {}
-        recheck()
-        assert.is_true(vim.wait(10000, function() return s.srv.retiring end, 10), obs:runtime_line())
-        cli:close()
-        -- Idle now: it exits once the queued writes drained (at most
-        -- RETIRE_DRAIN_MS); room for a stalled loop on a loaded machine.
-        local exited = vim.wait(15000, function() return s.exited ~= nil end, 10)
-        local why
-        if not exited then
-            local conns = {}
-            for c in pairs(s.srv.conns) do
-                conns[#conns + 1] = { authed = c.authed, closed = c.closed, observer = c.observer,
-                    in_flight = c.in_flight }
-            end
-            why = "the retiring daemon did not exit: " .. vim.inspect({ busy = s.srv.busy,
-                stopped = s.srv.stopped, timer = s.srv._retire_timer ~= nil, conns = conns,
-                runtime = obs:runtime_line() })
-        end
-        assert.is_true(exited, why)
-    end)
 
     it("(a') an idle incompatible daemon is retired, the successor launched once and observed", function()
         local f = fake()

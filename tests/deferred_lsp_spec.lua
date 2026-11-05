@@ -13,7 +13,7 @@
 
 require("loomworks.lsp")
 local lsp = require("loomworks.lsp")
-local events = require("loomworks.events")
+local events = require("loomworks")
 local lw = require("loomworks")
 
 --- Make a scratch buffer with a unique absolute name so `buf_under_root` sees
@@ -65,7 +65,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         assert.equals(1, lsp._gate_queue_len())
 
         -- Ready signal releases the queue.
-        events.emit("lsp_ready")
+        events._emit("lsp_ready")
         assert.is_true(resolved)
         assert.equals(0, lsp._gate_queue_len())
     end)
@@ -79,11 +79,11 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         -- Tool detection completing is NOT the release signal anymore — the
         -- owned compile_commands database is generated AFTER tools_detected, so
         -- releasing here would start clangd against an absent DB (then restart).
-        events.emit("tools_detected")
+        events._emit("tools_detected")
         assert.is_false(resolved, "buffer released on tools_detected — must wait for lsp_ready")
         assert.equals(1, lsp._gate_queue_len())
 
-        events.emit("lsp_ready")
+        events._emit("lsp_ready")
         assert.is_true(resolved)
         assert.equals(0, lsp._gate_queue_len())
     end)
@@ -107,11 +107,11 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         lsp.gated_root_dir(buf, function() end, function() resolved = true end)
         assert.equals(1, lsp._gate_queue_len())
 
-        events.emit("workspace_initializing")
+        events._emit("workspace_initializing")
         assert.is_false(resolved, "workspace_initializing drained the queue")
         assert.equals(1, lsp._gate_queue_len())
 
-        events.emit("lsp_ready")
+        events._emit("lsp_ready")
         assert.is_true(resolved)
     end)
 
@@ -133,7 +133,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         assert.is_false(resolved, "buffer inside a detected loomworks workspace must be held")
         assert.equals(1, lsp._gate_queue_len())
 
-        events.emit("lsp_ready")
+        events._emit("lsp_ready")
         assert.is_true(resolved)
         pcall(vim.fn.delete, dir, "rf")
     end)
@@ -153,7 +153,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         lsp.gated_root_dir(buf, function() end, function() resolved = true end)
         assert.equals(1, lsp._gate_queue_len())
 
-        events.emit("workspace_changed", nil)
+        events._emit("workspace_changed", nil)
         assert.is_true(resolved)
         assert.equals(0, lsp._gate_queue_len())
     end)
@@ -163,11 +163,11 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         local resolved = false
         lsp.gated_root_dir(buf, function() end, function() resolved = true end)
 
-        events.emit("workspace_changed", { root = ROOT }) -- success payload
+        events._emit("workspace_changed", { root = ROOT }) -- success payload
         assert.is_false(resolved)
         assert.equals(1, lsp._gate_queue_len())
 
-        events.emit("lsp_ready")
+        events._emit("lsp_ready")
         assert.is_true(resolved)
     end)
 
@@ -189,7 +189,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         lsp.gated_root_dir(buf, function() end, function() resolved = true end)
         vim.api.nvim_buf_delete(buf, { force = true })
 
-        events.emit("lsp_ready")
+        events._emit("lsp_ready")
         assert.is_false(resolved) -- resolver skipped for the dead buffer
         assert.equals(0, lsp._gate_queue_len())
     end)

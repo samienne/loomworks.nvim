@@ -9,7 +9,6 @@
 -- The cases drive a real loaded (shell) workspace with a fake connected
 -- observer whose connection answers as the test says.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local observer = require("loomworks.daemon.observer")
 local test_source = require("loomworks.test_source")
 local adapter_mod = require("loomworks.loomtest_adapter")
@@ -18,16 +17,20 @@ local views = require("loomworks.views")
 local H = require("tests.daemon_helpers")
 
 describe("the editor's tests read path in daemon mode (§19.16 Tests)", function()
-    local root, core, ws
+    local root, ws
     local notes
     local orig_notify
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
+        -- Record the root as a load does, without attaching a real observer:
+        -- each case installs its own (fake) one.
+        local obs_mod = require("loomworks.daemon.observer")
+        local real_attach = obs_mod.attach
+        obs_mod.attach = function() end
+        require("loomworks")._load(root)
+        obs_mod.attach = real_attach
+        ws = { root = require("loomworks").workspace_root() }
         notes = {}
         orig_notify = vim.notify
         vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
@@ -42,7 +45,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
         loomtest.unregister_adapter("loomworks")
         loomtest.clear()
         adapter_mod._reset()
-        pcall(function() core:shutdown() end)
+        require("loomworks").shutdown()
     end)
 
     --- A connected observer of `ws` over a fake connection: `answer(method,
@@ -376,7 +379,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             local orig, renders = adapter_mod._render, 0
             adapter_mod._render = function() renders = renders + 1 end
             local ok, err = pcall(function()
-                require("loomworks.events").emit("active_set_changed")
+                require("loomworks")._emit("active_set_changed")
                 vim.wait(400)
             end)
             adapter_mod._render = orig

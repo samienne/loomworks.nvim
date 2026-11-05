@@ -623,8 +623,8 @@ end
 --- @param plan string|nil
 --- @return loomworks.CommandOutcome|{ outcome: "confirm", lines: string[], plan: string }
 function M.delete_user_prefs(ws, plan)
-    local lw = require("loomworks")
-    local r = commands.delete_user_prefs(lw._core(), (ws and ws.root) or lw.user_prefs_root(), plan)
+    local core = require("loomworks.core").process()
+    local r = commands.delete_user_prefs(core, (ws and ws.root) or core:user_prefs_root(), plan)
     r.reloaded = nil
     return r
 end
@@ -873,8 +873,8 @@ end
 --- @param yes boolean|nil
 --- @return loomworks.CommandOutcome
 function M.nuke(ws, plan, yes)
-    local lw = require("loomworks")
-    return commands.nuke(lw._core(), (ws and ws.root) or lw.user_prefs_root(), plan, yes)
+    local core = require("loomworks.core").process()
+    return commands.nuke(core, (ws and ws.root) or core:user_prefs_root(), plan, yes)
 end
 
 --- The installed SDK providers (or the one named) and the installations

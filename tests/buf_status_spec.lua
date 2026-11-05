@@ -1,77 +1,52 @@
 -- Test lw.buf_status as lualine uses it: init.lua reads the two views
 -- (spec §19.13 "Two sources, one shape") through loomworks.views; here the
--- views are built in-process from a test Core with the same builder
--- (Core:view_header / Core:view_projects_index), and the buffer path comes
--- from the test's `buf_name`.
+-- daemon's `view.Header/1` and `view.ProjectsIndex/1` are hand-written
+-- (spec/protocol/interfaces/loomworks/view.*.json) and held by a fake owner,
+-- and the buffer path is a named scratch buffer's.
 
-local Core = require("loomworks.core")
 local views = require("loomworks.views")
-local h = require("tests.helpers")
+local lw = require("loomworks")
 
-local function make_core(config_overrides, user_overrides, cache_overrides, dep_overrides)
-    local files = {
-        ["loomworks.json"] = h.make_config_json(config_overrides),
-    }
-    if user_overrides then
-        files["loomworks.user.json"] = h.make_user_json(user_overrides)
-    end
-    if cache_overrides then
-        files["loomworks.cache.json"] = h.make_cache_json(cache_overrides)
-    end
-    local deps = h.make_test_deps(files, dep_overrides)
-    local core = Core.new(deps)
-    return core, deps
+local ROOT = (vim.fn.tempname():gsub("\\", "/"))
+
+--- A ProjectsIndex/1 record of project `key` at <ROOT>/<key>.
+local function rec(key, typ, active)
+    return { key = key, label = key, type = typ or "cmake", path = key, abs_path = ROOT .. "/" .. key, active = active }
 end
 
---- lw.buf_status over the in-process views of `core` (mirrors init.lua).
-local function buf_status(core, bufnr)
-    local header = core:view_header()
-    if not header or header.state ~= "loaded" then return nil end
-    return views.status_of(header, core:view_projects_index(), core._deps.buf_name(bufnr or 0))
+--- lw.buf_status of a buffer named `path` while the daemon's views are
+--- `header` and `index` (nil: not held).
+local function buf_status(header, index, path)
+    local owner = {}
+    if header then views.set(owner, "header", header) end
+    if index then views.set(owner, "projects", index) end
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, path)
+    local ok, res = pcall(lw.buf_status, buf)
+    vim.api.nvim_buf_delete(buf, { force = true })
+    views.clear(owner)
+    assert(ok, res)
+    return res
+end
+
+local function loaded(extra)
+    return vim.tbl_extend("force", { root = ROOT, state = "loaded", name = "w" }, extra or {})
 end
 
 describe("buf_status", function()
     it("returns nil without workspace", function()
-        local core = make_core()
-        -- no setup call — core has no workspace
-        local result = buf_status(core, 0)
-        assert.is_nil(result)
+        assert.is_nil(buf_status(nil, nil, ROOT .. "/App/src/main.cpp"))
+        assert.is_nil(buf_status({ root = ROOT, state = "unloaded" }, { projects = {} }, ROOT .. "/App/src/main.cpp"))
     end)
 
     it("returns nil when buffer not in any project", function()
-        local core = make_core({
-            configuration_sets = { debug = { App = "Debug" } },
-        }, nil, nil, {
-            buf_name = function() return "/other/path/file.cpp" end,
-        })
-        core:setup({ root = "/root" })
-        local result = buf_status(core, 0)
-        assert.is_nil(result)
+        assert.is_nil(buf_status(loaded(), { projects = { rec("App") } }, "/other/path/file.cpp"))
     end)
 
     it("returns project info for matching buffer", function()
-        local core = make_core({
-            configuration_sets = { debug = { App = "Debug" } },
-        }, {
-            active_profile = "debug",
-            profiles = {
-                debug = { configuration_set = "debug" },
-            },
-        }, {
-            configurations = {
-                ["App/Debug"] = {
-                    project_key = "App",
-                    config_key = "Debug",
-                    variant = "Debug",
-                    type = "cmake",
-                },
-            },
-        }, {
-            buf_name = function() return "/root/App/src/main.cpp" end,
-        })
-        core:setup({ root = "/root" })
-
-        local result = buf_status(core, 0)
+        local result = buf_status(loaded({ active_profile = "debug", config_set = "debug" }),
+            { projects = { rec("App", "cmake", { configuration = "Debug", state = "unconfigured" }) } },
+            ROOT .. "/App/src/main.cpp")
         assert.is_not_nil(result)
         assert.equals("debug", result.profile_key)
         assert.equals("debug", result.set_name)
@@ -80,159 +55,46 @@ describe("buf_status", function()
     end)
 
     it("includes tool_key when profile has one", function()
-        local detected_tools = {
-            cmake = {
-                { tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
-                    tool_key = "ninja-gcc-12", tool_label = "Ninja + GCC 12" },
-            },
-        }
-        local core = make_core({
-            configuration_sets = { debug = { App = "Debug" } },
-        }, {
-            active_profile = "debug:ninja-gcc-12",
-            profiles = {
-                ["debug:ninja-gcc-12"] = {
-                    configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" } } },
-                },
-            },
-        }, {
-            build_dirs = {
-                ["build/App/ninja-gcc-12/Debug"] = {
-                    project_key = "App",
-                    config_key = "Debug:ninja-gcc-12",
-                    variant = "Debug",
-                    type = "cmake",
-                    state = "configured",
-                    tool_key = "ninja-gcc-12",
-                    tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" },
-                },
-            },
-        }, {
-            buf_name = function() return "/root/App/src/main.cpp" end,
-            modules = {
-                get = function(mod_type)
-                    if mod_type ~= "cmake" then return nil end
-                    return {
-                        id = "cmake",
-                        has_keyed_tools = true,
-                        validate = function() return { valid = true, warnings = {} } end,
-                        info = function() return { configurations = {} } end,
-                        detect_tools_async = function(callback) callback({
-                            { tool_data = { id = "ninja-gcc-12", compiler_path = "/usr/bin/gcc-12", generator = "Ninja" } },
-                        }) end,
-                        tool_key = function(td) return td.id end,
-                        tool_label = function(td) return td.display or td.id end,
-                        tools_match = function(a, b)
-                            if a == nil and b == nil then return true end
-                            if a == nil or b == nil then return false end
-                            return vim.deep_equal(a, b)
-                        end,
-                    }
-                end,
-            },
-        })
-        core:setup({ root = "/root" })
-
-        local result = buf_status(core, 0)
+        local result = buf_status(loaded({ active_profile = "debug:ninja-gcc-12", config_set = "debug" }),
+            { projects = { rec("App", "cmake", { configuration = "Debug", state = "configured", tool_key = "ninja-gcc-12" }) } },
+            ROOT .. "/App/src/main.cpp")
         assert.is_not_nil(result)
         assert.equals("debug:ninja-gcc-12", result.profile_key)
         assert.equals("debug", result.set_name)
         assert.equals("ninja-gcc-12", result.tool_key)
     end)
 
-    it("returns status from config unit", function()
-        local core = make_core({
-            configuration_sets = { debug = { App = "Debug" } },
-        }, {
-            active_profile = "debug",
-            profiles = {
-                debug = { configuration_set = "debug" },
-            },
-        }, {
-            configurations = {
-                ["App/Debug"] = {
-                    project_key = "App",
-                    config_key = "Debug",
-                    variant = "Debug",
-                    type = "cmake",
-                    state = "built",
-                    build_dir = "/root/.nvim/build/App/Debug",
-                },
-            },
-        }, {
-            buf_name = function() return "/root/App/src/main.cpp" end,
-        })
-        core:setup({ root = "/root" })
-
-        local result = buf_status(core, 0)
+    it("returns status from the active unit", function()
+        local result = buf_status(loaded({ active_profile = "debug", config_set = "debug" }),
+            { projects = { rec("App", "cmake", { configuration = "Debug", state = "built" }) } },
+            ROOT .. "/App/src/main.cpp")
         assert.is_not_nil(result)
         assert.equals("App", result.project)
-        -- The merged status comes through the ConfigUnit
         assert.equals("Debug", result.configuration)
+        assert.equals("built", result.status)
+        assert.equals("built", result.profile_state)
     end)
 
     it("returns nil set_name when profile_key is nil", function()
-        -- When there is an active set but no profile key (e.g. projects exist
-        -- but no profile is activated), set_name should be nil.
-        local core = make_core({
-            configuration_sets = { debug = { App = "Debug" } },
-        }, nil, nil, {
-            buf_name = function() return "/root/App/src/main.cpp" end,
-        })
-        core:setup({ root = "/root" })
-
-        local result = buf_status(core, 0)
-        -- With no active profile, active_set.name is nil, so buf_status
-        -- should still return project info but with nil profile/set_name.
-        if result then
-            assert.is_nil(result.profile_key)
-            assert.is_nil(result.set_name)
-            assert.equals("App", result.project)
-        end
+        local result = buf_status(loaded(), { projects = { rec("App") } }, ROOT .. "/App/src/main.cpp")
+        assert.is_not_nil(result)
+        assert.is_nil(result.profile_key)
+        assert.is_nil(result.set_name)
+        assert.equals("App", result.project)
     end)
 
-    it("returns nil tool_key for non-cmake projects", function()
-        local core = make_core({
-            projects = { Frontend = { ets = {} } },
-            configuration_sets = { debug = { Frontend = "debug" } },
-        }, { active_profile = "debug" }, {
-            profiles = {
-                debug = {
-                    configuration_set = "debug",
-                    configurations = { "Frontend/debug" },
-                },
-            },
-            configurations = {
-                ["Frontend/debug"] = {
-                    project_key = "Frontend",
-                    config_key = "debug",
-                    variant = "debug",
-                    type = "ets",
-                },
-            },
-        }, {
-            buf_name = function() return "/root/Frontend/src/main.ets" end,
-        })
-        core:setup({ root = "/root" })
-
-        local result = buf_status(core, 0)
+    it("returns nil tool_key for a project whose unit has none", function()
+        local result = buf_status(loaded({ active_profile = "debug", config_set = "debug" }),
+            { projects = { rec("Frontend", "ets", { configuration = "debug", state = "unconfigured" }) } },
+            ROOT .. "/Frontend/src/main.ets")
         assert.is_not_nil(result)
         assert.equals("Frontend", result.project)
         assert.is_nil(result.tool_key)
     end)
 
-    it("a project at /root/App does not claim a buffer in /root/AppX (separator boundary)", function()
-        local core = make_core({
-            configuration_sets = { debug = { App = "Debug" } },
-        }, {
-            active_profile = "debug",
-            profiles = { debug = { configuration_set = "debug" } },
-        }, nil, {
-            buf_name = function() return "/root/AppX/src/main.cpp" end,
-        })
-        core:setup({ root = "/root" })
-        assert.is_nil(buf_status(core, 0))
+    it("a project at <root>/App does not claim a buffer in <root>/AppX (separator boundary)", function()
+        assert.is_nil(buf_status(loaded({ active_profile = "debug", config_set = "debug" }),
+            { projects = { rec("App") } }, ROOT .. "/AppX/src/main.cpp"))
     end)
 end)
 

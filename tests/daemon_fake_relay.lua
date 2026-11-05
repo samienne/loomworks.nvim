@@ -1,10 +1,9 @@
 -- A fake of the editor's relay seam (observer `opts.relay`, the shape of
 -- loomworks.daemon.client.relay.connect) for the observer specs: no process,
 -- it follows what a relay does (§19.10 "Connections", §19.16 "Through the
--- relay") over an in-process server or a fake daemon world:
---   * every form polls the daemon state (`o.inspect`, default the real
---     inspect.state) and connects (`o.connect`, default client.connect) to a
---     live daemon; the connection gets the relay's `welcome` additions
+-- relay") over a fake daemon world:
+--   * every form polls the daemon state (`o.inspect`, required) and connects
+--     (`o.connect`, required) to a live daemon; the connection gets the relay's `welcome` additions
 --     (`daemon` = its challenge + the handle's pid, start time and exe;
 --     `via = "relay"`; `relay = { lw_version = o.relay_lw_version }` when
 --     that option is a string — the relay's own code identity, §19.8 step 4),
@@ -24,10 +23,18 @@
 -- that do nothing until the test's `r.exit`.
 
 local uv = vim.uv or vim.loop
-local client = require("loomworks.daemon.client")
-local connect_mod = require("loomworks.daemon.connect")
+local version = require("loomworks.daemon.client.version")
 
 local M = {}
+
+--- A relay's instance argument "<pid>:<start_time>" (what the relay itself
+--- reads from its command line), as a { pid, start_time } record.
+local function parse_instance(s)
+    if type(s) ~= "string" then return nil end
+    local p, st = s:match("^(%d+):(.+)$")
+    if not p then return nil end
+    return { pid = tonumber(p), start_time = st }
+end
 
 local function same(a, b)
     return type(a) == "table" and type(b) == "table" and a.pid == b.pid and a.start_time == b.start_time
@@ -35,6 +42,7 @@ end
 
 function M.new(o)
     o = o or {}
+    assert(o.inspect and o.connect, "fake relay: o.inspect and o.connect are required")
     local f = { spawns = {}, relays = {}, launched = 0 }
 
     function f.relay(ropts, cb)
@@ -45,8 +53,8 @@ function M.new(o)
         local function stop_timer()
             if timer then pcall(function() timer:stop(); timer:close() end); timer = nil end
         end
-        local retiring = ropts.form == "retiring" and connect_mod.parse_instance(ropts.instance) or nil
-        local skip = ropts.form == "skip" and connect_mod.parse_instance(ropts.instance) or nil
+        local retiring = ropts.form == "retiring" and parse_instance(ropts.instance) or nil
+        local skip = ropts.form == "skip" and parse_instance(ropts.instance) or nil
         local launched_here = false
         function r.close(self)
             if self.ended then return end
@@ -62,14 +70,14 @@ function M.new(o)
         end
         local function tick()
             if r.ended or r.done or r.connecting then return end
-            local st = (o.inspect or require("loomworks.daemon.inspect").state)(ropts.root)
+            local st = o.inspect(ropts.root)
             local h = st.handle
             local live = st.kind == "live" and h ~= nil
             if live and not (retiring and same(h, retiring)) and not (skip and same(h, skip)) then
                 r.connecting = true
                 local copts = { client = ropts.client, role = ropts.role, on_message = ropts.on_message,
                     on_close = ropts.on_close, timeout_ms = 30000 }
-                ;(o.connect or client.connect)(h.endpoint, copts, function(conn)
+                ;o.connect(h.endpoint, copts, function(conn)
                     r.connecting = false
                     if r.ended or r.done then
                         if conn then conn.on_close = nil; conn:close() end
@@ -94,7 +102,7 @@ function M.new(o)
                         conn.welcome.relay = { lw_version = o.relay_lw_version }
                     end
                     conn.challenge = daemon
-                    conn.transport = conn.transport or client._agreed(daemon, {})
+                    conn.transport = conn.transport or version.negotiate(daemon.protocol, daemon.protocol_min)
                     conn.relay = r
                     r.conn = conn
                     cb(conn)

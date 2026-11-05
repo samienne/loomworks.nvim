@@ -13,27 +13,29 @@
 -- observer whose connection answers `get` / `set_option` as the test says;
 -- one case runs the observer against a real daemon (the lw of LOOMWORKS_LW).
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local observer = require("loomworks.daemon.observer")
 local source = require("loomworks.lsp_source")
 local lsp = require("loomworks.lsp")
 local views = require("loomworks.views")
-local events = require("loomworks.events")
+local events = require("loomworks")
 local H = require("tests.daemon_helpers")
 
 local LSP_FEATURE = observer.LSP.feature
 
 describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function()
-    local root, core, ws
+    local root, ws
     local handlers = {}
     local function on(ev, fn) events.on(ev, fn); handlers[#handlers + 1] = { ev, fn } end
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
+        -- Record the root as a load does, without attaching a real observer:
+        -- each case installs its own (fake) one.
+        local real_attach = observer.attach
+        observer.attach = function() end
+        require("loomworks")._load(root)
+        observer.attach = real_attach
+        ws = { root = require("loomworks").workspace_root() }
         source._reset_changes()
         lsp._reset_gate()
         lsp._reset_withheld()
@@ -48,7 +50,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
         lsp._reset_gate()
         lsp._reset_withheld()
         lsp._gate_timeout_ms = nil
-        pcall(function() core:shutdown() end)
+        require("loomworks").shutdown()
     end)
 
     --- A connected observer of `ws` over a fake connection: `answer(method,
@@ -513,8 +515,8 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
 
         it("the model's own events re-evaluate nothing in daemon mode", function()
             fake_obs()
-            events.emit("active_set_changed")
-            events.emit("lsp_options_changed", { server = "fakesrv", key = "a", value = 3 })
+            events._emit("active_set_changed")
+            events._emit("lsp_options_changed", { server = "fakesrv", key = "a", value = 3 })
             vim.wait(50)
             assert.equals(0, hits.active)
             assert.equals(0, #hits.options)
@@ -528,7 +530,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.equals(1, lsp._gate_queue_len())
             assert.equals("held", lsp.buf_state(buf))
             -- The model's own readiness does not release a hold for the daemon.
-            events.emit("lsp_ready")
+            events._emit("lsp_ready")
             assert.equals(1, lsp._gate_queue_len())
             -- Loaded, not ready: still held.
             calls[1].cb(dstate({ server = "fakesrv", ready = false }))
@@ -701,18 +703,14 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
     end)
 
     describe("options", function()
-        local notes, saved_notify, wrote, orig_set
+        local notes, saved_notify
         before_each(function()
             notes = {}
             saved_notify = vim.notify
             vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
-            wrote = false
-            orig_set = ws.set_lsp_option
-            ws.set_lsp_option = function() wrote = true; return true end
         end)
         after_each(function()
             vim.notify = saved_notify
-            ws.set_lsp_option = orig_set
         end)
 
         it("set_option goes through the daemon, applied from the read back", function()
@@ -725,7 +723,6 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
                 function(ok, err) done = { ok, err } end))
             assert.is_true(vim.wait(2000, function() return done ~= nil end, 10))
             assert.same({ true }, done)
-            assert.is_false(wrote)
             assert.equals("set_option", calls[1].method)
             assert.same({ server = "clangd", key = "clang_tidy", value = false }, calls[1].args)
             assert.is_true(vim.wait(2000, function() return #calls >= 2 and calls[2].method == "get" end, 10))
@@ -756,7 +753,6 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             local err = try({ nil, { code = "internal", message = "no answer" } })
             assert.equals("the call to the workspace daemon failed: no answer", err)
             assert.is_nil(err:find("refused", 1, true))
-            assert.is_false(wrote)
         end)
 
         it("not carried: an error, nothing written", function()
@@ -769,28 +765,6 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.is_false(ok)
             assert.truthy(err:find("does not carry the LSP configuration", 1, true))
             assert.same({ false, err }, done)
-            assert.is_false(wrote)
-        end)
-    end)
-
-    describe("owned databases", function()
-        --- A unit whose module owns a database, recording each generation.
-        local function unit_with_db(rec)
-            return {
-                _project = { _module = { impl = { refresh_lsp_database = function(_, done)
-                    rec[#rec + 1] = true
-                    if done then done(false) end
-                end } } },
-                build_dir = function() return root .. "/out/Debug" end,
-                variant = function() return "Debug" end,
-            }
-        end
-
-        it("in-process mode (no observer) generates", function()
-            local rec = {}
-            assert.is_true(ws:generates_lsp_databases())
-            ws:_refresh_lsp_database_for(unit_with_db(rec))
-            assert.equals(1, #rec)
         end)
     end)
 

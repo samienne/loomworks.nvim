@@ -224,7 +224,7 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         H.track_root(root)
         assert.is_true(vim.wait(10000, function() return obs:can_call("prepare_run") end, 20), obs:runtime_line())
-        local ov = require("loomworks.overseer")
+        local ov = require("loomworks.task_launch")
         local orig = ov.launch_run_task
         local launched = {}
         ov.launch_run_task = function(spec) launched[#launched + 1] = spec; return nil end

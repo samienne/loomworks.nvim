@@ -1,0 +1,32 @@
+{
+  "debug_adapters": {},
+  "header": {
+    "name": "root",
+    "root": "/root",
+    "state": "loaded",
+    "version": "test"
+  },
+  "lsp_options": {
+    "clangd": {
+      "background_index": true,
+      "background_index_priority": "low",
+      "clang_tidy": true,
+      "extra_args": {}
+    }
+  },
+  "workspace": {
+    "config_sets": {},
+    "diagnostics": {},
+    "modified": false,
+    "orphaned": {
+      "configurations": {},
+      "stray_dirs": {}
+    },
+    "profiles": {},
+    "projects": {},
+    "published": false,
+    "sdk_providers": 1,
+    "sdks": {},
+    "suggestions": 0
+  }
+}

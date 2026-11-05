@@ -1,23 +1,18 @@
 -- The editor's observer of the workspace daemon (spec §19.11, §19.12,
--- §19.16) against an in-process server: the task stream (unresolved keys
--- by name only), keepalive, drop without relaunch, reconnect, incompatible
--- and retiring daemons, and in-process mode (the host-binary order:
+-- §19.16) against a fake daemon world (frames as plain tables, shaped by
+-- spec/protocol): the task stream (unresolved keys by name only),
+-- keepalive, drop without relaunch, reconnect, incompatible and retiring
+-- daemons, and in-process mode (the host-binary order:
 -- tests/provision_select_spec.lua).
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
-local server_mod = require("loomworks.daemon.server")
-local client = require("loomworks.daemon.client")
-local tasks_mod = require("loomworks.daemon.tasks")
 local observer = require("loomworks.daemon.observer")
 local editor_ops = require("loomworks.daemon.editor_ops")
 local binary_select = require("loomworks.provision.select")
 local remote_task = require("loomworks.daemon.remote_task")
-local version = require("loomworks.daemon.version")
-local events = require("loomworks.events")
+local version = require("loomworks.daemon.client.version")
+local events = require("loomworks")
 local H = require("tests.daemon_helpers")
 local FR = require("tests.daemon_fake_relay")
-
-client.TIMEOUT_MS = 30000
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -25,149 +20,195 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
---- The states the stub `/views` serve (`get`, `initial`); a test changes them
---- and emits `update` itself. Reset per mount.
-local VIEW_STATE = {}
-
---- `/tasks` (loomworks.Tasks/1), `/build` (loomworks.Build/1), `/launch` (loomworks.Launch/1),
---- `/debug` (loomworks.DebugConfig/1), `/workspace` (loomworks.Workspace/1) and
---- `/views` (loomworks.view.Header/1, loomworks.view.ProjectsIndex/1) with
---- stub handlers: what a daemon with a build service offers, so the
---- observer subscribes (step 5g.3, 5j) and a transport-11 connection is sent
---- only what it subscribed to.
-local function mount_views(srv, o)
-    local reg = srv:registry()
-    assert(reg:mount("/tasks", "core", "loomworks.Tasks", 1, { methods = {
-        list = function() return { tasks = {} } end,
-        cancel = function() return { outcome = "ok" } end,
-    } }))
-    -- The editor's operations (step 5k): called, never subscribed to.
-    -- (`o.build == false`: a daemon without them — the editor runs in-process.)
-    if not (o and o.build == false) then assert(reg:mount("/build", "core", "loomworks.Build", 1, { methods = {
-        build = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-        configure = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-        clean = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-        reset = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-    } })) end
-    -- The launch preparations and the debug adapters (step 5k C2).
-    if not (o and o.build == false) then
-        assert(reg:mount("/launch", "core", "loomworks.Launch", 1, { methods = {
-            prepare_run = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-            prepare_debug = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-            build = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-            device_log = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-            -- The launchable-targets read (step 6b-α): unused here.
-            targets = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
-        } }))
-        assert(reg:mount("/debug", "core", "loomworks.DebugConfig", 1, { methods = {
-            adapters = function() return { languages = {} } end,
-            set_adapter = function() return { outcome = "ok" } end,
-            known_languages = function() return { languages = {} } end,
-        } }))
-        -- The LSP configuration (step 5l): subscribed to for `changed`.
-        assert(reg:mount("/lsp", "core", "loomworks.LspConfig", 1, { methods = {
-            get = function() return VIEW_STATE.lsp or { state = "unloaded", ready = false, projects = {}, options = {} } end,
-            set_option = function() return { outcome = "ok" } end,
-        } }))
-        -- The tests (step 5m C1): Tests/1 called (discover), its view subscribed to.
-        local function refused() return { outcome = "refused", message = "stub", exit_code = 1 } end
-        assert(reg:mount("/tests", "core", "loomworks.Tests", 1, { methods = {
-            run = refused, discover = refused, run_cases = refused, prepare_debug = refused,
-            collect = function() return { outcome = "ok" } end,
-            result = function() return {} end,
-        } }))
-        -- The devices (step 5n C2): Devices/1 subscribed to for `changed`,
-        -- Profiles/1's device choice called.
-        VIEW_STATE.device_reads = 0
-        VIEW_STATE.devices = {}
-        assert(reg:mount("/devices", "core", "loomworks.Devices", 1, { methods = {
-            list = function()
-                VIEW_STATE.device_reads = VIEW_STATE.device_reads + 1
-                return { devices = VIEW_STATE.devices }
-            end,
-            scan = refused, install = refused, launch = refused,
-            stop = function() return { outcome = "refused", message = "stub" } end,
-        } }))
-        assert(reg:mount("/profiles", "core", "loomworks.Profiles", 1, { methods = {
-            set_device = function() return { outcome = "ok" } end,
-            clear_device = function() return { outcome = "ok" } end,
-            compiler_cache = function() return { outcome = "ok" } end,
-            -- Selection and authoring (step 5o B2): unused here.
-            set_active = refused, create = refused, tool_choices = refused,
-            add_tool = refused, remove_tool = refused,
-            -- The default launch target (step 6b-α): unused here.
-            set_default_target = refused,
-        } }))
-        -- The configuration sets (step 5o C2a): called, never subscribed to.
-        assert(reg:mount("/projects", "core", "loomworks.ConfigSets", 1, { methods = {
-            candidates = function() return { outcome = "ok", sets = {} } end,
-            add = refused, update = refused, remove = refused, generate_defaults = refused,
-        } }))
-        -- The projects (step 5o C2b): called, never subscribed to.
-        assert(reg:mount("/projects", "core", "loomworks.Projects", 1, { methods = {
-            candidates = refused, add = refused, declaration = refused, configuration_save = refused,
-            configuration_remove = refused, options_save = refused, launch_save = refused,
-            launch_remove = refused, deploy_save = refused, variable_save = refused,
-            variable_remove = refused, type_config_set = refused, expand_preview = refused,
-            unit_options = refused,
-        } }))
-        -- The toolchain rescan and the SDKs (step 5o C2c-1): called, never
-        -- subscribed to.
-        assert(reg:mount("/toolchains", "core", "loomworks.Toolchains", 1, { methods = {
-            list = refused, rescan = refused,
-        } }))
-        assert(reg:mount("/toolchains", "core", "loomworks.Sdks", 1, { methods = {
-            detect = refused, add = refused, remove = refused,
-        } }))
-        -- The deletions and the nuke (step 5o C2c-2): called, never
-        -- subscribed to.
-        assert(reg:mount("/maintenance", "core", "loomworks.Maintenance", 1, { methods = {
-            execute_deletion = refused, nuke = refused,
-        } }))
-        VIEW_STATE.tests = { state = "unloaded", stale = false, units = {} }
-        assert(reg:mount("/views", "core", "loomworks.view.Tests", 1, {
-            methods = { get = function() return VIEW_STATE.tests end },
-            initial = function() return VIEW_STATE.tests end,
-        }))
-        -- The status page's body (step 5n C1): an unloaded workspace's view.
-        VIEW_STATE.workspace = require("loomworks.view_state").workspace(nil)
-        assert(reg:mount("/views", "core", "loomworks.view.Workspace", 1, {
-            methods = { get = function() return VIEW_STATE.workspace end },
-            initial = function() return VIEW_STATE.workspace end,
-        }))
+--- `welcome.objects` / `describe().objects` (§19.20) offering `wants`
+--- (entries of observer.ROOT / observer.FEATURES) at their versions.
+local function objects_of(wants)
+    local by, out = {}, {}
+    for _, w in ipairs(wants) do
+        local o = by[w.object]
+        if not o then
+            o = { path = w.object, interfaces = {} }
+            by[w.object] = o
+            out[#out + 1] = o
+        end
+        o.interfaces[#o.interfaces + 1] = { name = w.iface, versions = { w.v } }
     end
-    assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = H.workspace_stub({
-        header = function() return { root = srv.root, pid = srv.pid, lw_version = srv.identity,
-            session_generation = srv.generation, state = "unloaded" } end,
-    }) }))
-    -- A daemon that has not loaded the workspace: what a freshly launched
-    -- one reports until a request loads it.
-    VIEW_STATE.header = { root = srv.root, pid = srv.pid, lw_version = srv.identity,
-        session_generation = srv.generation, state = "unloaded" }
-    VIEW_STATE.projects = { projects = {} }
-    VIEW_STATE.lsp = nil
-    for _, v in ipairs({ { "loomworks.view.Header", "header" }, { "loomworks.view.ProjectsIndex", "projects" } }) do
-        assert(reg:mount("/views", "core", v[1], 1, {
-            methods = { get = function() return VIEW_STATE[v[2]] end },
-            initial = function() return VIEW_STATE[v[2]] end,
-        }))
-    end
+    return out
 end
 
---- An in-process server; `views == false`: without `/tasks` and `/workspace`.
-local function new_server(root, views, o)
-    local s = { exited = nil }
-    s.srv = server_mod.new(root, { exit = function(c) s.exited = c end, tick_ms = 100, auth_timeout_ms = 30000 })
-    assert(s.srv:start())
-    if views ~= false then mount_views(s.srv, o) end
-    return s
-end
+--- Everything the editor needs (the root and every feature).
+local function all_wants() return require("loomworks.provision.needs").needed() end
 
---- The server side of the connection that is not `except` and matches `pred`.
-local function server_conn(srv, pred)
-    for c in pairs(srv.conns) do
-        if c.authed and not c.closed and pred(c) then return c end
+local function refused() return { outcome = "refused", message = "stub", exit_code = 1 } end
+
+--- A fake daemon world for the fake relay (`w.inspect`, `w.connect`): one
+--- live daemon (`w.handle`) offering `w.objects` (`o.views == false`: the
+--- root only) with stub answers; `w:emit` sends an interface signal to the
+--- connections subscribed to it (per-object `seq`), `w:task` a task frame to
+--- those subscribed to `/tasks` (or of transport 10), `w:drop()` stops the
+--- daemon (every connection closes).
+local function new_world(o)
+    o = o or {}
+    local w = { conns = {}, live = true, launched = 0, delivery = "subscription", status_tasks = {},
+        devices = {}, device_reads = 0, protocol = o.protocol, generation = 1, lw_version = "0.1.0",
+        handle = { pid = 4242, start_time = "st:1", endpoint = "fake", exe = o.exe } }
+    w.objects = objects_of(o.views == false and { observer.ROOT } or all_wants())
+    w.views = {
+        ["loomworks.view.Header"] = { root = o.root, pid = 4242, lw_version = "0.1.0", session_generation = 1,
+            state = "unloaded" },
+        ["loomworks.view.ProjectsIndex"] = { projects = {} },
+        ["loomworks.view.Tests"] = { state = "unloaded", stale = false, units = {} },
+        ["loomworks.view.Workspace"] = { published = false, modified = false, diagnostics = {}, suggestions = 0,
+            profiles = {}, orphaned = {}, config_sets = {}, projects = {}, sdks = {}, sdk_providers = 0 },
+    }
+
+    local function offered(object, iface, v)
+        for _, ob in ipairs(w.objects) do
+            if ob.path == object then
+                for _, i in ipairs(ob.interfaces) do
+                    if i.name == iface and vim.tbl_contains(i.versions, v) then return true end
+                end
+            end
+        end
+        return false
     end
+
+    --- The daemon's answer to `method` (`w.on_call(conn, call)` first: a
+    --- non-nil first return answers instead; "noreply" never answers).
+    local function answer(c, object, iface, v, method, args)
+        if object == "/" and method == "describe" then
+            return { objects = vim.deepcopy(w.objects), delivery = w.delivery }
+        elseif object == "/" and method == "subscribe" then
+            if not offered(args.object, args.iface, args.v) then
+                return nil, { code = "not_found", message = "not offered" }
+            end
+            c.subs[#c.subs + 1] = { object = args.object, iface = args.iface, v = args.v }
+            return { sub_id = #c.subs, seq = c.seq[args.object] or 0,
+                initial = args.object == "/views" and w.views[args.iface] or nil }
+        elseif object == "/devices" and method == "list" then
+            w.device_reads = w.device_reads + 1
+            return { devices = vim.deepcopy(w.devices) }
+        elseif object == "/lsp" and method == "get" then
+            return { state = "unloaded", ready = false, projects = {}, options = {} }
+        elseif object == "/debug" then
+            return { languages = {} }
+        elseif object == "/tasks" and method == "list" then
+            return { tasks = {} }
+        elseif object == "/views" and method == "get" then
+            return w.views[iface]
+        end
+        return refused()
+    end
+
+    function w.inspect()
+        if w.live then return { kind = "live", handle = w.handle } end
+        return w.st or { kind = "none" }
+    end
+
+    function w.launch()
+        w.launched = w.launched + 1
+        if w.next then
+            w.handle, w.next = w.next, nil
+            w.live, w.retiring = true, nil
+        end
+    end
+
+    function w.connect(_, copts, cb)
+        if not w.live then return vim.schedule(function() cb(nil, "refused") end) end
+        local proto = w.protocol or version.PROTOCOL
+        local c = { subs = {}, seq = {}, calls = {}, requests = {}, role = copts.role,
+            on_message = copts.on_message, on_close = copts.on_close,
+            challenge = { protocol = proto, protocol_min = math.min(proto, version.PROTOCOL_MIN),
+                lw_version = w.lw_version, session_generation = w.generation },
+            welcome = { seq = 0, retiring = w.retiring, objects = proto >= 11 and vim.deepcopy(w.objects) or nil } }
+        function c.call(self, object, iface, v, method, args, ccb, env)
+            local call = { object = object, iface = iface, v = v, method = method, args = args, env = env }
+            self.calls[#self.calls + 1] = call
+            local res, err
+            if w.on_call then res, err = w.on_call(self, call) end
+            if res == "noreply" then return end
+            if res == nil and err == nil then res, err = answer(self, object, iface, v, method, args) end
+            vim.schedule(function() if ccb and not self.closed then ccb(res, err) end end)
+        end
+        function c.request(self, msg, rcb)
+            self.requests[#self.requests + 1] = msg
+            local reply = {}
+            if msg.kind == "status" then reply = { tasks = vim.deepcopy(w.status_tasks) } end
+            vim.schedule(function() if rcb and not self.closed then rcb(reply) end end)
+        end
+        function c.close(self)
+            if self.closed then return end
+            self.closed = true
+            for i, x in ipairs(w.conns) do if x == self then table.remove(w.conns, i) break end end
+            if self.on_close then self.on_close(self) end
+        end
+        w.conns[#w.conns + 1] = c
+        vim.schedule(function() cb(c) end)
+    end
+
+    --- The observer's open connection (role "observer").
+    function w.observer_conn()
+        for _, c in ipairs(w.conns) do if c.role == "observer" and not c.closed then return c end end
+    end
+    function w.observer_count()
+        local n = 0
+        for _, c in ipairs(w.conns) do if c.role == "observer" and not c.closed then n = n + 1 end end
+        return n
+    end
+    --- The objects the observer's connection is subscribed to, sorted.
+    function w.subs_of()
+        local out = {}
+        for _, s in ipairs((w.observer_conn() or { subs = {} }).subs) do out[#out + 1] = s.object end
+        table.sort(out)
+        return out
+    end
+
+    --- A signal of `object` `iface`/`v` to each connection subscribed to it
+    --- (the root's to every connection), with the per-object `seq`.
+    function w.emit(object, iface, v, name, args)
+        for _, c in ipairs(vim.list_slice(w.conns)) do
+            local subbed = object == "/"
+            for _, s in ipairs(c.subs) do
+                if s.object == object and s.iface == iface and s.v == v then subbed = true end
+            end
+            if subbed then
+                c.seq[object] = (c.seq[object] or 0) + 1
+                c.on_message({ kind = "signal", object = object, iface = iface, v = v, name = name,
+                    seq = c.seq[object], args = args or {} })
+            end
+        end
+    end
+
+    --- A task frame (PROTOCOL §14.2) to each connection of transport 10 or
+    --- subscribed to `/tasks`.
+    function w.task(frame)
+        for _, c in ipairs(vim.list_slice(w.conns)) do
+            local subbed = (c.challenge.protocol or 0) < 11
+            for _, s in ipairs(c.subs) do if s.object == "/tasks" then subbed = true end end
+            if subbed then c.on_message(vim.deepcopy(frame)) end
+        end
+    end
+
+    --- Offer `wants` too; the root's `objects_changed`.
+    function w.mount(wants)
+        for _, ob in ipairs(objects_of(wants)) do w.objects[#w.objects + 1] = ob end
+        w.emit("/", "loomworks.Root", 1, "objects_changed", { added = {} })
+    end
+    --- Drop object `path` and its subscriptions; the root's `objects_changed`.
+    function w.unmount(path)
+        for i = #w.objects, 1, -1 do if w.objects[i].path == path then table.remove(w.objects, i) end end
+        for _, c in ipairs(w.conns) do
+            for i = #c.subs, 1, -1 do if c.subs[i].object == path then table.remove(c.subs, i) end end
+        end
+        w.emit("/", "loomworks.Root", 1, "objects_changed", { removed = { path } })
+    end
+
+    --- The daemon stops: not live, every connection closes.
+    function w.drop()
+        w.live = false
+        for _, c in ipairs(vim.list_slice(w.conns)) do c:close() end
+    end
+    return w
 end
 
 describe("the editor client's version check (§19.9)", function()
@@ -193,16 +234,14 @@ describe("the editor client's version check (§19.9)", function()
 end)
 
 describe("the observer (§19.16)", function()
-    local root, s, core, ws, obs
+    local root, W, ws, obs
     local handlers = {}
     local function on(ev, fn) events.on(ev, fn); handlers[#handlers + 1] = { ev, fn } end
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
+        -- The workspace root as the editor resolves it (its real path).
+        ws = { root = vim.fs.normalize(vim.uv.fs_realpath(root)) }
     end)
     after_each(function()
         if obs then obs:stop() end
@@ -210,9 +249,8 @@ describe("the observer (§19.16)", function()
         obs = nil
         for _, h in ipairs(handlers) do events.off(h[1], h[2]) end
         handlers = {}
-        if s and not s.srv.stopped then s.srv:stop("test end", 0) end
-        s = nil
-        pcall(function() core:shutdown() end)
+        W = nil
+        require("loomworks").shutdown()
     end)
 
     -- The observer over a fake relay (tests/daemon_fake_relay: `fr`), whose
@@ -221,7 +259,15 @@ describe("the observer (§19.16)", function()
     local fr
     local function attach(extra)
         extra = extra or {}
-        fr = FR.new({ inspect = extra.inspect, connect = extra.connect, launch = extra.launch, manual = extra.manual })
+        -- (Default: the case's fake daemon world `W`, read when the relay
+        -- polls; none yet: no daemon.)
+        fr = FR.new({
+            inspect = extra.inspect or function(r) return W and W.inspect(r) or { kind = "none" } end,
+            connect = extra.connect or function(ep, co, cb)
+                if W then return W.connect(ep, co, cb) end
+                vim.schedule(function() cb(nil, "refused") end)
+            end,
+            launch = extra.launch or function(r) if W then W.launch(r) end end, manual = extra.manual })
         local o = { getenv = daemon_mode, keepalive_ms = 100, resolve = function() return "lw" end, relay = fr.relay }
         for k, v in pairs(extra) do
             if k ~= "connect" and k ~= "launch" and k ~= "manual" then o[k] = v end
@@ -236,63 +282,49 @@ describe("the observer (§19.16)", function()
         end
     end
 
-    it("subscribes to /tasks and /workspace when offered (step 5g.3) and observes through them", function()
-        s = new_server(root)
-        obs = attach()
+    local ALL_SUBS = { "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/views", "/workspace" }
+
+    --- The world's daemon connected and observed.
+    local function connected()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+    end
+
+    it("subscribes to /tasks and /workspace when offered (step 5g.3) and observes through them", function()
+        W = new_world({ root = ws.root })
+        obs = attach()
+        connected()
         assert.equals("interfaces", obs.mode)
         assert.is_nil(obs.feature_note)
-        local sc = server_conn(s.srv, function(c) return c.observer end)
         local subs = {}
-        for _, sub in ipairs(s.srv.interfaces:subscriptions_of(sc)) do subs[#subs + 1] = sub.object .. " " .. sub.iface end
+        for _, sub in ipairs(W.observer_conn().subs) do subs[#subs + 1] = sub.object .. " " .. sub.iface end
         table.sort(subs)
         assert.same({ "/devices loomworks.Devices", "/lsp loomworks.LspConfig", "/tasks loomworks.Tasks",
             "/tests loomworks.Tests",
             "/views loomworks.view.Header", "/views loomworks.view.ProjectsIndex", "/views loomworks.view.Tests",
             "/views loomworks.view.Workspace", "/workspace loomworks.Workspace" }, subs)
         -- A task another client owns reaches it through the subscription,
-        -- with the opaque string id of transport 11.
-        local owner_client = assert(client.session(s.srv.address))
-        local owner = server_conn(s.srv, function(c) return not c.observer end)
-        local task = tasks_mod.new(s.srv):create(owner)
-        task:start({ name = "dev", kind = "build" })
+        -- with its opaque string id.
+        W.task({ kind = "task", task_id = "tk-1", phase = "start", meta = { name = "dev", kind = "build" } })
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
-        assert.equals(task.id, require("loomworks").get_daemon_tasks()[1].id)
-        task:done(0)
+        assert.equals("tk-1", require("loomworks").get_daemon_tasks()[1].id)
+        W.task({ kind = "task", task_id = "tk-1", phase = "done", exit_code = 0 })
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 0 end, 10))
-        -- A client that never subscribed sees no frame of it.
-        local quiet = {}
-        local other = assert(client.session(s.srv.address, { on_message = function(m) quiet[#quiet + 1] = m end }))
-        local t2 = tasks_mod.new(s.srv):create(owner)
-        t2:start({ name = "dev", kind = "build" })
-        assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
-        t2:done(0)
-        vim.wait(200)
-        assert.same({}, quiet)
-        other:close(); owner_client:close()
     end)
 
     it("against a daemon of protocol 10 it observes the v0 broadcasts", function()
-        s = new_server(root)
-        obs = attach({ connect = function(ep, o, cb)
-            o.protocol = 10
-            return client.connect(ep, o, cb)
-        end })
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        W = new_world({ root = ws.root, protocol = 10 })
+        obs = attach()
+        connected()
         assert.equals("v0", obs.mode)
-        local sc = server_conn(s.srv, function(c) return c.observer end)
-        assert.same({}, s.srv.interfaces:subscriptions_of(sc))
-        local owner_client = assert(client.session(s.srv.address))
-        local owner = server_conn(s.srv, function(c) return not c.observer end)
-        tasks_mod.new(s.srv):create(owner):start({ name = "dev", kind = "build" })
+        assert.same({}, W.subs_of())
+        W.task({ kind = "task", task_id = "tk-1", phase = "start", meta = { name = "dev", kind = "build" } })
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
-        owner_client:close()
     end)
 
     it("a missing interface is one per-feature note; the connection stays (§19.16 Interface client)", function()
-        s = new_server(root, false)
+        W = new_world({ root = ws.root, views = false })
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        connected()
         assert.equals("interfaces", obs.mode)
         -- The describe reports `delivery = "subscription"`: the daemon
         -- delivers by subscription only, so the editor really gets nothing.
@@ -330,93 +362,74 @@ describe("the observer (§19.16)", function()
     --- before the observer sees it.
     local function connect_with(edit)
         return function(ep, o, cb)
-            return client.connect(ep, o, function(conn, err)
+            return W.connect(ep, o, function(conn, err)
                 if conn then edit(conn) end
                 cb(conn, err)
             end)
         end
     end
-    local function subs_of(srv)
-        local sc = server_conn(srv, function(c) return c.observer end)
-        local out = {}
-        for _, sub in ipairs(srv.interfaces:subscriptions_of(sc)) do out[#out + 1] = sub.object end
-        table.sort(out)
-        return out
-    end
 
     it("re-describes on connect and subscribes from describe's objects (§19.16 Interface client)", function()
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         -- welcome.objects without the views: only Root.describe offers them.
         -- (The root itself stays: a daemon without loomworks.Root/1 is
         -- incompatible, §19.16 "Retiring an incompatible daemon".)
         obs = attach({ connect = connect_with(function(conn)
             conn.welcome.objects = { { path = "/", interfaces = { { name = "loomworks.Root", versions = { 1 } } } } }
         end) })
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/views", "/workspace" },
-            subs_of(s.srv))
+        connected()
+        assert.is_true(vim.wait(5000, function() return #W.subs_of() == 9 end, 10))
+        assert.same(ALL_SUBS, W.subs_of())
         assert.is_nil(obs.feature_note)
     end)
 
     it("falls back to welcome.objects when describe fails", function()
-        s = new_server(root)
-        obs = attach({ connect = connect_with(function(conn)
-            local call = conn.call
-            conn.call = function(self, object, iface, v, method, args, cb, env)
-                if method == "describe" then return cb(nil, { code = "internal", message = "no" }) end
-                return call(self, object, iface, v, method, args, cb, env)
-            end
-        end) })
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/views", "/workspace" },
-            subs_of(s.srv))
+        W = new_world({ root = ws.root })
+        W.on_call = function(_, call)
+            if call.method == "describe" then return nil, { code = "internal", message = "no" } end
+        end
+        obs = attach()
+        connected()
+        assert.same(ALL_SUBS, W.subs_of())
     end)
 
     it("falls back to welcome.objects when describe never answers (bounded)", function()
-        s = new_server(root)
-        obs = attach({ describe_ms = 100, connect = connect_with(function(conn)
-            local call = conn.call
-            conn.call = function(self, object, iface, v, method, args, cb, env)
-                if method == "describe" then return end -- never answers
-                return call(self, object, iface, v, method, args, cb, env)
-            end
-        end) })
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/views", "/workspace" },
-            subs_of(s.srv))
+        W = new_world({ root = ws.root })
+        W.on_call = function(_, call)
+            if call.method == "describe" then return "noreply" end
+        end
+        obs = attach({ describe_ms = 100 })
+        connected()
+        assert.same(ALL_SUBS, W.subs_of())
     end)
 
     it("subscribes when /tasks and /workspace appear later (objects_changed); the note clears", function()
-        s = new_server(root, false)
+        W = new_world({ root = ws.root, views = false })
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
-        mount_views(s.srv)
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 9 end, 10))
+        local later = {}
+        for _, want in ipairs(observer.FEATURES) do later[#later + 1] = want end
+        W.mount(later)
+        assert.is_true(vim.wait(5000, function() return #W.subs_of() == 9 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
         assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
 
     it("a refused subscription is retried once on the next objects_changed", function()
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         local refusals = 0
-        obs = attach({ connect = connect_with(function(conn)
-            local call = conn.call
-            conn.call = function(self, object, iface, v, method, args, cb, env)
-                if method == "subscribe" and args.object == "/tasks" and refusals < 1 then
-                    refusals = refusals + 1
-                    return cb(nil, { code = "internal", message = "busy" })
-                end
-                return call(self, object, iface, v, method, args, cb, env)
+        W.on_call = function(_, call)
+            if call.method == "subscribe" and call.args.object == "/tasks" and refusals < 1 then
+                refusals = refusals + 1
+                return nil, { code = "internal", message = "busy" }
             end
-        end) })
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tests", "/views", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        end
+        obs = attach()
+        connected()
+        assert.same({ "/devices", "/lsp", "/tests", "/views", "/views", "/views", "/views", "/workspace" }, W.subs_of())
         assert.truthy((obs.feature_note or ""):find("tasks: loomworks.Tasks/1 refused (busy)", 1, true))
-        assert(s.srv:registry():mount("/other", "core", "loomworks.Tasks", 1, { methods = {
-            list = function() return { tasks = {} } end,
-            cancel = function() return { outcome = "ok" } end,
-        } }))
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 8 end, 10))
+        W.mount({ { object = "/other", iface = "loomworks.Tasks", v = 1 } })
+        assert.is_true(vim.wait(5000, function() return #W.subs_of() == 9 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
     end)
 
@@ -426,7 +439,7 @@ describe("the observer (§19.16)", function()
         -- Nothing attached yet: no view, nothing built in-process.
         assert.is_nil(store.source("header"))
         assert.is_nil(lw.view_header())
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         obs = attach()
         assert.is_true(vim.wait(10000, function()
             return store.source("header") == "daemon" and store.source("projects") == "daemon"
@@ -438,15 +451,18 @@ describe("the observer (§19.16)", function()
         assert.is_nil(store.status_of(lw.view_header(), store.projects_index(), root .. "/App/main.c"))
         assert.is_nil(store.match(store.projects_index(), root .. "/App/main.c"))
         -- An update replaces the table (full state).
-        local reg = s.srv:registry()
-        VIEW_STATE.header = { root = root, state = "loaded", name = "dm", active_profile = "dev",
-            active_profile_id = "p1", config_set = "dev", config_set_id = "c1", pid = s.srv.pid,
-            lw_version = s.srv.identity, session_generation = s.srv.generation }
-        VIEW_STATE.projects = { projects = { { id = "x1", key = "App", label = "App", type = "shell",
-            path = "App", abs_path = root .. "/App",
-            active = { configuration = "Debug", unit_id = "u1", state = "building" } } } }
-        reg:emit("/views", "loomworks.view.Header", 1, "update", VIEW_STATE.header)
-        reg:emit("/views", "loomworks.view.ProjectsIndex", 1, "update", VIEW_STATE.projects)
+        local header = { root = root, state = "loaded", name = "dm", active_profile = "dev",
+            active_profile_id = "p1", config_set = "dev", config_set_id = "c1", pid = 4242,
+            lw_version = "0.1.0", session_generation = 1 }
+        local function projects(state)
+            return { projects = { { id = "x1", key = "App", label = "App", type = "shell",
+                path = "App", abs_path = root .. "/App",
+                active = { configuration = "Debug", unit_id = "u1", state = state } } } }
+        end
+        W.views["loomworks.view.Header"] = header
+        W.views["loomworks.view.ProjectsIndex"] = projects("building")
+        W.emit("/views", "loomworks.view.Header", 1, "update", header)
+        W.emit("/views", "loomworks.view.ProjectsIndex", 1, "update", projects("building"))
         assert.is_true(vim.wait(5000, function()
             local idx = store.projects_index()
             return lw.view_header().state == "loaded" and #idx.projects == 1
@@ -456,12 +472,10 @@ describe("the observer (§19.16)", function()
             status = "building", profile_state = "building" }, st)
         -- A lost signal (a gap in the `/views` seq): both views are fetched
         -- again with `get`.
-        local sc = server_conn(s.srv, function(c) return c.observer end)
-        reg:_next_seq(sc, "/views")
-        VIEW_STATE.projects = { projects = { { id = "x1", key = "App", label = "App", type = "shell",
-            path = "App", abs_path = root .. "/App",
-            active = { configuration = "Debug", unit_id = "u1", state = "built" } } } }
-        reg:emit("/views", "loomworks.view.Header", 1, "update", VIEW_STATE.header)
+        local oc = W.observer_conn()
+        oc.seq["/views"] = oc.seq["/views"] + 1
+        W.views["loomworks.view.ProjectsIndex"] = projects("built")
+        W.emit("/views", "loomworks.view.Header", 1, "update", header)
         assert.is_true(vim.wait(5000, function()
             local rec = store.projects_index().projects[1]
             return rec and rec.active.state == "built"
@@ -482,14 +496,14 @@ describe("the observer (§19.16)", function()
 
     it("a removed /views drops the daemon's views and re-renders the status page (daemon_view_changed)", function()
         local store = require("loomworks.views")
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         obs = attach()
         assert.is_true(vim.wait(10000, function()
             return store.source("header") == "daemon" and store.source("projects") == "daemon"
         end, 10), obs:runtime_line())
         local seen = {}
         on("daemon_view_changed", function(d) seen[#seen + 1] = d and d.view or "all" end)
-        s.srv:registry():unmount("/views")
+        W.unmount("/views")
         assert.is_true(vim.wait(5000, function()
             return store.source("header") == nil and store.source("projects") == nil
         end, 10))
@@ -502,7 +516,7 @@ describe("the observer (§19.16)", function()
 
     it("stopping while the daemon's views are held notifies the status page once", function()
         local store = require("loomworks.views")
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         obs = attach()
         assert.is_true(vim.wait(10000, function()
             return store.source("header") == "daemon" and store.source("projects") == "daemon"
@@ -515,19 +529,11 @@ describe("the observer (§19.16)", function()
     end)
 
     it("a transport-11 daemon offering neither view and sending v0 broadcasts (step 5g.1) gets no note", function()
-        s = new_server(root, false)
-        obs = attach({ connect = connect_with(function(conn)
-            -- A 5g.1 daemon's describe has no `delivery` (it also
-            -- broadcasts), even though its `status` may have `busy_clients`.
-            local call = conn.call
-            conn.call = function(self, object, iface, v, method, args, cb, env)
-                return call(self, object, iface, v, method, args, function(result, err)
-                    if method == "describe" and type(result) == "table" then result.delivery = nil end
-                    cb(result, err)
-                end, env)
-            end
-        end) })
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        W = new_world({ root = ws.root, views = false })
+        -- A 5g.1 daemon's describe has no `delivery` (it also broadcasts).
+        W.delivery = nil
+        obs = attach()
+        connected()
         vim.wait(300)
         assert.is_nil(obs._sub_only)
         assert.is_nil(obs.feature_note)
@@ -542,15 +548,15 @@ describe("the observer (§19.16)", function()
         assert.equals(binary_select.NONE_NOTE .. " — lsp configuration: no lw host binary — language servers withheld",
             obs:runtime_line())
         assert.same({}, fr.spawns)
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         vim.wait(300)
         assert.equals("no-binary", obs.state)
         assert.same({}, fr.spawns)
-        assert.equals(0, s.srv:observer_count())
+        assert.equals(0, #W.conns)
     end)
 
     it("connects through an ordinary relay on load, from the selected binary (§19.16 Through the relay)", function()
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         obs = attach()
         assert.same({ "ordinary" }, fr.spawns)
         local ro = fr.relays[1].ropts
@@ -560,33 +566,41 @@ describe("the observer (§19.16)", function()
         assert.equals(ws.root, ro.root)
         assert.equals("editor", ro.client)
         assert.equals("observer", ro.role)
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        connected()
         assert.equals(0, fr.launched)
-        assert.equals(s.srv.pid, obs.daemon.pid)
-        assert.equals(1, s.srv:observer_count())
+        assert.equals(W.handle.pid, obs.daemon.pid)
+        assert.equals(1, W.observer_count())
         -- Connected: an explicit connect spawns nothing more.
         obs:start(true)
         assert.same({ "ordinary" }, fr.spawns)
     end)
 
+    --- Task frames (PROTOCOL §14.2) of task `id` through the world.
+    local function frames(id)
+        local t = {}
+        function t.start(meta) W.task({ kind = "task", task_id = id, phase = "start", meta = meta }) end
+        function t.line(stream, text) W.task({ kind = "task", task_id = id, phase = "line", stream = stream, text = text }) end
+        function t.output(stream, text)
+            W.task({ kind = "task", task_id = id, phase = "output", stream = stream, text = text })
+        end
+        function t.progress(pct) W.task({ kind = "task", task_id = id, phase = "progress", pct = pct }) end
+        function t.done(code, err) W.task({ kind = "task", task_id = id, phase = "done", exit_code = code, error = err }) end
+        return t
+    end
+
     it("keeps observed tasks as display data and ids; nothing resolves to a model (step 6b-alpha)", function()
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         local started, stopped = {}, {}
         on("daemon_task_started", function(d) started[#started + 1] = d.task end)
         on("daemon_task_stopped", function(d) stopped[#stopped + 1] = d.task end)
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        local profile = ws:get_profiles()[1]
-        local pp = profile:projects()[1]
-        local unit = pp._config_unit
-        -- An owner (a CLI connection) and its task, streamed to the observer.
-        local owner_client = assert(client.session(s.srv.address))
-        local owner
-        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
-        local stream = tasks_mod.new(s.srv)
-        local t = stream:create(owner)
-        t:start({ name = "dev", kind = "build", profile = profile.key, units = {
-            { project = pp:project_key(), configuration = pp:config_key() },
+        connected()
+        local profile = { key = "default" }
+        local pp = { project = "app", configuration = "Debug" }
+        -- A task a CLI connection owns, streamed to the observer.
+        local t = frames("tk-1")
+        t.start({ name = "dev", kind = "build", profile = profile.key, origin = "cli", units = {
+            { project = pp.project, configuration = pp.configuration },
             { project = "ghost", configuration = "Nope" },
         } })
         assert.is_true(vim.wait(5000, function() return #started == 1 end, 10))
@@ -596,66 +610,53 @@ describe("the observer (§19.16)", function()
         -- the `daemon`-mode editor does not hold.
         assert.is_nil(rt.profile)
         assert.equals(profile.key, rt.profile_name)
-        assert.equals(pp:project_key(), rt.units[1].project)
-        assert.equals(pp:config_key(), rt.units[1].configuration)
+        assert.equals(pp.project, rt.units[1].project)
+        assert.equals(pp.configuration, rt.units[1].configuration)
         assert.is_nil(rt.units[1].unit)
         assert.equals("ghost", rt.units[2].project)
-        assert.equals("unconfigured", unit:state())
-        assert.is_false(profile:has_active_operation())
         -- The origin is the owner's.
         assert.equals("cli", rt.origin)
         assert.equals("lw", rt:origin_label())
-        t:line("out", "building profile: dev")
-        t:output("stdout", "compiler says hi\n")
-        t:progress(0.5)
+        t.line("out", "building profile: dev")
+        t.output("stdout", "compiler says hi\n")
+        t.progress(50)
         assert.is_true(vim.wait(5000, function() return rt.pct == 50 end, 10))
         assert.truthy(rt:output():find("compiler says hi", 1, true))
-        t:done(0)
+        t.done(0)
         assert.is_true(vim.wait(5000, function() return #stopped == 1 end, 10))
         assert.equals(0, rt.exit_code)
         assert.same({}, require("loomworks").get_daemon_tasks())
         assert.truthy(rt:outcome():find("^built in "), rt:outcome())
-        owner_client:close()
     end)
 
     it("joins late: adopts the tasks a status reply lists, with their start time and percent", function()
-        s = new_server(root)
-        local profile = ws:get_profiles()[1]
-        local pp = profile:projects()[1]
-        local unit = pp._config_unit
-        -- A task already running (owned by a CLI connection) before the editor connects.
-        local owner_client = assert(client.session(s.srv.address))
-        local owner
-        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
-        local stream = tasks_mod.new(s.srv)
-        s.srv.service = { tasks = stream, owns_task = function() return false end,
-            on_conn_closed = function() end, on_stopping = function() end }
-        local t = stream:create(owner)
-        t:start({ name = "dev", kind = "test", profile = profile.key, units = {
-            { project = pp:project_key(), configuration = pp:config_key() } } })
-        t.started_at = os.time() - 75
-        t:progress(0.3)
+        W = new_world({ root = ws.root })
+        local pp = { project = "app", configuration = "Debug" }
+        -- A task already running (owned by a CLI connection) before the
+        -- editor connects: its `status.tasks` entry (§19.11).
+        W.status_tasks = { { task_id = "tk-7", name = "dev", kind = "test", profile = "default", origin = "cli",
+            units = { { project = pp.project, configuration = pp.configuration } },
+            started_at = os.time() - 75, percent = 30 } }
         local started = {}
         on("daemon_task_started", function(d) started[#started + 1] = d.task end)
         obs = attach()
         assert.is_true(vim.wait(10000, function() return #started == 1 end, 10), obs:runtime_line())
         local rt = require("loomworks").get_daemon_tasks()[1]
-        assert.equals(t.id, rt.id)
+        assert.equals("tk-7", rt.id)
         assert.equals("test", rt.kind)
         assert.equals("cli", rt.origin)
         assert.equals(30, rt.pct)
         assert.is_true(rt:elapsed(obs:_clock()) >= 74)
-        assert.equals(pp:project_key(), rt.units[1].project)
+        assert.equals(pp.project, rt.units[1].project)
         assert.is_nil(rt.units[1].unit)
         -- Its output starts now; it ends on done like any other.
-        t:output("stdout", "later output\n")
+        local t = frames("tk-7")
+        t.output("stdout", "later output\n")
         assert.is_true(vim.wait(5000, function() return rt:output():find("later output", 1, true) ~= nil end, 10))
-        t:done(1, "tests failed")
+        t.done(1, "tests failed")
         assert.is_true(vim.wait(5000, function() return rt.finished end, 10))
         assert.same({}, require("loomworks").get_daemon_tasks())
         assert.truthy(rt:outcome():find("test failed", 1, true), rt:outcome())
-        s.srv.service = nil
-        owner_client:close()
     end)
 
     it("a remote clean is a clean, ends cleaned / clean failed, titled Cleaning (lw)", function()
@@ -668,55 +669,50 @@ describe("the observer (§19.16)", function()
         end } }
         require("loomworks.fidget").setup()
         package.loaded["fidget.progress"] = saved
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         local stopped = {}
         on("daemon_task_stopped", function(d) stopped[#stopped + 1] = d.task end)
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        local profile = ws:get_profiles()[1]
-        local pp = profile:projects()[1]
-        local owner_client = assert(client.session(s.srv.address))
-        local owner
-        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
-        local stream = tasks_mod.new(s.srv)
-        local units = { { project = pp:project_key(), configuration = pp:config_key() } }
-        local t = stream:create(owner)
-        t:start({ name = "dev", kind = "clean", profile = profile.key, units = units })
+        connected()
+        local meta = function(kind)
+            return { name = "dev", kind = kind, profile = "default", origin = "cli",
+                units = { { project = "app", configuration = "Debug" } } }
+        end
+        local t = frames("tk-1")
+        t.start(meta("clean"))
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
         local rt = require("loomworks").get_daemon_tasks()[1]
         assert.equals("clean", rt.action)
         assert.equals("Cleaning (lw)", titles[#titles])
-        t:done(0)
+        t.done(0)
         assert.is_true(vim.wait(5000, function() return #stopped == 1 end, 10))
         assert.truthy(rt:outcome():find("^cleaned in "), rt:outcome())
-        local t2 = stream:create(owner)
-        t2:start({ name = "dev", kind = "clean", profile = profile.key, units = units })
+        local t2 = frames("tk-2")
+        t2.start(meta("clean"))
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
         local rt2 = require("loomworks").get_daemon_tasks()[1]
-        t2:done(3, "clean failed (exit 3): app: clean Debug")
+        t2.done(3, "clean failed (exit 3): app: clean Debug")
         assert.is_true(vim.wait(5000, function() return #stopped == 2 end, 10))
         assert.truthy(rt2:outcome():find("^clean failed in .*: clean failed %(exit 3%)"), rt2:outcome())
         -- A remote test or run is shown building.
-        for _, kind in ipairs({ "test", "run" }) do
-            local tk = stream:create(owner)
-            tk:start({ name = "dev", kind = kind, profile = profile.key, units = units })
+        for i, kind in ipairs({ "test", "run" }) do
+            local tk = frames("tk-k" .. i)
+            tk.start(meta(kind))
             assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
             assert.equals("build", require("loomworks").get_daemon_tasks()[1].action, kind)
-            tk:done(0)
+            tk.done(0)
             assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 0 end, 10))
         end
-        owner_client:close()
     end)
 
     it("a task both broadcast (`start`) and listed in the join-late status reply is adopted once", function()
-        local profile = ws:get_profiles()[1]
-        local pp = profile:projects()[1]
-        local unit = pp._config_unit
+        local profile = { key = "default" }
+        local pp = { project = "app", configuration = "Debug" }
         local started = {}
         on("daemon_task_started", function(d) started[#started + 1] = d.task end)
         obs = attach({ relay = stub_relay({}) })
         local meta = { name = "dev", kind = "build", profile = profile.key, origin = "cli",
-            units = { { project = pp:project_key(), configuration = pp:config_key() } } }
+            units = { { project = pp.project, configuration = pp.configuration } } }
         -- A connection whose status reply is held until the test releases it.
         local function fake_conn()
             local c = { pending = nil }
@@ -752,19 +748,14 @@ describe("the observer (§19.16)", function()
         obs.conn = nil
     end)
 
+    local BUILD_META = { name = "dev", kind = "build", profile = "default", origin = "cli",
+        units = { { project = "app", configuration = "Debug" } } }
+
     it("shutdown with a remote task running clears it without recording a failure", function()
-        s = new_server(root)
-        local profile = ws:get_profiles()[1]
-        local pp = profile:projects()[1]
-        local unit = pp._config_unit
+        W = new_world({ root = ws.root })
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        local owner_client = assert(client.session(s.srv.address))
-        local owner
-        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
-        local t = tasks_mod.new(s.srv):create(owner)
-        t:start({ name = "dev", kind = "build", profile = profile.key, units = {
-            { project = pp:project_key(), configuration = pp:config_key() } } })
+        connected()
+        frames("tk-1").start(BUILD_META)
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
         local rt = require("loomworks").get_daemon_tasks()[1]
         require("loomworks").shutdown()
@@ -773,39 +764,29 @@ describe("the observer (§19.16)", function()
         -- Not an operation that ended: cleared, no end result recorded.
         assert.is_true(rt.cleared)
         assert.is_nil(rt.exit_code)
-        owner_client:close()
     end)
 
     it("a dropped connection ends the remote tasks at once", function()
-        s = new_server(root)
-        local profile = ws:get_profiles()[1]
-        local pp = profile:projects()[1]
-        local unit = pp._config_unit
+        W = new_world({ root = ws.root })
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        local owner_client = assert(client.session(s.srv.address))
-        local owner
-        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
-        local t = tasks_mod.new(s.srv):create(owner)
-        t:start({ name = "dev", kind = "build", profile = profile.key, units = {
-            { project = pp:project_key(), configuration = pp:config_key() } } })
+        connected()
+        frames("tk-1").start(BUILD_META)
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
         local rt = require("loomworks").get_daemon_tasks()[1]
         obs.conn:close()
         assert.is_true(vim.wait(5000, function() return rt.finished end, 10))
         assert.equals("the workspace daemon disconnected", rt:outcome())
         assert.same({}, require("loomworks").get_daemon_tasks())
-        owner_client:close()
     end)
 
     it("the device list is dropped with the connection and read again on reconnect (step 5n C2)", function()
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" and obs._devices ~= nil end, 10),
             obs:runtime_line())
-        assert.equals(1, VIEW_STATE.device_reads)
+        assert.equals(1, W.device_reads)
         assert.same({}, editor_ops.devices(nil))
-        VIEW_STATE.devices = { { id = "d-9", key = "SER9", label = "SER9", state = "online", provider = "stub" } }
+        W.devices = { { id = "d-9", key = "SER9", label = "SER9", state = "online", provider = "stub" } }
         obs.conn:close()
         assert.is_true(vim.wait(5000, function() return obs.conn == nil end, 10))
         assert.is_nil(obs._devices)
@@ -813,37 +794,29 @@ describe("the observer (§19.16)", function()
         -- Reconnected: read again, the cache is the new read.
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" and obs._devices ~= nil end, 10),
             obs:runtime_line())
-        assert.equals(2, VIEW_STATE.device_reads)
+        assert.equals(2, W.device_reads)
         assert.equals("SER9", editor_ops.devices(nil)[1].key)
     end)
 
     it("keeps the connection alive with pings; drops on stop and never relaunches", function()
-        s = new_server(root)
-        -- Silent for 3 s: dropped. (Not shorter: the whole suite runs at once,
-        -- and on a saturated runner one loop iteration of this process — which
-        -- serves both the server and the observer — can take longer than a
-        -- sub-second window; the observer was then dropped, reconnected, and
-        -- missed the task started meanwhile.)
-        s.srv.keepalive_ms = 1000
-        local silent = assert(client.session(s.srv.address, { client = "editor", role = "observer" }))
+        W = new_world({ root = ws.root })
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        connected()
         local conn = obs.conn
-        -- The silent observer is dropped; the pinging one stays, on the same
-        -- connection.
-        assert.is_true(vim.wait(20000, function() return silent.closed end, 20))
+        local function pings()
+            local n = 0
+            for _, m in ipairs(conn.requests) do if m.kind == "ping" then n = n + 1 end end
+            return n
+        end
+        -- Pinged every keepalive_ms (100 here), on the same connection.
+        assert.is_true(vim.wait(5000, function() return pings() >= 3 end, 10))
         assert.equals("connected", obs.state)
         assert.equals(conn, obs.conn)
-        assert.equals(1, s.srv:observer_count())
         -- A task running when the daemon goes away ends with it.
-        local owner_client = assert(client.session(s.srv.address))
-        local owner
-        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
-        tasks_mod.new(s.srv):create(owner):start({ name = "dev", kind = "build" })
+        frames("tk-1").start({ name = "dev", kind = "build" })
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
         local rt = require("loomworks").get_daemon_tasks()[1]
-        s.srv:stop("stop requested", 0)
-        owner_client:close()
+        W.drop()
         assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10))
         assert.truthy(obs:runtime_line():find("disconnected", 1, true))
         assert.equals("the workspace daemon disconnected", rt.end_reason)
@@ -853,59 +826,51 @@ describe("the observer (§19.16)", function()
         assert.same({ "ordinary", "no-launch" }, fr.spawns)
         assert.equals(0, fr.launched)
         assert.truthy(obs:runtime_line():find("none is launched", 1, true), obs:runtime_line())
-        -- (Reconnecting to a new daemon is covered with real processes in
-        -- tests/daemon_editor_observer_spec: an in-process server cannot bind
-        -- the same Windows pipe name again within one process.)
     end)
 
     it("on `retiring` disconnects and follows through one ordinary relay, which launches the successor", function()
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        local cli = assert(client.session(s.srv.address))
-        -- The client is busy (a command in flight), so the daemon outlives
-        -- the retirement for a while (§19.9 "Busy").
-        server_conn(s.srv, function(c) return not c.observer end).in_flight = { [999] = true }
-        assert(client.request(cli, { kind = "retire" }))
+        connected()
+        -- The root's `retiring` signal (§19.20); the daemon outlives it for a
+        -- while (a busy client), answering new connections with a retiring
+        -- `welcome`.
+        W.retiring = true
+        W.emit("/", "loomworks.Root", 1, "retiring", {})
         assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), obs:runtime_line())
         assert.same({ "ordinary", "ordinary" }, fr.spawns)
         assert.truthy(obs:runtime_line():find("retiring", 1, true), obs:runtime_line())
         assert.is_not_nil(obs._episode)
         vim.wait(300)
         assert.is_nil(obs.conn)
-        -- The server counts a connection until it reads its close (and the
-        -- waiting relay's look at the retiring daemon, closed on its
-        -- `retiring` welcome): both come, with no observer left.
-        assert.is_true(vim.wait(5000, function() return s.srv:observer_count() == 0 end, 10),
-            "observers: " .. tostring(s.srv:observer_count()))
-        assert.is_nil(obs.conn)
+        assert.equals(0, W.observer_count())
         assert.equals(0, fr.launched)
-        cli:close()
-        assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))
         -- The retired daemon is gone: that relay launches its successor.
+        W.next = { pid = 4343, start_time = "st:2", endpoint = "fake" }
+        W.drop()
         assert.is_true(vim.wait(5000, function() return fr.launched == 1 end, 10), obs:runtime_line())
         assert.equals(2, #fr.spawns)
+        connected()
+        assert.equals(4343, obs.daemon.pid)
     end)
 
     it("does not observe an incompatible daemon (note, closed, skipped through a skip relay)", function()
-        s = new_server(root)
+        -- The CLI (here: another process) started it: the handle names its
+        -- executable, and the note carries that path (§19.6, §19.16).
+        W = new_world({ root = ws.root, exe = "/other/lw" })
         local connects, closed = 0, 0
         obs = attach({ connect = function(_, _, cb)
             connects = connects + 1
-            cb({ challenge = { protocol = version.PROTOCOL + 1, lw_version = "9.0.0", schemas = version.schemas() },
+            cb({ challenge = { protocol = version.PROTOCOL + 1, lw_version = "9.0.0" },
                 welcome = {}, close = function() closed = closed + 1 end })
         end })
         assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10))
         assert.truthy(obs:runtime_line():find("not observing it", 1, true), obs:runtime_line())
-        -- The CLI (here: another process) started it: the handle names its
-        -- executable, and the note carries that path (§19.6, §19.16).
-        local h = assert(require("loomworks.daemon.handle").read(root))
-        assert.is_string(h.exe)
-        assert.truthy(obs:runtime_line():find("lw v9.0.0 at " .. h.exe, 1, true), obs:runtime_line())
+        assert.truthy(obs:runtime_line():find("lw v9.0.0 at /other/lw", 1, true), obs:runtime_line())
         -- Step 5i PR G2: its relay is closed, and a successor is followed
         -- through one skip relay naming it (handle pid and start time),
         -- which never connects to it.
-        local id = observer.instance_id(h)
+        local id = observer.instance_id(W.handle)
         assert.is_string(id, "the handle names an instance")
         assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), vim.inspect(fr.spawns))
         assert.same({ "ordinary", "skip " .. id }, fr.spawns, vim.inspect(fr.spawns))
@@ -1237,7 +1202,7 @@ describe("the observer (§19.16)", function()
             launch = function() f.st = f.next or { kind = "starting" } end,
             connect = function(_, copts, cb)
                 f.connects = f.connects + 1
-                local conn = { challenge = { protocol = version.PROTOCOL, schemas = version.schemas(),
+                local conn = { challenge = { protocol = version.PROTOCOL,
                     lw_version = "0.1.0" }, welcome = { seq = 0, retiring = f.retiring } }
                 function conn.close(c)
                     if c.closed then return end
@@ -1350,13 +1315,13 @@ describe("the observer (§19.16)", function()
     end)
 
     it("shutdown stops the observer and closes its connection", function()
-        s = new_server(root)
+        W = new_world({ root = ws.root })
         obs = attach()
-        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        connected()
         local o = obs
         require("loomworks").shutdown()
         assert.equals("stopped", o.state)
-        assert.is_true(vim.wait(5000, function() return s.srv:observer_count() == 0 end, 10))
+        assert.is_true(vim.wait(5000, function() return W.observer_count() == 0 end, 10))
         -- Its relay ended with it (the connection closed through it).
         assert.equals(0, fr.running())
         obs = nil
@@ -1448,10 +1413,9 @@ end)
 -- Step 6b-alpha (spec §19.16 "End state"): in `daemon` mode the editor loads
 -- no workspace model of its own; it attaches the observer by root.
 describe("the editor's load (step 6b-alpha)", function()
-    local lw, core, root, orig_attach, attached
+    local lw, root, orig_attach, attached
     before_each(function()
         lw = require("loomworks")
-        core = lw._core()
         root = H.shell_workspace({ profile = true })
         orig_attach, attached = observer.attach, {}
         observer.attach = function(r, o)
@@ -1461,23 +1425,13 @@ describe("the editor's load (step 6b-alpha)", function()
     end)
     after_each(function()
         observer.attach = orig_attach
-        observer.detach()
-        pcall(function() core:shutdown() end)
+        lw.shutdown()
     end)
 
-    it("attaches by root and loads, scans and tracks nothing in-process", function()
-        local initializing = 0
-        local function on_init() initializing = initializing + 1 end
-        events.on("workspace_initializing", on_init)
+    it("attaches by the root's real path", function()
         lw._load(root)
-        events.off("workspace_initializing", on_init)
         assert.equals(1, #attached)
         assert.equals(lw.workspace_root(), attached[1].root)
-        assert.equals(require("loomworks.workspace").resolve_root(root), attached[1].root)
-        vim.wait(300)
-        assert.is_nil(core:get_workspace())
-        assert.equals("uninitialized", core:state())
-        assert.equals(0, initializing)
-        assert.is_nil(lw.get_workspace())
+        assert.equals(vim.fs.normalize(vim.uv.fs_realpath(root)), attached[1].root)
     end)
 end)

@@ -1,0 +1,544 @@
+{
+  "debug_adapters": {},
+  "header": {
+    "active_profile": "debug",
+    "config_set": "debug",
+    "diagnostics": "warn",
+    "name": "root",
+    "root": "/root",
+    "state": "loaded",
+    "version": "test"
+  },
+  "lsp_options": {
+    "clangd": {
+      "background_index": true,
+      "background_index_priority": "low",
+      "clang_tidy": true,
+      "extra_args": {}
+    }
+  },
+  "workspace": {
+    "config_sets": [
+      {
+        "active": true,
+        "id": "o16",
+        "intent": "shared",
+        "mappings": [
+          {
+            "configuration": {
+              "id": "o18",
+              "key": "Debug"
+            },
+            "missing": false,
+            "project": {
+              "id": "o17",
+              "key": "App"
+            }
+          },
+          {
+            "configuration": {
+              "id": "o20",
+              "key": "Debug"
+            },
+            "missing": false,
+            "project": {
+              "id": "o19",
+              "key": "Lib"
+            }
+          }
+        ],
+        "modified": false,
+        "name": "debug",
+        "removed_upstream": false
+      },
+      {
+        "active": false,
+        "id": "o11",
+        "intent": "shared",
+        "mappings": [
+          {
+            "configuration": {
+              "id": "o13",
+              "key": "Release"
+            },
+            "missing": false,
+            "project": {
+              "id": "o12",
+              "key": "App"
+            }
+          },
+          {
+            "configuration": {
+              "id": "o15",
+              "key": "Nope"
+            },
+            "missing": true,
+            "project": {
+              "id": "o14",
+              "key": "Lib"
+            }
+          }
+        ],
+        "modified": false,
+        "name": "release",
+        "removed_upstream": false
+      }
+    ],
+    "diagnostics": [
+      {
+        "message": "configuration set 'release' is invalid: stale mappings: Lib → Nope — fix the references in loomworks.json or user.json",
+        "severity": "warn",
+        "source": "ConfigurationSet/release",
+        "target_fold_key": "set:release"
+      },
+      {
+        "message": "profile 'debug' is invalid: incomplete — no tool/SDK selected for: App, Lib",
+        "severity": "warn",
+        "source": "Profile/debug",
+        "target_fold_key": "profile:debug"
+      },
+      {
+        "message": "profile 'release' is invalid: incomplete — no tool/SDK selected for: App, Lib; abstract configuration (no variant, so nothing to build) mapped for: Lib/Nope; configuration set 'release': stale mappings: Lib → Nope — fix the references in loomworks.json or user.json",
+        "severity": "warn",
+        "source": "Profile/release",
+        "target_fold_key": "profile:release"
+      },
+      {
+        "message": "loomworks.json sets projects.App.launch.run (command = app, args = {1=--x, 2=1}) \"Run it\" — ignored: program settings are used only from your local config (lw help trust)",
+        "severity": "warn",
+        "source": "Project/App",
+        "target_fold_key": "project:App"
+      },
+      {
+        "message": "configuration 'Release' on project 'App' is invalid: inherits from unknown bases: Gone",
+        "severity": "warn",
+        "source": "Project/App/Release",
+        "target_fold_key": "config:App:Release"
+      }
+    ],
+    "modified": false,
+    "orphaned": {
+      "configurations": [
+        {
+          "build_dir": "/root/build/Old/Debug",
+          "id": "o10",
+          "key": "build/Old/Debug"
+        }
+      ],
+      "stray_dirs": {}
+    },
+    "profiles": [
+      {
+        "active": true,
+        "artifact_conflict": false,
+        "busy": false,
+        "config_set": "debug",
+        "config_set_id": "o7",
+        "description": "Day to day",
+        "id": "o6",
+        "incomplete": true,
+        "intent": "local",
+        "key": "debug",
+        "label": "debug",
+        "modified": false,
+        "orphaned_set": false,
+        "removed_upstream": false,
+        "running": false,
+        "status": "1 built, 1 unconfigured",
+        "toolchain": {},
+        "tools": {},
+        "units": [
+          {
+            "build_dir": "/root/build/App/Debug",
+            "configuration": "Debug",
+            "launcher_changed": false,
+            "missing": false,
+            "overwritten": false,
+            "project": "App",
+            "state": "built",
+            "type": "cmake",
+            "unit_id": "o8"
+          },
+          {
+            "build_dir": "/root/.nvim/build/Lib/Debug",
+            "configuration": "Debug",
+            "launcher_changed": false,
+            "missing": false,
+            "overwritten": false,
+            "project": "Lib",
+            "state": "unconfigured",
+            "type": "cmake",
+            "unit_id": "o9"
+          }
+        ]
+      },
+      {
+        "active": false,
+        "artifact_conflict": false,
+        "busy": false,
+        "config_set": "release",
+        "config_set_id": "o3",
+        "id": "o2",
+        "incomplete": true,
+        "intent": "local",
+        "key": "release",
+        "label": "release",
+        "modified": false,
+        "orphaned_set": false,
+        "removed_upstream": false,
+        "running": false,
+        "status": "unconfigured",
+        "toolchain": {},
+        "tools": {},
+        "units": [
+          {
+            "build_dir": "/root/.nvim/build/App/Release",
+            "configuration": "Release",
+            "launcher_changed": false,
+            "missing": false,
+            "overwritten": false,
+            "project": "App",
+            "state": "unconfigured",
+            "type": "cmake",
+            "unit_id": "o4"
+          },
+          {
+            "build_dir": "/root/.nvim/build/Lib/Nope",
+            "configuration": "Nope",
+            "launcher_changed": false,
+            "missing": false,
+            "overwritten": false,
+            "project": "Lib",
+            "state": "unconfigured",
+            "type": "cmake",
+            "unit_id": "o5"
+          }
+        ]
+      },
+      {
+        "active": false,
+        "artifact_conflict": false,
+        "busy": false,
+        "config_set": "vanished",
+        "id": "o1",
+        "incomplete": false,
+        "intent": "local",
+        "key": "vanished",
+        "label": "vanished",
+        "modified": false,
+        "orphaned_set": true,
+        "removed_upstream": false,
+        "running": false,
+        "status": "empty",
+        "tools": {},
+        "units": {}
+      }
+    ],
+    "projects": [
+      {
+        "configurations": [
+          {
+            "abstract": true,
+            "auto_gen": false,
+            "compiler_overrides": {},
+            "dependents": [
+              "Debug"
+            ],
+            "id": "o23",
+            "intent": "shared",
+            "key": "Base",
+            "label": "Base",
+            "modified": false,
+            "options": [
+              {
+                "key": "WARN",
+                "value": "ON"
+              }
+            ],
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": true,
+            "variables": [
+              {
+                "name": "home",
+                "own": false,
+                "source": "project",
+                "value": "/h"
+              }
+            ]
+          },
+          {
+            "abstract": false,
+            "auto_gen": false,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o22",
+            "inherits": [
+              "Base"
+            ],
+            "intent": "shared",
+            "key": "Debug",
+            "label": "Debug",
+            "modified": false,
+            "options": [
+              {
+                "key": "OPT",
+                "value": "1"
+              }
+            ],
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": true,
+            "variables": [
+              {
+                "name": "home",
+                "own": false,
+                "source": "project",
+                "value": "/h"
+              }
+            ]
+          },
+          {
+            "abstract": false,
+            "auto_gen": false,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o24",
+            "inherits": [
+              "Gone"
+            ],
+            "intent": "shared",
+            "key": "Release",
+            "label": "Release",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": [
+              "Gone"
+            ],
+            "user": true,
+            "variables": [
+              {
+                "name": "home",
+                "own": false,
+                "source": "project",
+                "value": "/h"
+              }
+            ]
+          },
+          {
+            "abstract": false,
+            "auto_gen": true,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o26",
+            "intent": "local",
+            "key": "variant:Debug",
+            "label": "variant:Debug",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": false,
+            "variables": [
+              {
+                "name": "home",
+                "own": false,
+                "source": "project",
+                "value": "/h"
+              }
+            ]
+          },
+          {
+            "abstract": false,
+            "auto_gen": true,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o25",
+            "intent": "local",
+            "key": "variant:Release",
+            "label": "variant:Release",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": false,
+            "variables": [
+              {
+                "name": "home",
+                "own": false,
+                "source": "project",
+                "value": "/h"
+              }
+            ]
+          }
+        ],
+        "deploy": [
+          {
+            "destination": "${workspace_root}/out/",
+            "sources": [
+              {
+                "pre_build": true,
+                "project": "Lib",
+                "target": "lib"
+              },
+              {
+                "configuration": "Debug",
+                "path": "x.dat",
+                "project": "Lib"
+              }
+            ]
+          }
+        ],
+        "description": "The application.\n\nIt does things.",
+        "id": "o21",
+        "intent": "shared",
+        "key": "App",
+        "launches": [
+          {
+            "id": "o27",
+            "key": "tgt",
+            "label": "tgt",
+            "target": "app"
+          }
+        ],
+        "modified": false,
+        "needs_refresh": false,
+        "orphaned": false,
+        "path": "App",
+        "removed_upstream": false,
+        "running": false,
+        "type": "cmake",
+        "type_config": {
+          "fields": {}
+        },
+        "variables": {
+          "home": {
+            "default": "/h",
+            "type": "path"
+          }
+        }
+      },
+      {
+        "configurations": [
+          {
+            "abstract": false,
+            "auto_gen": false,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o29",
+            "intent": "shared",
+            "key": "Debug",
+            "label": "Debug",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": true
+          },
+          {
+            "abstract": false,
+            "auto_gen": true,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o31",
+            "intent": "local",
+            "key": "variant:Debug",
+            "label": "variant:Debug",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": false
+          },
+          {
+            "abstract": false,
+            "auto_gen": true,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o30",
+            "intent": "local",
+            "key": "variant:Release",
+            "label": "variant:Release",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": false
+          }
+        ],
+        "deploy": {},
+        "id": "o28",
+        "intent": "shared",
+        "key": "Lib",
+        "launches": {},
+        "modified": false,
+        "needs_refresh": false,
+        "orphaned": false,
+        "path": "Lib",
+        "removed_upstream": false,
+        "running": false,
+        "type": "cmake",
+        "type_config": {
+          "fields": {}
+        },
+        "variables": {}
+      },
+      {
+        "configurations": {},
+        "deploy": {},
+        "id": "o32",
+        "intent": "local",
+        "key": "Old",
+        "launches": {},
+        "modified": false,
+        "needs_refresh": false,
+        "orphaned": true,
+        "path": "Old",
+        "removed_upstream": false,
+        "running": false,
+        "type": "cmake",
+        "type_config": {
+          "fields": {}
+        },
+        "variables": {}
+      }
+    ],
+    "published": false,
+    "sdk_providers": 1,
+    "sdks": {},
+    "suggestions": 0
+  }
+}

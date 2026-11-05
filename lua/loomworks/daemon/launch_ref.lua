@@ -132,7 +132,7 @@ function LaunchRef:launch_resolved(spec)
             if prev and prev:is_complete() then prev:dispose() end
         end
     end
-    self._launch_task_id = require("loomworks.overseer").launch_run_task({
+    self._launch_task_id = require("loomworks.task_launch").launch_run_task({
         name = spec.name, cmd = spec.cmd, args = spec.args, cwd = spec.cwd, env = spec.env,
     })
 end

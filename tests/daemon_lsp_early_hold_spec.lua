@@ -6,19 +6,18 @@
 -- with no successor) — so no stock server starts for it. It starts on the
 -- daemon's configuration once that arrives.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local lw = require("loomworks")
 local observer = require("loomworks.daemon.observer")
 local source = require("loomworks.lsp_source")
 local lsp = require("loomworks.lsp")
 local views = require("loomworks.views")
-local events = require("loomworks.events")
+local events = require("loomworks")
 local H = require("tests.daemon_helpers")
 
 local LSP_FEATURE = observer.LSP.feature
 
 describe("daemon mode: a buffer held before the workspace loads (§9.7)", function()
-    local root, core, real_attach, saved_deps
+    local root, real_attach, saved_deps
     local obs, calls
 
     --- What `observer.attach` does, without a daemon: an observer of `r`,
@@ -49,8 +48,7 @@ describe("daemon mode: a buffer held before the workspace loads (§9.7)", functi
         vim.fn.mkdir(root .. "/app", "p")
         vim.fn.mkdir(root .. "/.nvim", "p")
         local f = io.open(root .. "/.nvim/loomworks.user.json", "w"); f:write("{}"); f:close()
-        core = lw._core()
-        pcall(function() core:shutdown() end)
+        lw.shutdown()
         real_attach = observer.attach
         observer.attach = function(r) return stub_attach(r) end
         -- setup's hard dependencies, where the test environment lacks them.
@@ -72,7 +70,7 @@ describe("daemon mode: a buffer held before the workspace loads (§9.7)", functi
         lsp._reset_gate()
         lsp._reset_withheld()
         package.loaded["overseer"], package.loaded["snacks"] = saved_deps.overseer, saved_deps.snacks
-        pcall(function() core:shutdown() end)
+        lw.shutdown()
     end)
 
     it("stays held through lw.setup({ root }) and starts only on the daemon's configuration", function()

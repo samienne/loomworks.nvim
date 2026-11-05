@@ -19,7 +19,7 @@ local H = require("tests.daemon_helpers")
 -- target is a LaunchRef (a `Launch/1.targets` record of a profile row of
 -- `view.Workspace/1`), built through editor_ops.build_target by ids.
 describe("a launch target's build through the daemon (§19.16, step 5t C)", function()
-    local root, core, ws, profile, prow
+    local root, ws, profile, prow
     local obs, sent, created, notes, selects, events
     local saved = {}
 
@@ -45,10 +45,6 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
         views.set(o, "workspace", { profiles = { prow },
             projects = { { id = "pr:app", key = "app", type = "shell" } } })
         return o
-    end
-
-    local function lt(name)
-        return require("loomworks.launch_target").new(ws, profile, { project = "app", launch = name })
     end
 
     --- A launch target as the daemon-mode editor knows it (LaunchRef).
@@ -111,12 +107,16 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
-        profile = ws:get_profiles()[1]
-        ws._projects[1]:_sync_launches({ run = { command = "tool", args = { "-v" } } })
+        -- Record the root as a load does, without attaching a real observer:
+        -- each case installs its own (fake) one.
+        local obs_mod = require("loomworks.daemon.observer")
+        local real_attach = obs_mod.attach
+        obs_mod.attach = function() end
+        require("loomworks")._load(root)
+        obs_mod.attach = real_attach
+        ws = { root = require("loomworks").workspace_root() }
+        -- The active profile row's key (a label the task frames echo).
+        profile = { key = "default" }
         sent, created, notes, selects, events = {}, {}, {}, {}, {}
         saved = {}
         stub(package.loaded, "overseer", {
@@ -129,7 +129,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             end,
         })
         stub(package.loaded, "overseer.task_list", { get = function() return nil end, touch = function() end })
-        stub(require("loomworks.overseer"), "launch_run_task", function() return 77 end)
+        stub(require("loomworks.task_launch"), "launch_run_task", function() return 77 end)
         stub(vim, "notify", function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end)
         stub(vim.ui, "select", function(items, opts, cb)
             selects[#selects + 1] = { items = items, prompt = opts and opts.prompt, cb = cb }
@@ -152,7 +152,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
-        pcall(function() core:shutdown() end)
+        require("loomworks").shutdown()
     end)
 
     it("a non-device target's build is one Launch/1.build the editor owns; nothing runs here", function()
@@ -509,16 +509,6 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             done_frame("v1", 1, "target 'app:run' is not buildable: stale mapping")
             assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
             assert.equals("target 'app:run' is not buildable: stale mapping", st.err)
-        end)
-
-        it("in-process: an invalid target is still refused before anything runs", function()
-            local t = lt("run")
-            t.is_valid = function() return false, { "stale mapping" } end
-            local err
-            t:build():catch(function(e) err = e end)
-            assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
-            assert.matches("not buildable: stale mapping", err)
-            assert.equals(0, #created)
         end)
     end)
 end)

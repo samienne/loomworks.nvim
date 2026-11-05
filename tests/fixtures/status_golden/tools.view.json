@@ -1,0 +1,188 @@
+{
+  "debug_adapters": {},
+  "header": {
+    "active_profile": "debug:ninja-gcc-12",
+    "config_set": "debug",
+    "diagnostics": "warn",
+    "name": "root",
+    "root": "/root",
+    "state": "loaded",
+    "version": "test"
+  },
+  "lsp_options": {
+    "clangd": {
+      "background_index": true,
+      "background_index_priority": "low",
+      "clang_tidy": true,
+      "extra_args": {}
+    }
+  },
+  "workspace": {
+    "config_sets": [
+      {
+        "active": true,
+        "id": "o4",
+        "intent": "shared",
+        "mappings": [
+          {
+            "configuration": {
+              "id": "o6",
+              "key": "Debug"
+            },
+            "missing": false,
+            "project": {
+              "id": "o5",
+              "key": "App"
+            }
+          }
+        ],
+        "modified": false,
+        "name": "debug",
+        "removed_upstream": false
+      }
+    ],
+    "diagnostics": [
+      {
+        "message": "profile 'debug:ninja-gcc-12' has unused tool(s): ninja-gcc-12",
+        "severity": "warn",
+        "source": "Profile/debug:ninja-gcc-12",
+        "target_fold_key": "profile:debug:ninja-gcc-12"
+      }
+    ],
+    "modified": false,
+    "orphaned": {
+      "configurations": {},
+      "stray_dirs": {}
+    },
+    "profiles": [
+      {
+        "active": true,
+        "artifact_conflict": false,
+        "busy": false,
+        "config_set": "debug",
+        "config_set_id": "o2",
+        "id": "o1",
+        "incomplete": false,
+        "intent": "local",
+        "key": "debug:ninja-gcc-12",
+        "label": "debug:ninja-gcc-12",
+        "modified": false,
+        "orphaned_set": false,
+        "removed_upstream": false,
+        "running": false,
+        "status": "built",
+        "toolchain": [
+          {
+            "key": "ninja-gcc-12",
+            "label": "ninja-gcc-12",
+            "languages": {},
+            "resolved": true
+          }
+        ],
+        "tools": [
+          {
+            "key": "ninja-gcc-12",
+            "label": "ninja-gcc-12",
+            "module": "cmake"
+          }
+        ],
+        "units": [
+          {
+            "build_dir": "/root/.nvim/build/App/ninja-gcc-12/Debug",
+            "configuration": "Debug",
+            "launcher_changed": false,
+            "missing": false,
+            "overwritten": false,
+            "project": "App",
+            "state": "built",
+            "type": "cmake",
+            "unit_id": "o3"
+          }
+        ]
+      }
+    ],
+    "projects": [
+      {
+        "configurations": [
+          {
+            "abstract": false,
+            "auto_gen": false,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o8",
+            "intent": "shared",
+            "key": "Debug",
+            "label": "Debug",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 1,
+            "unresolved_inherits": {},
+            "user": true
+          },
+          {
+            "abstract": false,
+            "auto_gen": true,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o10",
+            "intent": "local",
+            "key": "variant:Debug",
+            "label": "variant:Debug",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": false
+          },
+          {
+            "abstract": false,
+            "auto_gen": true,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o9",
+            "intent": "local",
+            "key": "variant:Release",
+            "label": "variant:Release",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": false
+          }
+        ],
+        "deploy": {},
+        "id": "o7",
+        "intent": "shared",
+        "key": "App",
+        "launches": {},
+        "modified": false,
+        "needs_refresh": false,
+        "orphaned": false,
+        "path": "App",
+        "removed_upstream": false,
+        "running": false,
+        "type": "cmake",
+        "type_config": {
+          "fields": {}
+        },
+        "variables": {}
+      }
+    ],
+    "published": false,
+    "sdk_providers": 1,
+    "sdks": {},
+    "suggestions": 0
+  }
+}

@@ -21,18 +21,32 @@ local fake_pin = {
 
 local function exe(name) return vim.fn.executable(name) == 1 end
 
---- This build's descriptor, as release <version> would publish it.
-local function release_descriptor(version)
-    local d = require("loomworks.daemon.descriptor").describe()
-    d.binary = { lw_version = version, impl = d.binary.impl, dev = false }
-    return d
+--- A binary descriptor (spec §16.41) offering exactly the transport range and
+--- the interfaces this plugin needs (compatible by construction).
+local function descriptor(lw_version)
+    local cv = require("loomworks.daemon.client.version")
+    local objects, by = {}, {}
+    for _, w in ipairs(require("loomworks.provision.needs").needed()) do
+        local o = by[w.object]
+        if not o then
+            o = { path = w.object, interfaces = {} }
+            by[w.object], objects[#objects + 1] = o, o
+        end
+        o.interfaces[#o.interfaces + 1] = { name = w.iface, versions = { w.v } }
+    end
+    return {
+        descriptor = 1,
+        binary = { lw_version = lw_version or "9.9.9", impl = "lua", dev = false },
+        transport = { min = cv.PROTOCOL_MIN, max = cv.PROTOCOL },
+        schemas = { user = 1, cache = 1 },
+        objects = objects,
+    }
 end
 
-describe("managed.wanted (the plugin pin)", function()
-    it("keeps its own host-asset table equal to lw's", function()
-        assert.same(require("boot.pin").HOST_ASSETS, managed.HOST_ASSETS)
-    end)
+--- The descriptor release <version> would publish.
+local function release_descriptor(version) return descriptor(version) end
 
+describe("managed.wanted (the plugin pin)", function()
     it("maps uname values to the published asset, or says why not", function()
         assert.equals("lw-windows-x86_64.exe", managed.host_asset("Windows_NT", "x86_64"))
         assert.equals("lw-windows-x86_64.exe", managed.host_asset("Windows_NT", "AMD64"))
@@ -107,7 +121,7 @@ describe("managed.wanted (the plugin pin)", function()
 end)
 
 describe("needs.check (the interfaces the plugin needs)", function()
-    it("passes this build's own descriptor", function()
+    it("passes a descriptor offering what the plugin needs", function()
         local ok, problems = needs.check(release_descriptor("9.9.9"))
         assert.same({}, problems); assert.is_true(ok)
     end)
@@ -216,7 +230,7 @@ describe("scripts/release/pin.lua", function()
                 lines[#lines + 1] = sha.file(dir .. "/" .. a) .. "  " .. a
             end
             local dname = "lw-" .. version .. "-descriptor.json"
-            put(dir .. "/" .. dname, require("loomworks.daemon.descriptor").encode(d))
+            put(dir .. "/" .. dname, vim.json.encode(d))
             lines[#lines + 1] = sha.file(dir .. "/" .. dname) .. "  " .. dname
             put(dir .. "/SHA256SUMS", table.concat(lines, "\n") .. "\n")
             sign()

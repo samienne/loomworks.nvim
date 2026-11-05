@@ -8,44 +8,31 @@
 -- the observer `get` the view; a busy profile's percent and a running unit's
 -- elapsed time come from the tasks observed through `Tasks/1`.
 --
--- The cases drive a real loaded (shell) workspace with a fake connected
--- observer whose connection records its calls.
+-- The cases drive a fake connected observer whose connection records its
+-- calls, holding a hand-written `view.Workspace/1` of a one-project (shell)
+-- workspace (spec/protocol/interfaces/loomworks/view.Workspace.1.json).
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local observer = require("loomworks.daemon.observer")
 local remote_task = require("loomworks.daemon.remote_task")
-local view_state = require("loomworks.view_state")
 local views = require("loomworks.views")
 local status_source = require("loomworks.status_source")
 local Tree = require("loomworks.ui.tree")
-local H = require("tests.daemon_helpers")
 
 describe("the status page body in daemon mode (§19.13 The workspace view)", function()
-    local root, core, ws, obs, calls
-    local built
+    local root, ws, obs, calls
 
     before_each(function()
-        root = H.shell_workspace({ profile = true })
-        -- (The model the daemon's views are built from: not the editor's,
-        -- which holds none in `daemon` mode, step 6b-alpha.)
-        core = require("loomworks.core").new()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
-        -- Count in-process builds of the body: none in daemon mode.
-        built = 0
-        local orig = ws.view_workspace
-        ws.view_workspace = function(...)
-            built = built + 1
-            return orig(...)
-        end
+        root = (vim.fn.tempname():gsub("\\", "/"))
+        vim.fn.mkdir(root, "p")
+        -- (The editor holds no model in `daemon` mode, step 6b-alpha: only the
+        -- workspace's root and name, as view.Header/1 carries them.)
+        ws = { root = root, name = "w" }
     end)
     after_each(function()
         if obs then views.clear(obs) end
         require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._attached_root = nil, nil
         views.daemon_root(nil)
         obs = nil
-        pcall(function() core:shutdown() end)
     end)
 
     --- A connected observer of `ws` over a fake connection recording calls;
@@ -72,15 +59,75 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         return obs
     end
 
-    --- The daemon's view of this workspace: its shape built by the daemon's
-    --- builder from the loaded model (before the in-process count starts to
-    --- matter), with daemon ids and a marker the in-process model lacks.
+    --- The daemon's `view.Workspace/1` of this workspace (one shell project
+    --- `app` with configuration Debug, config set and profile `dev`), with
+    --- daemon ids and a marker the editor could not make up.
     local function daemon_view(mutate)
-        local v = view_state.workspace(ws, { published = true, stray_dirs = {},
-            id = function(o) return "id:" .. tostring(o.key or o.name) end })
+        local function cmd(kind) return { "nvim", "--headless", "-l", root .. "/step.lua", kind } end
+        local v = {
+            config_sets = { {
+                active = false, id = "id:dev", intent = "shared", modified = false, name = "dev",
+                removed_upstream = false,
+                mappings = { { configuration = { id = "id:Debug", key = "Debug" }, missing = false,
+                    project = { id = "id:app", key = "app" } } },
+            } },
+            diagnostics = {},
+            modified = false,
+            orphaned = { configurations = {}, stray_dirs = {} },
+            profiles = { {
+                active = false, artifact_conflict = false, busy = false,
+                compiler_cache = { stale = false, text = "Cache: auto (none found)" },
+                config_set = "dev", config_set_id = "id:dev", id = "id:dev", incomplete = false,
+                intent = "local", key = "dev", label = "dev", modified = false, orphaned_set = false,
+                removed_upstream = false, running = false, status = "unconfigured", tools = {},
+                units = { {
+                    build_dir = root .. "/out/Debug", configuration = "Debug", launcher_changed = false,
+                    missing = false, overwritten = false, project = "app", state = "unconfigured",
+                    type = "shell", unit_id = "id:unit:app:Debug",
+                } },
+            } },
+            projects = { {
+                configurations = { {
+                    abstract = false, auto_gen = false, compiler_overrides = {}, dependents = {},
+                    id = "id:Debug", intent = "local+shared", key = "Debug", label = "Debug", modified = false,
+                    options = {}, overwritten = false, removed_upstream = false, running = false,
+                    source_missing = false, tools_configured = 0, unresolved_inherits = {}, user = true,
+                }, {
+                    abstract = false, auto_gen = true, compiler_overrides = {}, dependents = {},
+                    id = "id:variant:default", intent = "local", key = "variant:default",
+                    label = "variant:default", modified = false, options = {}, overwritten = false,
+                    removed_upstream = false, running = false, source_missing = false, tools_configured = 0,
+                    unresolved_inherits = {}, user = false,
+                } },
+                deploy = {}, id = "id:app", intent = "local+shared", key = "app", launches = {},
+                modified = false, needs_refresh = false, orphaned = false, path = "app",
+                removed_upstream = false, running = false, type = "shell",
+                type_config = { fields = {
+                    { kind = "string", label = "Build dir", name = "build_dir", value = "${workspace_root}/out/${variant}" },
+                    { kind = "cmd_array", label = "Configure cmd", name = "configure_cmd", value = cmd("configure") },
+                    { kind = "cmd_array", label = "Build cmd", name = "build_cmd", value = cmd("build") },
+                    { kind = "cmd_array", label = "Clean cmd", name = "clean_cmd" },
+                    { kind = "string", label = "Compile commands", name = "compile_commands" },
+                    { kind = "env_dict", label = "Build environment", name = "env" },
+                    { kind = "string", label = "clangd binary", name = "clangd" },
+                } },
+                variables = vim.empty_dict(),
+            } },
+            published = true,
+            sdk_providers = 1,
+            sdks = {},
+            suggestions = 1,
+        }
         v.profiles[1].description = "from the daemon"
         if mutate then mutate(v) end
         return v
+    end
+
+    --- The daemon's view of an unloaded workspace.
+    local function unloaded_view()
+        return { config_sets = {}, diagnostics = {}, modified = false,
+            orphaned = { configurations = {}, stray_dirs = {} }, profiles = {}, projects = {},
+            published = false, sdk_providers = 1, sdks = {}, suggestions = 0 }
     end
 
     local function header(state)
@@ -110,14 +157,13 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_true(vim.tbl_contains(observer.FEATURES, observer.VIEW_WORKSPACE))
     end)
 
-    it("renders the body only from the daemon's view; nothing of it is built in-process", function()
+    it("renders the body from the daemon's view", function()
         fake_obs()
         header()
         local v = daemon_view()
         views.set(obs, "workspace", v)
         assert.equals("daemon", status_source.read(nil).mode)
         local lines, text = render()
-        assert.equals(0, built)
         assert.truthy(text:find("from the daemon", 1, true), text)
         assert.truthy(text:find("Profiles", 1, true), text)
         assert.truthy(text:find("Projects", 1, true), text)
@@ -128,7 +174,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_false(status_source.modified(nil))
         v.modified = true
         assert.is_true(status_source.modified(nil))
-        assert.equals(0, built)
     end)
 
     it("no row reaches the editor's model: a unit row's options read names it by its unit_id (5o C2d-2)", function()
@@ -149,7 +194,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_not_nil(sent, vim.inspect(calls))
         assert.same({ "/projects", "loomworks.Projects" }, { sent.object, sent.iface })
         assert.same({ unit = { id = u.unit_id } }, sent.args)
-        assert.equals(0, built)
     end)
 
     it("a project the editor's model does not have yet: its configuration editor and Add configuration act by the row's id (5o C2b2)", function()
@@ -196,7 +240,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         end
         assert.is_not_nil(sent, vim.inspect(calls))
         assert.same({ project = { id = "id:fresh" } }, sent.args)
-        assert.equals(0, built)
     end)
 
     it("a project the editor's model does not have yet: its launch, deploy and variable rows act by the row's id (5o C2b2-2)", function()
@@ -250,7 +293,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         end
         assert.is_not_nil(sent, vim.inspect(calls))
         assert.same({ project = { id = "id:fresh" } }, sent.args)
-        assert.equals(0, built)
     end)
 
     it("a deploy step's edit and removal find the shown source in the re-read declaration by content; gone is refused; the editor's variables are the declaration's (5o C2b2-2)", function()
@@ -460,14 +502,11 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
     end)
 
     it("the rows keep the view's ids (for 5o C2)", function()
-        core:shutdown()
-        root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
         fake_obs()
         header()
-        views.set(obs, "workspace", daemon_view())
+        views.set(obs, "workspace", daemon_view(function(v)
+            v.projects[1].launches = { { args = { "-v" }, command = "tool", id = "id:run", key = "run", label = "run" } }
+        end))
         local body = status_source.read(nil)
         local prow = body.view.projects[1]
         local lrow = prow.launches[1]
@@ -486,7 +525,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         obs._why[observer.VIEW_WORKSPACE.feature] = observer.feature_note(observer.VIEW_WORKSPACE, {})
         header()
         local lines, text = render()
-        assert.equals(0, built)
         local why = "unavailable — daemon offers no loomworks.view.Workspace, editor needs /1"
         assert.equals(7, count(lines, why), text)
         for _, title in ipairs({ "Diagnostics", "Suggestions", "Profiles", "Orphaned Build Dirs",
@@ -506,13 +544,12 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         lines = render()
         -- (And the Debug Adapters section's, from the same note.)
         assert.equals(8, count(lines, "unavailable — " .. observer.LOST_NOTE))
-        assert.equals(0, built)
     end)
 
     it("takes loaded from view.Header/1: an unloaded workspace's published=false shows no banner", function()
         fake_obs()
         header("unloaded")
-        views.set(obs, "workspace", view_state.workspace(nil))
+        views.set(obs, "workspace", unloaded_view())
         local lines, text = render()
         assert.equals(0, count(lines, "not on disk"), text)
         -- Loaded and really unpublished: the banner.
@@ -520,7 +557,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         views.set(obs, "workspace", daemon_view(function(v) v.published = false end))
         lines, text = render()
         assert.equals(1, count(lines, "not on disk"), text)
-        assert.equals(0, built)
     end)
 
     it("re-renders on the view's update (daemon_view_changed)", function()
@@ -528,7 +564,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         header()
         obs:_view_subscribed(observer.VIEW_WORKSPACE, { sub_id = 1, seq = 1, initial = daemon_view() })
         local seen = 0
-        local events = require("loomworks.events")
+        local events = require("loomworks")
         local function on() seen = seen + 1 end
         events.on("daemon_view_changed", on)
         obs:_on_message({ kind = "signal", object = "/views", iface = "loomworks.view.Workspace", v = 1,
@@ -538,7 +574,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local _, text = render()
         assert.truthy(text:find("updated", 1, true), text)
         assert.is_nil(text:find("from the daemon", 1, true))
-        assert.equals(0, built)
     end)
 
     it("overlays a busy profile's percent and a running unit's elapsed time from Tasks/1", function()
@@ -558,8 +593,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
             obs:_clock() - 65)
         t.pct = 42
         obs._tasks[7], obs._order = t, { 7 }
-        local dev = ws:get_profiles()[1]
-        assert.is_nil(dev:operation_pct())
         local lines, text = render()
         assert.truthy(text:find("42%", 1, true), text)
         assert.truthy(count(lines, "1m05s") >= 2, text)
@@ -568,7 +601,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         lines, text = render()
         assert.is_nil(text:find("42%", 1, true), text)
         assert.equals(0, count(lines, "1m05s"))
-        assert.equals(0, built)
     end)
 
     --- An acwrite buffer as the status page's: 'modified' from
@@ -667,8 +699,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
             row.units[1].state = "building"
         end)
         views.set(obs, "workspace", v)
-        local key = ws:get_profiles()[1]:projects()[1]:config_key()
-        assert.is_not_nil(key)
+        local key = "Debug"
         local id = v.profiles[1].units[1].unit_id
         assert.is_string(id)
         -- A units-scoped task (no profile) of another unit of app; and one

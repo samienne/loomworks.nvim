@@ -20,7 +20,7 @@ local H = require("tests.daemon_helpers")
 -- target is a LaunchRef (a `Launch/1.targets` record of a profile row of
 -- `view.Workspace/1`), addressed by ids (`rt` below).
 describe("editor launches through the daemon's preparation (§19.16, step 5k C2)", function()
-    local root, core, ws, profile, prow
+    local root, ws, profile, prow
     local obs, sent, created, notes, launched, dap_runs, titles
     local saved = {}
 
@@ -48,10 +48,6 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         views.set(o, "workspace", { profiles = { prow },
             projects = { { id = "pr:app", key = "app", type = "cmake" } } })
         return o
-    end
-
-    local function lt(name)
-        return require("loomworks.launch_target").new(ws, profile, { project = "app", launch = name })
     end
 
     --- A launch target as the daemon-mode editor knows it (LaunchRef): a
@@ -94,16 +90,16 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
-        profile = ws:get_profiles()[1]
-        -- The project's launch configurations (as loaded from the files).
-        ws._projects[1]:_sync_launches({
-            run = { command = "tool", args = { "-v" } },
-            multi = { command = "node", args = { "x.js" }, debug = { "typescript", "c++" } },
-        })
+        -- Record the root as a load does, without attaching a real observer:
+        -- each case installs its own (fake) one.
+        local obs_mod = require("loomworks.daemon.observer")
+        local real_attach = obs_mod.attach
+        obs_mod.attach = function() end
+        require("loomworks")._load(root)
+        obs_mod.attach = real_attach
+        ws = { root = require("loomworks").workspace_root() }
+        -- The active profile row's key (a label the task frames echo).
+        profile = { key = "default" }
         sent, created, notes, launched, dap_runs, titles = {}, {}, {}, {}, {}, {}
         saved = {}
         stub(package.loaded, "overseer", {
@@ -115,7 +111,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
             end,
         })
         stub(package.loaded, "overseer.task_list", { get = function() return nil end })
-        stub(require("loomworks.overseer"), "launch_run_task", function(spec)
+        stub(require("loomworks.task_launch"), "launch_run_task", function(spec)
             launched[#launched + 1] = spec
             return 77
         end)
@@ -148,19 +144,8 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
             require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
-        pcall(function() core:shutdown() end)
+        require("loomworks").shutdown()
     end)
-
-    --- The in-process chain ran: it builds the launch's unit first — an
-    --- in-process build task, or (daemon mode) that build routed on its own
-    --- as a C1 Build/1.build call; never a preparation.
-    local function in_process_chain()
-        return vim.wait(5000, function()
-            if #created > 0 then return true end
-            for _, c in ipairs(sent) do if c.method == "build" then return true end end
-            return false
-        end, 10)
-    end
 
     local function noted(text)
         for _, n in ipairs(notes) do
@@ -419,8 +404,6 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         sent[4].cb({ outcome = "ok" }, nil)
         assert.is_true(vim.wait(2000, function() return #sent == 5 end, 10))
         assert.equals("install", sent[5].method)
-        -- Nothing of it in the editor's model.
-        assert.is_nil(profile:device_serial())
     end)
 
     it("a device target's launch the daemon cannot carry (no Devices/1) is refused before anything runs", function()
@@ -975,7 +958,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
             return { report = function() end, finish = function() end,
                 cancel = function() cancelled[#cancelled + 1] = title end }
         end)
-        stub(require("loomworks.overseer"), "launch_run_task", function() error("task runner exploded") end)
+        stub(require("loomworks.task_launch"), "launch_run_task", function() error("task runner exploded") end)
         local st = require("loomworks.session_tracker")
         st.start(rt("run"), "launch")
         accept(1, "r10")
@@ -1083,21 +1066,25 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 end)
 
 describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", function()
-    local root, core, ws, obs, sent, emitted
+    local root, ws, obs, sent, emitted
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
+        -- Record the root as a load does, without attaching a real observer:
+        -- each case installs its own (fake) one.
+        local obs_mod = require("loomworks.daemon.observer")
+        local real_attach = obs_mod.attach
+        obs_mod.attach = function() end
+        require("loomworks")._load(root)
+        obs_mod.attach = real_attach
+        ws = { root = require("loomworks").workspace_root() }
         sent, emitted = {}, {}
     end)
 
     after_each(function()
         observer._current = nil
         require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._attached_root = nil, nil
-        pcall(function() core:shutdown() end)
+        require("loomworks").shutdown()
     end)
 
     local function connect(feat)
@@ -1243,14 +1230,12 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         local orig = vim.notify
         local notes = {}
         vim.notify = function(m) notes[#notes + 1] = m end
-        local before = require("loomworks.debug_config").resolve_adapter(ws, "c++")
         local res
         editor_ops.set_debug_adapter(nil, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
         sent[1].cb(nil, { code = "unknown_method", message = "no set_adapter" })
         assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
         local note = "debug adapters: daemon offers no loomworks.DebugConfig/1.set_adapter (no set_adapter)"
         assert.same({ false, note }, res)
-        assert.equals(before, require("loomworks.debug_config").resolve_adapter(ws, "c++"))
         assert.is_false(obs:can_call("set_adapter"))
         assert.truthy((obs.note or ""):find(note, 1, true))
         -- The next write fails at once, nothing sent.

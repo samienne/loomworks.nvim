@@ -13,15 +13,15 @@
 
 local M = {}
 
---- The process's core, when `loomworks` is loaded.
+--- The process's core (loomworks.core `process()`), once created.
 --- @return table|nil
 local function process_core()
-    local lw = package.loaded["loomworks"]
-    return type(lw) == "table" and type(lw._core) == "function" and lw._core() or nil
+    local C = package.loaded["loomworks.core"]
+    return type(C) == "table" and C._process or nil
 end
 
 --- Notify `msg` at `level` through the process core's `_deps.notify`.
---- Before `loomworks` is loaded (a module used on its own) it is
+--- Before the process core exists (a module used on its own) it is
 --- `vim.notify`. `opts.in_diagnostics`: a structural diagnostic of the
 --- workspace already shows this warning, so as a load diagnostic it is
 --- left out of the views (still a load note of the CLI's replies).

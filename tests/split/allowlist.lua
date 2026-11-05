@@ -42,28 +42,9 @@ return {
         -- sections/projects (helpers.deploy_sources; name checks are the
         -- daemon's), project_browser (Projects/1.candidates detects), and
         -- daemon/version (binary-side; protocol.lua no longer requires it).
-        -- What is left is the halves commit 9 removes with the binary.
         -- (daemon/observer.lua: loomworks.daemon.client and
         -- loomworks.daemon.inspect dropped: the plugin owns its relay client,
         -- loomworks.daemon.client.relay, and reads no daemon handle.)
-        ["lua/loomworks/init.lua"] = {
-            "loomworks.core",
-            "loomworks.events",
-            "loomworks.log",
-            "loomworks.modules",
-            "loomworks.program_fields",
-            "loomworks.workspace",
-        },
-        ["lua/loomworks/overseer.lua"] = {
-            "loomworks.compiler_cache",
-            "loomworks.config_env",
-            "loomworks.cpp_compilers",
-            "loomworks.exe",
-            "loomworks.future",
-            "loomworks.modules",
-            "loomworks.term",
-            "loomworks.variables",
-        },
         -- (session_tracker.lua: loomworks.exe and loomworks.future dropped with
         -- its in-process launch chain.)
         -- (configuration, configuration_set, launch_configuration, profile,
@@ -80,11 +61,10 @@ return {
         -- deletion plans `Maintenance/1.execute_deletion` uses.
         -- (loomworks.cpp_compilers and loomworks.variables dropped: step 5o
         -- C2b2-1, the configuration editor's context is Projects/1.declaration.)
-        ["lua/loomworks/workspace_view.lua"] = {
-            "loomworks.deletion_plan",
-            "loomworks.model_commands",
-            "loomworks.modules",
-        },
+        -- Commit 9b: init.lua holds no in-process core (the root, the event
+        -- bus and trust go through the daemon client); overseer.lua and
+        -- workspace_view.lua are binary-side (the editor's own tasks are
+        -- loomworks.task_launch). No edge is left.
     },
     dynamic = {
         ["lua/loomworks/init.lua"] = 1,
@@ -106,20 +86,13 @@ return {
         -- overseer and the sources read the daemon only (lsp_ready,
         -- nuke_check, has_pending_deletions, after_deletions and
         -- create_operation removed; the device getters pass no workspace).
-        ["lua/loomworks/init.lua"] = 14,
+        -- 14 -> 0: commit 9b (no in-process core).
         -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
         -- routes the test adapters' reads through test_source.lua; lsp.lua 7
         -- -> 0, clangd.lua / qmlls.lua 1 -> 0: step 5l part A routes the LSP
         -- layer's reads through lsp_source.lua. test_source.lua and
         -- lsp_source.lua 1 -> 0: both read the daemon only (their in-process
         -- sources removed).
-        -- overseer.lua 22 -> 5: it no longer runs the editor's operations
-        -- (run_profile_action, run_configuration_action, the cleans,
-        -- launch_single_task, build_spec_for and their task tracking
-        -- removed); what is left is the planning half the binary still
-        -- calls (unit / profile workspace back-references) — it moves out
-        -- with the binary-side files.
-        ["lua/loomworks/overseer.lua"] = 5,
         -- actions.lua 9 -> 5, orphaned.lua 1 -> 0, tree.lua 4 -> 3: step 5o
         -- C2c-2 (the deletions and the nuke name their rows; their
         -- confirmations come from Maintenance/1).
@@ -138,8 +111,6 @@ return {
         -- 1 -> 0: step 6b-alpha A1a (the Add project row opens the browser at
         -- the loaded root, never the model's).
         ["lua/loomworks/ui/sections/projects.lua"] = 0,
-        -- 2 -> 1: step 5o C2b2-1 (compute_edit_configuration_context removed).
-        ["lua/loomworks/workspace_view.lua"] = 1,
     },
     -- Plugin-side files: the editor's own starts. Binary-side files
     -- (config_unit, launch_target, profile, target): their calls into the
@@ -155,7 +126,8 @@ return {
         -- the daemon prepared, as session_tracker's for a prepared launch.
         -- Nothing is built or run in-process for either.
         ["lua/loomworks/daemon/facade.lua"] = 1,
-        ["lua/loomworks/daemon/launch_ref.lua"] = 1,
+        -- (launch_ref.lua 1 -> 0: commit 9b, it starts the program through
+        -- loomworks.task_launch, the editor's own task module.)
         -- 5 -> 4: step 5k C2 — LaunchTarget:debug resolves one spec for
         -- run and debug (§8.9.6): one nvim-dap start, not one per kind.
         ["lua/loomworks/launch_target.lua"] = 4,

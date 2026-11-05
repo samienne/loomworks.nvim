@@ -90,10 +90,6 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
 
     local function on(ev, fn) events.on(ev, fn); handlers[#handlers + 1] = { ev, fn } end
 
-    local function no_model()
-        assert.is_nil(lw.get_workspace(), "the daemon-mode editor loaded a workspace model")
-    end
-
     local function view() return obs:workspace_view() end
 
     --- The (only) profile row of the workspace view.
@@ -159,10 +155,9 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         ran = ran + 1
         vim.ui.select = orig_select
         if ran >= TESTS then teardown() end
-        no_model()
     end)
 
-    it("1. attach: the status page renders from the daemon's views; no model is loaded", function()
+    it("1. attach: the status page renders from the daemon's views", function()
         vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
         root = H.shell_workspace({ profile = true, launch = {
             run = { command = vim.v.progpath, args = { "--headless", "-u", "NONE", "-l",
@@ -180,9 +175,9 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         on("daemon_task_started", function(d) started[#started + 1] = d.task end)
 
         -- The observer with this checkout's relay, then the editor's own
-        -- load (setup's path): it keeps that observer, loads no model.
-        lw._core():set_pending_root(root)
-        local wroot = lw.workspace_root()
+        -- load (setup's path): it keeps that observer.
+        -- (The root as the load resolves it: its real path.)
+        local wroot = vim.fs.normalize(vim.uv.fs_realpath(root))
         obs = observer.attach(wroot, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(), keepalive_ms = 500 })
         assert.is_not_nil(obs)
@@ -191,7 +186,6 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         daemon = H.track_root(root)
         assert.is_not_nil(daemon)
-        no_model()
         assert.is_true(vim.wait(60000, function()
             local v = view()
             return v ~= nil and #(v.profiles or {}) > 0
@@ -222,7 +216,6 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         assert.is_not_nil(profile_line, text)
         assert.truthy(text:find("app", 1, true), text)
         assert.falsy(text:find("unavailable", 1, true), text)
-        no_model()
     end)
 
     it("2. pick_profile activates the profile row (Profiles/1.set_active)", function()
@@ -295,7 +288,7 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         -- runner's start is replaced by running the prepared program directly
         -- (no overseer in the test host), asynchronously: the stub returns at
         -- once and the event loop keeps serving the daemon connection.
-        local ov = require("loomworks.overseer")
+        local ov = require("loomworks.task_launch")
         local orig = ov.launch_run_task
         local launched = {}
         ov.launch_run_task = function(spec)

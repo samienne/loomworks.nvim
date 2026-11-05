@@ -2973,13 +2973,11 @@ function Observer:with_devices(cb, fresh)
     self:_fetch_devices(cb)
 end
 
---- A debug-log line (the editor's log, when it has one).
---- @param msg string
-function Observer:_debug(msg)
-    local lw = package.loaded["loomworks"]
-    local core = type(lw) == "table" and type(lw._core) == "function" and lw._core() or nil
-    local log = core and core._deps and core._deps.log
-    if log and log.debug then pcall(log.debug, log, "daemon: %s", msg) end
+--- A debug-log line: dropped (the editor keeps no log of its own; the
+--- daemon's log is the workspace's). Kept as the one place a debug sink
+--- would go.
+--- @param _msg string
+function Observer:_debug(_msg)
 end
 
 --- The daemon reports the workspace `loaded` (its header view, or an

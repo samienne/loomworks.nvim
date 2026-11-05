@@ -751,8 +751,7 @@ end
 --- @param opts? { soft_trust?: boolean, replace_untrusted_user?: boolean, handlers?: table }
 --- @return table|nil ws, table core, table|nil failure
 function M._load_workspace_soft(root, wait_tools, opts)
-  local lw = require("loomworks")
-  local core = lw._core()
+  local core = require("loomworks.core").process()
   local handlers = opts and opts.handlers
   -- Route notifications to stderr (warnings/errors only, see load_notify).
   core._deps.notify = handlers and handlers.notify or load_notify
@@ -807,7 +806,7 @@ function M._load_workspace_soft(root, wait_tools, opts)
   if not ok then
     return nil, core, { message = "timed out loading workspace at " .. root }
   end
-  local ws = lw.get_workspace()
+  local ws = core:get_workspace()
   if not ws then
     return nil, core, M._setup_failure(core)
   end
@@ -1690,7 +1689,7 @@ function M.cmd_nuke(root, args)
     if v == "-y" or v == "--yes" then yes = true
     else die("unknown argument '" .. v .. "' — usage: lw nuke [-y]", 2) end
   end
-  local core = require("loomworks")._core()
+  local core = require("loomworks.core").process()
   -- The locks first (spec §19.3), BEFORE the list of what would go and any
   -- prompt: a refused nuke prints only its refusal. With -y they are held
   -- from here to the deletion. Otherwise they are only checked here (taken
@@ -9748,7 +9747,7 @@ end
 --- `--target` failure hint.
 --- @return table
 function M._daemon_build_host()
-  local function core() return require("loomworks")._core() end
+  local function core() return require("loomworks.core").process() end
   return {
     -- `opts.wait_tools = false`: a snapshot's or query's load (§19.13), which
     -- does not wait for tool detection.

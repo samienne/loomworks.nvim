@@ -10,13 +10,30 @@
 local probe = require("loomworks.provision.probe")
 local needs = require("loomworks.provision.needs")
 local binsel = require("loomworks.provision.select")
-local version = require("loomworks.daemon.version")
+local version = require("loomworks.daemon.client.version")
 local observer = require("loomworks.daemon.observer")
 local uv = vim.uv or vim.loop
 
---- A descriptor of this build (compatible by construction).
-local function descriptor()
-    return require("loomworks.daemon.descriptor").describe()
+--- A binary descriptor (spec §16.41) offering exactly the transport range and
+--- the interfaces this plugin needs (compatible by construction).
+local function descriptor(lw_version)
+    local cv = require("loomworks.daemon.client.version")
+    local objects, by = {}, {}
+    for _, w in ipairs(require("loomworks.provision.needs").needed()) do
+        local o = by[w.object]
+        if not o then
+            o = { path = w.object, interfaces = {} }
+            by[w.object], objects[#objects + 1] = o, o
+        end
+        o.interfaces[#o.interfaces + 1] = { name = w.iface, versions = { w.v } }
+    end
+    return {
+        descriptor = 1,
+        binary = { lw_version = lw_version or "9.9.9", impl = "lua", dev = false },
+        transport = { min = cv.PROTOCOL_MIN, max = cv.PROTOCOL },
+        schemas = { user = 1, cache = 1 },
+        objects = objects,
+    }
 end
 
 --- `d` with the interface `want` removed from its objects.
@@ -40,7 +57,7 @@ describe("probe verdicts (§19.16 Pre-launch probe)", function()
         local v = probe.classify(ok_res(descriptor()))
         assert.equals("compatible", v.verdict, probe.describe(v))
         assert.same({}, v.problems); assert.same({}, v.degraded)
-        assert.equals(version.identity(), v.version)
+        assert.equals("9.9.9", v.version)
     end)
 
     it("no transport overlap is incompatible", function()

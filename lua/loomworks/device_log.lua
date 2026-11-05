@@ -897,7 +897,7 @@ function M.start(opts)
     end
     view:show()
 
-    local lw_overseer = require("loomworks.overseer")
+    local lw_overseer = require("loomworks.task_launch")
     _task = lw_overseer.run_streaming_task({
         name = opts.name or "device logs",
         cmd = opts.cmd,

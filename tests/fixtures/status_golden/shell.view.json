@@ -1,0 +1,203 @@
+{
+  "debug_adapters": [
+    {
+      "adapter": "codelldb",
+      "default": "codelldb",
+      "known": [
+        "codelldb",
+        "cppdbg"
+      ],
+      "language": "c++",
+      "overridden": false
+    }
+  ],
+  "header": {
+    "active_profile": "only",
+    "config_set": "only",
+    "diagnostics": "warn",
+    "name": "root",
+    "root": "/root",
+    "state": "loaded",
+    "version": "test"
+  },
+  "lsp_options": {
+    "clangd": {
+      "background_index": true,
+      "background_index_priority": "low",
+      "clang_tidy": true,
+      "extra_args": {}
+    }
+  },
+  "workspace": {
+    "config_sets": [
+      {
+        "active": true,
+        "id": "o4",
+        "intent": "shared",
+        "mappings": [
+          {
+            "configuration": {
+              "id": "o6",
+              "key": "variant:default"
+            },
+            "missing": false,
+            "project": {
+              "id": "o5",
+              "key": "Tool"
+            }
+          }
+        ],
+        "modified": false,
+        "name": "only",
+        "removed_upstream": false
+      }
+    ],
+    "diagnostics": [
+      {
+        "message": "loomworks.json sets projects.Tool.shell.env ({CC=gcc}) — ignored: program settings are used only from your local config (lw help trust)",
+        "severity": "warn",
+        "source": "Project/Tool",
+        "target_fold_key": "project:Tool"
+      },
+      {
+        "message": "project 'Tool': configure_cmd is required",
+        "severity": "warn",
+        "source": "load"
+      },
+      {
+        "message": "project 'Tool': build_cmd is required",
+        "severity": "warn",
+        "source": "load"
+      },
+      {
+        "message": "project 'Tool': project path does not exist: /root/Tool",
+        "severity": "warn",
+        "source": "load"
+      }
+    ],
+    "modified": false,
+    "orphaned": {
+      "configurations": {},
+      "stray_dirs": {}
+    },
+    "profiles": [
+      {
+        "active": true,
+        "artifact_conflict": false,
+        "busy": false,
+        "compiler_cache": {
+          "stale": false,
+          "text": "Cache: auto (none found)"
+        },
+        "config_set": "only",
+        "config_set_id": "o2",
+        "id": "o1",
+        "incomplete": false,
+        "intent": "local",
+        "key": "only",
+        "label": "only",
+        "modified": false,
+        "orphaned_set": false,
+        "removed_upstream": false,
+        "running": false,
+        "status": "unconfigured",
+        "tools": {},
+        "units": [
+          {
+            "build_dir": "/root/out",
+            "configuration": "variant:default",
+            "launcher_changed": false,
+            "missing": false,
+            "overwritten": false,
+            "project": "Tool",
+            "state": "unconfigured",
+            "type": "shell",
+            "unit_id": "o3"
+          }
+        ]
+      }
+    ],
+    "projects": [
+      {
+        "configurations": [
+          {
+            "abstract": false,
+            "auto_gen": true,
+            "compiler_overrides": {},
+            "dependents": {},
+            "id": "o8",
+            "intent": "local",
+            "key": "variant:default",
+            "label": "variant:default",
+            "modified": false,
+            "options": {},
+            "overwritten": false,
+            "removed_upstream": false,
+            "running": false,
+            "source_missing": false,
+            "tools_configured": 0,
+            "unresolved_inherits": {},
+            "user": false
+          }
+        ],
+        "deploy": {},
+        "id": "o7",
+        "intent": "shared",
+        "key": "Tool",
+        "launches": {},
+        "modified": false,
+        "needs_refresh": false,
+        "orphaned": false,
+        "path": "Tool",
+        "removed_upstream": false,
+        "running": false,
+        "type": "shell",
+        "type_config": {
+          "fields": [
+            {
+              "kind": "string",
+              "label": "Build dir",
+              "name": "build_dir",
+              "value": "${workspace_root}/out"
+            },
+            {
+              "kind": "cmd_array",
+              "label": "Configure cmd",
+              "name": "configure_cmd"
+            },
+            {
+              "kind": "cmd_array",
+              "label": "Build cmd",
+              "name": "build_cmd"
+            },
+            {
+              "kind": "cmd_array",
+              "label": "Clean cmd",
+              "name": "clean_cmd"
+            },
+            {
+              "kind": "string",
+              "label": "Compile commands",
+              "name": "compile_commands"
+            },
+            {
+              "kind": "env_dict",
+              "label": "Build environment",
+              "name": "env"
+            },
+            {
+              "kind": "string",
+              "label": "clangd binary",
+              "name": "clangd"
+            }
+          ]
+        },
+        "variables": {}
+      }
+    ],
+    "published": false,
+    "sdk_providers": 1,
+    "sdks": {},
+    "suggestions": 1
+  }
+}

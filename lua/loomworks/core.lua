@@ -101,6 +101,22 @@ local DEFAULT_DEPS = {
 --- Create a new Core instance.
 --- @param deps? table override individual dependencies for testing
 --- @return loomworks.Core
+--- The process's one Core (the `lw` binary's: the CLI and the daemon),
+--- created on first use and kept as `Core._process`.
+--- @return loomworks.Core
+function Core.process()
+    Core._process = Core._process or Core.new()
+    return Core._process
+end
+
+--- The root whose working copy the deletion of the working copy (and a nuke)
+--- acts on when no workspace is loaded: the refused load's, else the cwd's.
+--- @return string
+function Core:user_prefs_root()
+    local err = self:get_setup_error()
+    return (err and err.root) or self._deps.workspace.resolve_root()
+end
+
 function Core.new(deps)
     local self = setmetatable({}, Core)
     if deps then

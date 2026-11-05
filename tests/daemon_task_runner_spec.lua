@@ -21,7 +21,7 @@ local H = require("tests.daemon_helpers")
 local fake_overseer = require("tests.fake_overseer")
 
 describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
-    local root, core, ws, profile
+    local root, ws, profile
     local obs, sent, created, notes, saved, orig_notify
 
     local function fake_observer()
@@ -82,11 +82,16 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
-        profile = ws:get_profiles()[1]
+        -- Record the root as a load does, without attaching a real observer:
+        -- each case installs its own (fake) one.
+        local obs_mod = require("loomworks.daemon.observer")
+        local real_attach = obs_mod.attach
+        obs_mod.attach = function() end
+        require("loomworks")._load(root)
+        obs_mod.attach = real_attach
+        ws = { root = require("loomworks").workspace_root() }
+        -- The profile row the task frames name (only its label is echoed).
+        profile = { key = "default", id = "p:1" }
         sent, created, notes = {}, {}, {}
         saved = {
             ov = package.loaded["overseer"], strat = package.loaded["overseer.strategy"],
@@ -107,7 +112,7 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
             require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
-        pcall(function() core:shutdown() end)
+        require("loomworks").shutdown()
     end)
 
     it("an owned task is one overseer task: no origin marker, its output in a terminal, exit 0 = SUCCESS", function()

@@ -40,8 +40,7 @@ M.plugin = {
     -- only (the LSP integrations' `rpc.start`).
     "^loomworks%.lsp_server_cmd$",
     "^loomworks%.device_log$",       -- nvim buffer view of a device log stream
-    "^loomworks%.overseer$",         -- adapter part stays; planning half moves out later
-    "^loomworks%.workspace_view$",   -- view-model part stays; orchestration moves out later
+    "^loomworks%.task_launch$",      -- the editor's own overseer tasks: a launched program, a device log
     "^loomworks%.views$",            -- the editor view store (spec §19.13 "Two sources, one shape")
     "^loomworks%.version$",          -- the plugin's own version (its CHANGELOG)
     "^loomworks%.daemon%.client%.",  -- the editor's daemon client: relay, version range, settings
@@ -110,12 +109,12 @@ local binary_toplevel = {
     "exe", "expand", "file_tracker", "future", "gtest", "health_cache",
     "housekeeping", "inventory", "io", "languages", "launch_configuration", "launch_target",
     "launcher_health", "lock_break", "lock_record", "log", "lsp_db_cleanup", "merge", "migrate",
-    "model_commands", "module", "msvc", "notify", "op_lock", "operation", "paths", "plugin_loader",
+    "model_commands", "module", "msvc", "notify", "op_lock", "operation", "overseer", "paths", "plugin_loader",
     "proc", "profile", "program_fields", "project", "release_notes",
     "release_notice", "reserved_compiler", "reset_plan",
     "run_prep", "runenv", "save_guard", "sdk", "submodules", "suggestions",
     "target", "term", "test_plan", "test_targets", "test_unit", "tool", "tool_cache", "trust", "txn", "types", "user",
-    "variables", "view_state", "workspace",
+    "variables", "view_state", "workspace", "workspace_view",
 }
 
 local binary_daemon = {

@@ -362,92 +362,19 @@ end
 -- User preferences deletion confirmation
 -- -----------------------------------------------------------------------
 
+--- `U`: delete the working copy (loomworks.ui.actions.confirm_delete_user_prefs).
 function Tree:_confirm_delete_user_prefs()
-    local dialog = require("loomworks.ui.dialog")
-    local model = require("loomworks.ui.model_calls")
-    local ws = nil -- (the loaded workspace's, model_calls)
-    -- `Workspace/1.delete_user_prefs` (step 5o C2a): its `confirm` shows what
-    -- would be deleted; `y` sends its plan back, so a working copy changed
-    -- since is refused, not deleted.
-    model.call(ws, "Workspace/1.delete_user_prefs", {}, function(r)
-        if r.outcome ~= "confirm" then
-            local _, err = model.result(r)
-            vim.notify("loomworks: " .. tostring(err or "the working copy was not deleted"), vim.log.levels.ERROR)
-            return
-        end
-        local lines = { "  Delete user preferences", "" }
-        local highlights = { { line = 1, hl_group = "DiagnosticWarn" } }
-        for _, l in ipairs(r.lines or {}) do
-            lines[#lines + 1] = "  " .. l
-            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        end
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "  Active profile and default targets will be reset."
-        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "  Press y to confirm, q to cancel"
-        dialog.show({
-            title = "Confirm Delete",
-            lines = lines,
-            highlights = highlights,
-            keys = {
-                n = "close",
-                y = function(self)
-                    self:close()
-                    model.call(ws, "Workspace/1.delete_user_prefs", { plan = r.plan }, function(d)
-                        local ok, err = model.result(d)
-                        if not ok then
-                            vim.notify("loomworks: " .. tostring(err or "the working copy was not deleted"),
-                                vim.log.levels.ERROR)
-                        end
-                    end)
-                end,
-            },
-        })
-    end)
+    require("loomworks.ui.actions").confirm_delete_user_prefs()
 end
 
 -- -----------------------------------------------------------------------
 -- Working copy trust (spec §17.4)
 -- -----------------------------------------------------------------------
 
---- `T`: review & trust the working copy (`Workspace/1.trust_accept`): the
---- daemon's `confirm` (step 5o C2a) is asked here — Trust sends its plan back (a working copy
---- changed since is refused), Discard goes to the working copy's deletion
---- (its own confirmation), Cancel does nothing.
+--- `T`: review & trust the working copy (loomworks.ui.actions.trust).
 --- @param confirm? fun(msg: string, choices: string, default: integer): integer (tests; default vim.fn.confirm)
 function Tree:_trust(confirm)
-    local model = require("loomworks.ui.model_calls")
-    local ws = nil -- (the loaded workspace's, model_calls)
-    model.call(ws, "Workspace/1.trust_accept", {}, function(r)
-        if r.outcome == "confirm" then
-            local lines = vim.list_extend({}, r.lines or {})
-            lines[#lines + 1] = ""
-            lines[#lines + 1] = "Trust this working copy?"
-            local choice = (confirm or vim.fn.confirm)(table.concat(lines, "\n"), "&Trust\n&Discard\n&Cancel", 3)
-            if choice == 1 then
-                model.call(ws, "Workspace/1.trust_accept", { plan = r.plan }, function(a)
-                    local ok, err = model.result(a)
-                    if ok then
-                        vim.notify("loomworks: working copy trusted (signed for this machine)", vim.log.levels.INFO)
-                    else
-                        vim.notify("loomworks: " .. tostring(err or "the working copy was not trusted"),
-                            vim.log.levels.ERROR)
-                    end
-                end)
-            elseif choice == 2 then
-                self:_confirm_delete_user_prefs()
-            end
-            return
-        end
-        local ok, err = model.result(r)
-        if not ok then
-            vim.notify("loomworks: " .. tostring(err or "the working copy was not trusted"), vim.log.levels.ERROR)
-            return
-        end
-        -- (An already trusted working copy: its note.)
-        for _, note in ipairs(r.notes or {}) do vim.notify("loomworks: " .. note, vim.log.levels.INFO) end
-    end)
+    require("loomworks.ui.actions").trust(confirm)
 end
 
 -- -----------------------------------------------------------------------

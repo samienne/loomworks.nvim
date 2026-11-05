@@ -1,20 +1,15 @@
 --- Withheld language servers for buffers without a usable compilation
 --- database (spec §9.1, §9.8, invariant 16a; clangd spec §3.1; ui.md §3–§4).
 ---
---- A real Core drives a workspace whose mock module emits clangd-shaped
---- entries the way a module predating `db_state` would — pointing straight at
---- the active unit's build directory, configured or not — so core's derived
---- `db_state` is what keeps a stale database there away from the server. The
---- server is a test-only name wired to the REAL clangd `withhold_reason`, with
+--- The editor holds no workspace model (the daemon serves the LSP state);
+--- the server is a test-only name wired to the REAL clangd `withhold_reason`, with
 --- an in-process fake language server as its cmd, so starting / stopping real
 --- Neovim LSP clients is observable without a clangd binary.
 
 local lsp = require("loomworks.lsp")
 local clangd = require("loomworks.integrations.lsp.clangd")
-local events = require("loomworks.events")
+local events = require("loomworks")
 local lw = require("loomworks")
-local h = require("tests.helpers")
-local Core = require("loomworks.core")
 
 local SERVER = "clangd_withheld_t"
 lsp.register(SERVER, { server = SERVER, withhold_reason = clangd.withhold_reason })
@@ -157,7 +152,7 @@ describe("withheld clangd: no workspace loaded for the buffer's root (§9.7)", f
         -- Shut down (cwd swap / reload): no workspace, nothing pending.
         lw.workspace_root = function() return nil end
         lw.lsp_ready = function() return true end
-        events.emit("workspace_closed")
+        events._emit("workspace_closed")
         assert.is_true(vim.wait(2000, function() return #clients() > 0 end, 10),
             "a closed workspace must not leave buffers held")
         assert.equals("none", lsp.buf_state(b))

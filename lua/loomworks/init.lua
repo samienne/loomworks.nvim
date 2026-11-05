@@ -1,14 +1,9 @@
 --- loomworks/init.lua — Public API facade.
---- Creates a singleton Core instance and delegates all calls to it.
+--- The editor is a client of the workspace daemon (spec §19.16): it holds no
+--- model of its own. This module records the workspace root, owns the
+--- editor's event bus and forwards the public API to the daemon client.
 
 local M = {}
-
-local Core = require("loomworks.core")
-local events = require("loomworks.events")
-
---- The singleton core instance. Created at module load time.
---- @type loomworks.Core
-local core = Core.new()
 
 -- The editor's views (spec §19.13): only the daemon's (loomworks.views
 -- builds nothing, step 6b-α).
@@ -22,17 +17,57 @@ local auto_load_mode = "auto"
 --- @type table
 local task_output_win = {}
 
---- Access the underlying core instance (for advanced use / testing).
---- @return loomworks.Core
-function M._core()
-    return core
+--- The configured workspace root (spec §9.7): set synchronously by setup /
+--- load, before the daemon is observed; nil when none.
+--- @type string|nil
+local pending_root = nil
+
+--- The editor's event listeners, by event name.
+--- @type table<string, function[]>
+local listeners = {}
+
+--- `path` (default: the cwd) as an absolute, normalized path in its on-disk
+--- case, without a trailing slash.
+--- @param path? string
+--- @return string
+local function resolve_root(path)
+    local raw = vim.fs.normalize(vim.fn.fnamemodify(path or vim.fn.getcwd(), ":p"))
+    local real = vim.uv.fs_realpath(raw)
+    if real then raw = vim.fs.normalize(real) end
+    return (raw:gsub("/$", ""))
 end
 
---- Emit an event. Used by components that bypass Core (e.g. task_tracker).
+--- Record the configured workspace root synchronously (spec §9.7 / FIX A):
+--- the deferred-LSP gate must know it before servers are installed.
+--- @param root? string
+local function set_pending_root(root)
+    pending_root = resolve_root(root)
+end
+
+--- Forget the configured root. `workspace_closed` is emitted only when no
+--- successor follows (§9.7), so the deferred-LSP gate keeps holding buffers
+--- while another root loads right after.
+--- @param opts? { successor?: boolean }
+local function clear_root(opts)
+    local had = pending_root ~= nil
+    pending_root = nil
+    if had and not (opts and opts.successor) then M._emit("workspace_closed") end
+end
+
+--- Emit an event to the listeners registered with `M.on` (the observer's
+--- daemon_* events, the LSP layer's). A failing listener is notified, the
+--- others still run.
 --- @param event string
 --- @param data any
 function M._emit(event, data)
-    events.emit(event, data)
+    local list = listeners[event]
+    if not list then return end
+    for _, fn in ipairs(vim.list_extend({}, list)) do
+        local ok, err = pcall(fn, data)
+        if not ok then
+            vim.notify("loomworks: event '" .. event .. "' listener error: " .. tostring(err), vim.log.levels.ERROR)
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -49,8 +84,8 @@ local function load(root)
     -- Another root's pending state goes. A successor follows: no
     -- `workspace_closed` (§9.7), so buffers the gate holds for this root
     -- stay held until the daemon's configuration.
-    core:shutdown({ successor = true })
-    core:set_pending_root(root)
+    clear_root({ successor = true })
+    set_pending_root(root)
     require("loomworks.daemon.observer").attach(M.workspace_root(), { binary = M._binary_config })
 end
 M._load = load
@@ -99,7 +134,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string, binary?: any }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, binary?: any }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -118,12 +153,6 @@ function M.setup(opts)
         local setting, warning = require("loomworks.provision.select").check_setting(opts.binary)
         M._binary_config = setting
         if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
-    end
-    if opts and opts.log_level then
-        local log = require("loomworks.log")
-        local levels = { error = log.ERROR, warn = log.WARN, info = log.INFO, debug = log.DEBUG }
-        local level = levels[opts.log_level] or opts.log_level
-        core._deps.log:set_level(level)
     end
 
     setup_keymaps(opts)
@@ -146,9 +175,9 @@ function M.setup(opts)
     -- `root_dir` synchronously for already-open buffers; the deferred-start
     -- gate must already know the root then, or it resolves immediately and the
     -- server starts ungated (to be restarted once the workspace loads). The
-    -- later `core:setup(opts)` sets the same pending root again (idempotent).
+    -- later `load(opts.root)` sets the same root again (idempotent).
     if opts and opts.root then
-        core:set_pending_root(opts.root)
+        set_pending_root(opts.root)
     end
 
     -- LSP: unless explicitly disabled (`opts.lsp == false`), install server
@@ -232,25 +261,18 @@ function M.get_active_configuration_set()
     return daemon_rows().active_configuration_set()
 end
 
---- Get the active workspace: always nil in the editor (it holds no model,
---- spec §19.16 "Public API"); the `lw` binary's loaded one (cli.lua).
---- @return loomworks.Workspace|nil
-function M.get_workspace()
-    return core:get_workspace()
-end
-
---- Get the last setup error (e.g., cache version mismatch).
---- @return { root: string, message: string }|nil
-function M.get_setup_error()
-    return core:get_setup_error()
-end
+--- Get the active workspace: always nil (the editor holds no model, spec
+--- §19.16 "Public API").
+--- (Not a reach-in: nothing is read.)
+--- @return nil
+M.get_workspace = function() return nil end
 
 --- The configured workspace root, known synchronously even during async init
 --- (spec §9.7): the root the editor observes the daemon of.
 --- nil when setup was never called for a root.
 --- @return string|nil
 function M.workspace_root()
-    return core:workspace_root()
+    return pending_root
 end
 
 --- The root of the workspace the editor has loaded (auto-load's "already
@@ -269,7 +291,7 @@ end
 function M.shutdown()
     local mod = package.loaded["loomworks.daemon.observer"]
     if type(mod) == "table" then mod.detach() end
-    core:shutdown()
+    clear_root()
 end
 
 --- Get the task output window config (Snacks.win overrides).
@@ -282,21 +304,27 @@ end
 --- @param event string
 --- @param fn function
 function M.on(event, fn)
-    events.on(event, fn)
+    listeners[event] = listeners[event] or {}
+    table.insert(listeners[event], fn)
 end
 
 --- Remove an event listener registered with `M.on`.
 --- @param event string
 --- @param fn function
 function M.off(event, fn)
-    events.off(event, fn)
+    for i, listener in ipairs(listeners[event] or {}) do
+        if listener == fn then
+            table.remove(listeners[event], i)
+            return
+        end
+    end
 end
 
 --- Emit `lsp_buf_state_changed` (spec §7) for the LSP layer, which reaches the
 --- event bus only through this facade.
 --- @param payload { bufnr: integer, server: string, state: loomworks.LspBufState }
 function M._emit_lsp_buf_state(payload)
-    events.emit("lsp_buf_state_changed", payload)
+    M._emit("lsp_buf_state_changed", payload)
 end
 
 -- ---------------------------------------------------------------------------
@@ -362,74 +390,17 @@ function M.get_devices()
     return require("loomworks.device_source").list(nil)
 end
 
---- The root whose working copy the deletion of the working copy acts on
---- when no workspace is loaded: the refused load's, else the cwd's.
---- @return string
-function M.user_prefs_root()
-    local err = M.get_setup_error()
-    return (err and err.root) or require("loomworks.workspace").resolve_root()
-end
-
---- Review a working copy that is not signed by this machine and, on
---- confirmation, trust it (re-sign exactly what was shown) — spec §17.4.
---- Shows the program-bearing fields first in a confirmation prompt with
---- Trust / Discard / Cancel choices. `opts.confirm` replaces `vim.fn.confirm`
---- (tests).
---- @param root? string workspace root (default: the refused/pending root, else cwd)
+--- `:LoomworksTrust` (spec §17.4): review the loaded workspace's working
+--- copy and, on confirmation, trust it (`Workspace/1.trust_accept` of the
+--- workspace daemon; loomworks.ui.actions.trust). `opts.confirm` replaces
+--- `vim.fn.confirm` (tests).
 --- @param opts? { confirm?: fun(msg: string, choices: string, default: integer): integer }
---- @return "trusted"|"discarded"|"cancelled"|"valid"|"error" outcome
-function M.trust_user_prefs(root, opts)
-    opts = opts or {}
-    local err = core:get_setup_error()
-    root = root or (err and err.root) or core:workspace_root()
-        or require("loomworks.workspace").resolve_root()
-    local review, rerr = core:review_user_prefs(root)
-    if not review then
-        vim.notify("loomworks: " .. tostring(rerr), vim.log.levels.ERROR)
-        return "error"
+function M.trust_user_prefs(opts)
+    if not M.loaded_root() then
+        vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
+        return
     end
-    if review.status == "valid" then
-        vim.notify("loomworks: .nvim/loomworks.user.json is already trusted (signed by this machine)",
-            vim.log.levels.INFO)
-        -- Valid again since a load refused it (restored, or re-signed by
-        -- `lw trust`): load the workspace now (spec §17.4).
-        local norm = core._deps.normalize
-        if err and err.trust and err.trust.kind == "user" and err.root
-            and norm(err.root) == norm(root) then
-            load(root)
-        end
-        return "valid"
-    end
-    local prog, other = require("loomworks.program_fields").review(review.data, require("loomworks.modules"))
-    local lines = {
-        review.path,
-        review.status == "unsigned"
-            and "is not signed by this machine (written by hand, or by an earlier loomworks)."
-            or "was modified outside loomworks, or copied from another machine.",
-        "",
-        "Program settings — what loomworks may run on this file's word:",
-    }
-    if #prog == 0 then lines[#lines + 1] = "  (none)" end
-    for _, l in ipairs(prog) do lines[#lines + 1] = "  " .. l end
-    lines[#lines + 1] = "Other contents:"
-    for _, l in ipairs(other) do lines[#lines + 1] = "  " .. l end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "Trust this working copy?"
-    local confirm = opts.confirm or vim.fn.confirm
-    local choice = confirm(table.concat(lines, "\n"), "&Trust\n&Discard\n&Cancel", 3)
-    if choice == 1 then
-        local ok, serr = core:trust_user_prefs(root, review.content)
-        if not ok then
-            vim.notify("loomworks: " .. tostring(serr), vim.log.levels.ERROR)
-            return "error"
-        end
-        vim.notify("loomworks: working copy trusted (signed for this machine)", vim.log.levels.INFO)
-        return "trusted"
-    elseif choice == 2 then
-        core:delete_user_prefs(root)
-        return "discarded"
-    end
-    return "cancelled"
+    require("loomworks.ui.actions").trust(opts and opts.confirm)
 end
 
 --- Get detected tools organized by module type: per module type, the

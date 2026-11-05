@@ -460,7 +460,6 @@ describe("LOOMWORKS_INSTALL_DIR on every process started from the managed lw (§
         -- The relay process's environment (the daemon inherits it from the relay).
         local settings = require("loomworks.daemon.client.settings")
         assert.equals(SLOT, get(settings.env("/r", sel.env), "LOOMWORKS_INSTALL_DIR"))
-        assert.equals(SLOT, get(require("loomworks.daemon.launch").env("/r", sel.env), "LOOMWORKS_INSTALL_DIR"))
     end)
 
     it("the channel query and the probe pass it to the process", function()

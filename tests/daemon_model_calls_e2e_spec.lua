@@ -55,17 +55,8 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     -- The workspace the calls name: none in `daemon` mode (the editor holds
     -- no model, step 6b-alpha); the in-process tests name theirs.
     local cws
-    local notes, orig_notify, wv_saved
+    local notes, orig_notify
 
-    -- The in-process writes of the routed methods: never reached in daemon
-    -- mode (no plugin-side fallback).
-    local IN_PROCESS = { "publish", "revert_to_baseline", "publish_one", "revert_one", "set_intent",
-        "set_description", "activate_profile", "add_profile_tool", "remove_profile_tool",
-        "execute_create_config_set", "execute_create_config_set_from_candidate", "execute_edit_config_set",
-        "execute_delete_config_set", "execute_add_project", "execute_delete_configuration",
-        "execute_delete_launch_config", "execute_save_variable", "execute_delete_variable",
-        "save_type_config_field", "execute_save_configuration", "execute_save_launch_config", "save_deploy",
-        "expand_preview", "project_declaration", "sdk_detect", "add_sdk", "remove_sdk" }
 
     before_each(function()
         env = H.editor_env({ LOOMWORKS_RUNTIME = "daemon" })
@@ -73,17 +64,9 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         notes = {}
         orig_notify = vim.notify
         vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
-        local wv = require("loomworks.workspace_view")
-        wv_saved = {}
-        for _, name in ipairs(IN_PROCESS) do
-            wv_saved[name] = wv[name]
-            wv[name] = function() error("in-process write " .. name .. " in daemon mode") end
-        end
     end)
 
     after_each(function()
-        local wv = require("loomworks.workspace_view")
-        for name, fn in pairs(wv_saved) do wv[name] = fn end
         vim.notify = orig_notify
         if obs then obs:stop() end
         observer.detach()
@@ -754,21 +737,32 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
             return orow ~= nil
         end)
         assert.is_string(orow.id)
+        -- `D` on it: the deletion names the row by its id alone (the schema's
+        -- `build_dir` is `{ id }` or `{ key }`, additionalProperties false),
+        -- never the row with its key and path.
+        local sent = {}
+        local request = obs.request
+        obs.request = function(o, method, args, cb)
+            if method == "Maintenance/1.execute_deletion" then sent[#sent + 1] = vim.deepcopy(args) end
+            return request(o, method, args, cb)
+        end
+        local c = call("Maintenance/1.execute_deletion", { target = { build_dir = orow } })
+        obs.request = request
+        assert.same({ { target = { build_dir = { id = orow.id } } } }, sent)
+        -- (Its outcome: see the FINDING below.)
+        assert.is_string(c.outcome)
     end)
 
     -- FINDING (lw 0.2.0-beta.1): Maintenance/1.execute_deletion of the orphaned
-    -- row above (`{ target = { build_dir = <row> } }`) is refused: "deletion:
-    -- no build directory with id <the row's id> (a stale reference)", the id
-    -- the view just served. The in-process daemon of this repo accepted it.
+    -- row above is refused: "deletion: no build directory with id <the row's
+    -- id> (a stale reference)", the id the view just served. The editor sends
+    -- `{ target = { build_dir = { id } } }` exactly (asserted above), as the
+    -- schema allows: the refusal is the daemon's.
     pending("Maintenance/1: an orphaned build dir's deletion by its row's id; stale afterwards "
         .. "(FINDING: the real daemon refuses the orphaned row's id as stale)")
 
-    it("Maintenance/1: the project row's D by its id; stale afterwards; none in-process", function()
+    it("Maintenance/1: the project row's D by its id; stale afterwards", function()
         local uv = vim.uv or vim.loop
-        local wv = require("loomworks.workspace_view")
-        local saved = { wv.execute_deletion, wv.nuke }
-        wv.execute_deletion = function() error("in-process deletion in daemon mode") end
-        wv.nuke = function() error("in-process nuke in daemon mode") end
         local ok_, err_ = pcall(function()
             serve()
             local c, r
@@ -796,7 +790,6 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
             assert.truthy(r.message:find("^deletion: "), r.message)
             assert.truthy(r.message:find("stale", 1, true), r.message)
         end)
-        wv.execute_deletion, wv.nuke = saved[1], saved[2]
         assert(ok_, err_)
     end)
 
@@ -805,12 +798,6 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     -- editor owns, answered at its end; the task's meta carries the ids the
     -- page matches it by; a stale id is refused, nothing runs in-process.
     it("Build/1: configure, build and clean a profile and its unit by their rows' ids (5o C2d-1)", function()
-        local ov = require("loomworks.overseer")
-        local saved = { ov.run_profile_action, ov.run_configuration_action, ov.run_configuration_clean }
-        local function never(name) return function() error("in-process " .. name .. " in daemon mode") end end
-        ov.run_profile_action = never("run_profile_action")
-        ov.run_configuration_action = never("run_configuration_action")
-        ov.run_configuration_clean = never("run_configuration_clean")
         -- Every task the observer sees (its `start` meta, read once).
         local rt = require("loomworks.daemon.remote_task")
         local rt_new, seen = rt.new, {}
@@ -851,7 +838,6 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
             assert.equals("refused", r.outcome)
             assert.truthy(r.message:find("no profile id", 1, true), r.message)
         end)
-        ov.run_profile_action, ov.run_configuration_action, ov.run_configuration_clean = saved[1], saved[2], saved[3]
         rt.new = rt_new
         assert(ok_, err_)
     end)

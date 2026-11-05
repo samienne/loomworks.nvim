@@ -14,10 +14,9 @@ local editor_ops = require("loomworks.daemon.editor_ops")
 local H = require("tests.daemon_helpers")
 
 -- The `daemon`-mode editor holds no model (step 6b-alpha): its operations
--- name their scope by the view rows' ids (editor_ops.run_ids); only the
--- in-process case drives the overseer entry points from model objects.
+-- name their scope by the view rows' ids (editor_ops.run_ids).
 describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
-    local root, core, ws, profile, unit
+    local root, ws
     local obs, sent, created, notes, orig_overseer, orig_notify
 
     --- A connected observer of `ws` over a fake connection recording each
@@ -58,12 +57,14 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
-        profile = ws:get_profiles()[1]
-        unit = profile:projects()[1]._config_unit
+        -- Record the root as a load does, without attaching a real observer:
+        -- each case installs its own (fake) one.
+        local obs_mod = require("loomworks.daemon.observer")
+        local real_attach = obs_mod.attach
+        obs_mod.attach = function() end
+        require("loomworks")._load(root)
+        obs_mod.attach = real_attach
+        ws = { root = require("loomworks").workspace_root() }
         sent, created, notes = {}, {}, {}
         orig_overseer = package.loaded["overseer"]
         package.loaded["overseer"] = {
@@ -86,7 +87,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
             require("loomworks.daemon.observer")._attached_root = nil
         end
         obs = nil
-        pcall(function() core:shutdown() end)
+        require("loomworks").shutdown()
     end)
 
     -- The daemon-mode editor names an operation's scope by the view rows'
