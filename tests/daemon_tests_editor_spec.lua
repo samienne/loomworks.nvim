@@ -818,7 +818,9 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
         end)
 
         it("output and error locations are read with result when shown, once", function()
-            local file = root .. "/a_test.cpp"
+            -- The resolved path: a buffer's name is (nvim resolves the
+            -- directory; macOS's temp dir is a symlink, /var -> /private/var).
+            local file = (vim.uv.fs_realpath(root) or root):gsub("\\", "/") .. "/a_test.cpp"
             local view = tview()
             view.units[1].nodes[3].file = file
             local _, calls = on_view(function(m, args)
