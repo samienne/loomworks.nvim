@@ -5,11 +5,12 @@
 --- `lsp.gated_root_dir(bufnr, on_dir, resolve)`; while the workspace is
 --- initializing (and the active profile's owned LSP databases are being
 --- generated), a buffer UNDER the workspace root is queued (its `resolve`
---- withheld) and released on `lsp_ready` (§9.7), on init failure, or on a
---- safety timeout. Buffers OUTSIDE the root resolve immediately.
+--- withheld) and released on the daemon's `ready` (tests/daemon_lsp_editor_spec),
+--- when the workspace closes, or on a safety timeout. Buffers OUTSIDE the
+--- root resolve immediately.
 ---
 --- We drive the real events bus and override the loomworks singleton facade
---- (lsp_ready / workspace_root / get_workspace / get_projects) per test.
+--- (workspace_root / get_workspace / get_projects) per test.
 
 require("loomworks.lsp")
 local lsp = require("loomworks.lsp")
@@ -35,57 +36,21 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
     before_each(function()
         lsp._reset_gate()
         saved = {
-            lsp_ready = lw.lsp_ready,
             workspace_root = lw.workspace_root,
             get_workspace = lw.get_workspace,
             get_projects = lw.get_projects,
             timeout = lsp._gate_timeout_ms,
         }
-        -- Default: workspace still initializing / DBs not yet ready, root known.
-        lw.lsp_ready = function() return false end
+        -- Default: a workspace root is known, nothing loaded yet.
         lw.workspace_root = function() return ROOT end
     end)
 
     after_each(function()
         lsp._reset_gate()
-        lw.lsp_ready = saved.lsp_ready
         lw.workspace_root = saved.workspace_root
         lw.get_workspace = saved.get_workspace
         lw.get_projects = saved.get_projects
         lsp._gate_timeout_ms = saved.timeout
-    end)
-
-    it("holds an under-root buffer while not ready, releases on lsp_ready", function()
-        local buf = make_buf(ROOT .. "/src/main.cpp")
-        local resolved = false
-        lsp.gated_root_dir(buf, function() end, function() resolved = true end)
-
-        -- Held: resolve not called, one entry queued.
-        assert.is_false(resolved)
-        assert.equals(1, lsp._gate_queue_len())
-
-        -- Ready signal releases the queue.
-        events._emit("lsp_ready")
-        assert.is_true(resolved)
-        assert.equals(0, lsp._gate_queue_len())
-    end)
-
-    it("does NOT release on tools_detected — only on lsp_ready (FIX B regression)", function()
-        local buf = make_buf(ROOT .. "/src/main.cpp")
-        local resolved = false
-        lsp.gated_root_dir(buf, function() end, function() resolved = true end)
-        assert.equals(1, lsp._gate_queue_len())
-
-        -- Tool detection completing is NOT the release signal anymore — the
-        -- owned compile_commands database is generated AFTER tools_detected, so
-        -- releasing here would start clangd against an absent DB (then restart).
-        events._emit("tools_detected")
-        assert.is_false(resolved, "buffer released on tools_detected — must wait for lsp_ready")
-        assert.equals(1, lsp._gate_queue_len())
-
-        events._emit("lsp_ready")
-        assert.is_true(resolved)
-        assert.equals(0, lsp._gate_queue_len())
     end)
 
     it("resolves an outside-root buffer immediately (never held)", function()
@@ -95,24 +60,6 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
 
         assert.is_true(resolved)
         assert.equals(0, lsp._gate_queue_len())
-    end)
-
-    it("does NOT drain the queue on workspace_initializing (regression)", function()
-        -- `workspace_initializing` fires on the normal initial core:setup. It
-        -- must NOT release held buffers — doing so starts clangd ungated before
-        -- the workspace is ready (then reconciles). Held buffers wait for
-        -- lsp_ready / the safety timeout.
-        local buf = make_buf(ROOT .. "/src/main.cpp")
-        local resolved = false
-        lsp.gated_root_dir(buf, function() end, function() resolved = true end)
-        assert.equals(1, lsp._gate_queue_len())
-
-        events._emit("workspace_initializing")
-        assert.is_false(resolved, "workspace_initializing drained the queue")
-        assert.equals(1, lsp._gate_queue_len())
-
-        events._emit("lsp_ready")
-        assert.is_true(resolved)
     end)
 
     it("holds a buffer detected inside a loomworks workspace before setup(root)", function()
@@ -133,7 +80,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         assert.is_false(resolved, "buffer inside a detected loomworks workspace must be held")
         assert.equals(1, lsp._gate_queue_len())
 
-        events._emit("lsp_ready")
+        events._emit("workspace_closed")
         assert.is_true(resolved)
         pcall(vim.fn.delete, dir, "rf")
     end)
@@ -144,30 +91,6 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         local resolved = false
         lsp.gated_root_dir(buf, function() end, function() resolved = true end)
 
-        assert.is_true(resolved)
-    end)
-
-    it("drains the queue on init failure (workspace_changed with nil)", function()
-        local buf = make_buf(ROOT .. "/src/main.cpp")
-        local resolved = false
-        lsp.gated_root_dir(buf, function() end, function() resolved = true end)
-        assert.equals(1, lsp._gate_queue_len())
-
-        events._emit("workspace_changed", nil)
-        assert.is_true(resolved)
-        assert.equals(0, lsp._gate_queue_len())
-    end)
-
-    it("does NOT drain on a successful workspace_changed (waits for lsp_ready)", function()
-        local buf = make_buf(ROOT .. "/src/main.cpp")
-        local resolved = false
-        lsp.gated_root_dir(buf, function() end, function() resolved = true end)
-
-        events._emit("workspace_changed", { root = ROOT }) -- success payload
-        assert.is_false(resolved)
-        assert.equals(1, lsp._gate_queue_len())
-
-        events._emit("lsp_ready")
         assert.is_true(resolved)
     end)
 
@@ -189,7 +112,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         lsp.gated_root_dir(buf, function() end, function() resolved = true end)
         vim.api.nvim_buf_delete(buf, { force = true })
 
-        events._emit("lsp_ready")
+        events._emit("workspace_closed")
         assert.is_false(resolved) -- resolver skipped for the dead buffer
         assert.equals(0, lsp._gate_queue_len())
     end)

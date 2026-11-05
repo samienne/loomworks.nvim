@@ -680,18 +680,6 @@ local function ensure_bufstate_cleanup()
         end,
     })
 end
---- Root of a workspace whose initialization failed (`workspace_changed` with no
---- workspace). Buffers under it are withheld with `withheld_error` until a
---- later load succeeds.
---- @type string|nil
-local _ws_failed_root = nil
-
---- Record (or clear) the root of a workspace whose initialization failed.
---- @param root string|nil
-function M._set_failed_root(root)
-    _ws_failed_root = root
-end
-
 --- Severity order for aggregating a buffer's per-server statuses.
 local STATE_RANK = {
     none = 0, ok = 1, held = 2,
@@ -802,9 +790,6 @@ local function decide(server, bufnr)
     end
 
     if not source.loaded() then
-        if _ws_failed_root and buf_under_root(bufnr, _ws_failed_root) then
-            return "withheld_error", nil
-        end
         -- A workspace is being loaded for this buffer's root (setup pending,
         -- not yet ready): no live workspace object yet, never start (§9.7
         -- safety timeout) — it is resolved when that load lands or fails.
@@ -1058,7 +1043,6 @@ function M._reevaluate_now() reevaluate_now() end
 function M._reset_withheld()
     _withheld = {}
     _buf_state = {}
-    _ws_failed_root = nil
 end
 
 
@@ -1404,14 +1388,6 @@ function M._on_source_changed()
     M.reevaluate()
 end
 
---- Whether the editor's own model events are to be ignored by the LSP layer:
---- in daemon mode they reach it only through the daemon's state (§9.8
---- "Re-evaluation").
---- @return boolean
-local function daemon_mode()
-    return source.mode() == "daemon"
-end
-
 --- Wire integration listeners to the loomworks event bus. Idempotent.
 local _listeners_wired = false
 local function wire_listeners()
@@ -1419,63 +1395,8 @@ local function wire_listeners()
     _listeners_wired = true
     local ok, lw = pcall(require, "loomworks")
     if not ok then return end
-    -- Deferred-start gate (§9.7): a new init cycle must NOT drain the queue.
-    -- `workspace_initializing` fires on the normal initial `core:setup`; draining
-    -- here released buffers before the workspace was ready (they start ungated).
-    -- Held buffers wait for this cycle's `lsp_ready` (or the safety timeout);
-    -- readiness is queried dynamically, so no gate-side reset is needed.
-    -- Deferred-start gate (§9.7): the active profile's owned LSP databases
-    -- being ready is the RELEASE signal — the resolved binary and the
-    -- compile_commands_dir (with compile_commands.json already on disk for
-    -- configured units) are in place, so held buffers resolve now and each
-    -- server starts once, correct, with no follow-up restart.
-    -- (Not in daemon mode: the daemon's own `ready` releases it then,
-    -- daemon.md §19.16 "LSP configuration".)
-    lw.on("lsp_ready", function()
-        if daemon_mode() then return end
-        gate_release()
-        M.reevaluate()
-    end)
     lw.on("daemon_lsp_config", function()
         M._on_source_changed()
-    end)
-    lw.on("active_set_changed", function()
-        if daemon_mode() then return end
-        for _, int in pairs(_integrations) do
-            if int.on_active_set_changed then
-                vim.schedule(int.on_active_set_changed)
-            end
-        end
-        -- Profile switch, configure completed, reset/delete: the withheld
-        -- decision may flip either way (§9.8).
-        M.reevaluate()
-    end)
-    lw.on("task_stopped", function()
-        if daemon_mode() then return end
-        M.reevaluate()
-    end)
-    lw.on("workspace_changed", function(ws)
-        -- Deferred-start gate (§9.7): a nil payload means init FAILED — end the
-        -- hold. Managed servers withhold buffers under the failed root
-        -- (`withheld_error`, §9.8) instead of starting on the fallback; plain
-        -- gated resolvers resolve as before. A successful load does NOT release
-        -- here; the gate waits for lsp_ready.
-        if ws == nil then
-            M._set_failed_root(workspace_root())
-            gate_release()
-        else
-            M._set_failed_root(nil)
-        end
-        M.reevaluate()
-        -- Blow the lsp_configs memo first — the old workspace's projects (and
-        -- any project.key reuse) must not survive into the new one. Runs before
-        -- the integration callbacks below, which are deferred via vim.schedule.
-        lsp_config.clear_memo()
-        for _, int in pairs(_integrations) do
-            if int.on_workspace_changed then
-                vim.schedule(int.on_workspace_changed)
-            end
-        end
     end)
     lw.on("workspace_closed", function()
         -- The workspace was shut down (cwd swap / reload) with no successor:
@@ -1483,14 +1404,9 @@ local function wire_listeners()
         -- re-evaluate, so buffers parked `held` or withheld under the closed
         -- workspace fall back to the stock server instead of staying withheld
         -- (§9.7 / §9.8). Running clients are left to the re-evaluation.
-        M._set_failed_root(nil)
         gate_release()
         M.reevaluate()
         lsp_config.clear_memo()
-    end)
-    lw.on("lsp_options_changed", function(payload)
-        if daemon_mode() then return end
-        apply_option_change(payload)
     end)
 end
 
