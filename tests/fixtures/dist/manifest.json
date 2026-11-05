@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "version": "0.0.0-test",
-  "min_host_version": 1,
-  "bundle": "loomworks-lua-0.0.0-test.zip",
-  "artifacts": {
-    "loomworks-lua-0.0.0-test.zip": { "sha256": "dc4c145727b65cd2829ecdfaff436b777129499c6611ff8cbc0dcdb4e0f9003b", "size": 450 }
-  }
-}

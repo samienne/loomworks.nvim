@@ -53,20 +53,17 @@ describe("ui.model_calls", function()
         function obs:refusal(method) return "the daemon does not carry " .. method end
         before_each(function()
             sent, carried, answer = {}, true, nil
-            saved = { package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
-                package.loaded["loomworks"] }
+            saved = { package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks"] }
             package.loaded["loomworks.daemon.editor_ops"] = {
                 daemon_of = function() return true, carried and obs or nil end,
                 carrier = function() return carried and obs or nil end,
             }
             -- No in-process body may run.
             local function never(_, name) return function() error("in-process " .. name .. " in daemon mode") end end
-            package.loaded["loomworks.workspace_view"] = setmetatable({}, { __index = never })
             package.loaded["loomworks"] = setmetatable({}, { __index = never })
         end)
         after_each(function()
-            package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
-                package.loaded["loomworks"] = saved[1], saved[2], saved[3]
+            package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks"] = saved[1], saved[2]
         end)
         local function run(method, params)
             local got
@@ -136,8 +133,7 @@ describe("ui.model_calls", function()
         function obs:refusal(method) return "the daemon does not carry " .. method end
         before_each(function()
             sent, owned, carried, answer, cancelled_by = {}, {}, true, nil, nil
-            saved = { package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
-                package.loaded["loomworks"] }
+            saved = { package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks"] }
             package.loaded["loomworks.daemon.editor_ops"] = {
                 daemon_of = function() return true, carried and obs or nil end,
                 carrier = function() return carried and obs or nil end,
@@ -149,12 +145,10 @@ describe("ui.model_calls", function()
             }
             -- No in-process body may run.
             local function never(_, name) return function() error("in-process " .. name .. " in daemon mode") end end
-            package.loaded["loomworks.workspace_view"] = setmetatable({}, { __index = never })
             package.loaded["loomworks"] = setmetatable({}, { __index = never })
         end)
         after_each(function()
-            package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
-                package.loaded["loomworks"] = saved[1], saved[2], saved[3]
+            package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks"] = saved[1], saved[2]
         end)
         local function run(method, params)
             local got, n = nil, 0
@@ -327,7 +321,7 @@ describe("ui.model_calls", function()
         before_each(function()
             ran, sent, loaded = {}, {}, nil
             saved = { package.loaded["loomworks.daemon.observer"], package.loaded["loomworks.daemon.editor_ops"],
-                package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
+                package.loaded["loomworks"] }
             package.loaded["loomworks.daemon.observer"] = {
                 current = function() return nil end,
                 -- (Any request reaching an observer would be a send.)
@@ -346,13 +340,11 @@ describe("ui.model_calls", function()
                     return { outcome = "ok" }
                 end
             end
-            package.loaded["loomworks.workspace_view"] = setmetatable({}, { __index = recording })
             package.loaded["loomworks"] = setmetatable({}, { __index = recording })
         end)
         after_each(function()
             package.loaded["loomworks.daemon.observer"], package.loaded["loomworks.daemon.editor_ops"],
-                package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] =
-                saved[1], saved[2], saved[3], saved[4]
+                package.loaded["loomworks"] = saved[1], saved[2], saved[3]
         end)
         local function run(method, params)
             local got, n = nil, 0

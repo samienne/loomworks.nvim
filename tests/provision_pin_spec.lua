@@ -331,22 +331,3 @@ describe("scripts/release/pin.lua", function()
         end)
     end)
 end)
-
-describe("the lw bundle", function()
-    it("never carries the plugin pin", function()
-        if not (exe("bash") and exe("python3") and exe("openssl")) then
-            pending("bash, python3 and openssl are needed to build a bundle")
-            return
-        end
-        local dist = vim.fn.tempname()
-        local r = vim.system({ "bash", "scripts/release/build_bundle.sh", "0.0.0-test", dist,
-            "tests/fixtures/dist/test_ec_priv.pem" }, { text = true }):wait()
-        assert.equals(0, r.code, r.stderr)
-        local l = vim.system({ "python3", "-m", "zipfile", "-l", dist .. "/loomworks-lua-0.0.0-test.zip" },
-            { text = true }):wait()
-        vim.fn.delete(dist, "rf")
-        assert.equals(0, l.code, l.stderr)
-        assert.truthy(l.stdout:find("loomworks/provision/managed.lua", 1, true))
-        assert.is_nil(l.stdout:find("loomworks/provision/pinned.lua", 1, true))
-    end)
-end)

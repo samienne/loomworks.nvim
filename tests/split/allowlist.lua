@@ -119,7 +119,6 @@ return {
     -- Device steps are not counted (see tests/split/scan.lua).
     operation_sites = {
         ["lua/loomtest/runner.lua"] = 1,
-        ["lua/loomworks/config_unit.lua"] = 3,
         -- 0 -> 1 each: step 6b-α A1b — the daemon-mode facade's run / debug
         -- is the session tracker's start of a LaunchRef (its preparation a
         -- Launch/1 call), and LaunchRef:launch_resolved starts the program
@@ -130,18 +129,15 @@ return {
         -- loomworks.task_launch, the editor's own task module.)
         -- 5 -> 4: step 5k C2 — LaunchTarget:debug resolves one spec for
         -- run and debug (§8.9.6): one nvim-dap start, not one per kind.
-        ["lua/loomworks/launch_target.lua"] = 4,
         -- 0 -> 1: step 5m C2 — the debugger start of a test debug the daemon
         -- prepared (Tests/1.prepare_debug; the program is the editor's,
         -- §19.16 "Tests" Debug): one nvim-dap start for the launch and its
         -- attaches, as session_tracker's for a prepared launch. Nothing is
         -- built or run in-process for it.
         ["lua/loomworks/loomtest_adapter.lua"] = 1,
-        ["lua/loomworks/profile.lua"] = 3,
         -- 5 -> 2: the in-process launch chain removed (only the daemon's
         -- launch targets run).
         ["lua/loomworks/session_tracker.lua"] = 2,
-        ["lua/loomworks/target.lua"] = 3,
         -- ui/actions.lua 12 -> 0, ui/model_calls.lua 0 -> 6 -> 0 (deleted): step 5o
         -- C2d-1 moved the in-process bodies there; daemon-only removed them.
     },

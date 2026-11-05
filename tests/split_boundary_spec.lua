@@ -31,7 +31,9 @@ describe("plugin/binary boundary", function()
             fail("Modules matched by more than one side:", current.ambiguous,
                 "Make the patterns in tests/split/boundary.lua disjoint. " .. SEE)
         end
-        assert.is_true(current.counts.plugin > 0 and current.counts.binary > 0)
+        assert.is_true(current.counts.plugin > 0)
+        -- The binary side lives in loomworks (samienne/loomworks); none is left here.
+        assert.equals(0, current.counts.binary, "binary-side modules belong in loomworks, not the plugin")
     end)
 
     it("the shared side is exactly the code vendored from loomworks (VENDOR.MANIFEST)", function()
