@@ -45,17 +45,6 @@ the same numbers. A bare reference "§N" means that section in this file;
 "loomworks core §N" and "loomworks spec …" link a section that lives in
 loomworks.
 
-> **Target design, implemented in steps.** This section specifies the end state
-> of the workspace runtime and the order in which it is reached. It does not
-> claim behaviour master has: every subsection carries a **status** line, and
-> only parts marked *master* are in effect. The rationale, the superseded
-> decisions and the step plan live in `DAEMON.md` (deleted from this repository; see git history).
->
-> Status legend: **master** — in effect; **#88** — implemented on the
-> experimental daemon branch (draft PR #88), to be carried over; **re-cut** —
-> exists on #88 but must change to match this section; **future** — not
-> implemented anywhere.
-
 # Part I: The editor client
 
 ## 9. LSP Integration
@@ -109,9 +98,9 @@ Responsibilities:
   `clangd_cmd`/`clangd_root_dir`) are kept as thin back-compat wrappers
   in the relevant integration file.
 - **Wire integration listeners.** On startup, `lsp.lua` subscribes once
-  to `active_set_changed` and `workspace_changed` and fans out to every
-  integration's `on_active_set_changed` / `on_workspace_changed` hook.
-  Integrations don't register listeners themselves.
+  to the daemon's LSP state changes (§19.16 "LSP configuration") and calls
+  every integration's `on_active_set_changed` hook when the state switches
+  or its entries change. Integrations don't register listeners themselves.
 - **Provide `get_status()`** iterating all projects, calling each
   module's `lsp_configs()`, matching LSP clients by root_dir per server,
   and delegating per-server status fields to each integration's
@@ -140,7 +129,7 @@ Each `integrations/lsp/<server>.lua` returns a table with these fields
 | `on_unexpected_exit(info) → decision` | Restart policy for an unexpected client death (see §9.6). `info` carries `{ server, root_dir, exit_code, signal, attempt, args }`. `decision` is `{ restart: boolean, args?: string[], reason?: string }` |
 | `reset(root_dir)` | Clear any adaptive state for a root (UI Reset action) |
 | `reset_label` | Display label for the UI Reset row |
-| `health_inventory(ctx) → Declaration[]` | Environment-inventory declaration for this server ([loomworks core §16.33](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md), category *language servers*). The probe locates the server binary through the filesystem and executable search path only — never an editor API — so it runs in both hosts. Because the integration file itself may need editor-only facilities at load, the declaration lives in a host-neutral **inventory companion**, `integrations/inventory/<name>.lua` (a table with `health_inventory`), which core discovers on the runtime path in both hosts; the editor integration does not carry the hook (the editor reaches no inventory code: `lw health` runs in the binary). A language server is never a workspace requirement ([loomworks core §16.33](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)). The companion may carry an optional static `languages` (`string[]`, the languages the server or adapter serves); a plain `lw health` probes and lists a language-server companion only when a workspace module names it in `lsp_servers` ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)) or, failing that, when its `languages` meet the workspace's, and a debug-adapter companion ([loomworks core §8.9.6](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)) only when its `languages` do — a companion with neither shows only under `lw health --all` ([loomworks core §16.36](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) |
+| `health_inventory(ctx) → Declaration[]` | Environment-inventory declaration for this server ([loomworks core §16.33](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md), category *language servers*). The probe locates the server binary through the filesystem and executable search path only — never an editor API — so it runs in both hosts. Because the integration file itself may need editor-only facilities at load, the declaration lives in an **inventory companion**, loomworks' `lua/loomworks/integrations/inventory/<name>.lua` (a table with `health_inventory`), which `lw` discovers on its runtime path; the plugin carries no companion and the editor integration does not carry the hook (the editor reaches no inventory code: `lw health` runs in the binary). A language server is never a workspace requirement ([loomworks core §16.33](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)). The companion may carry an optional static `languages` (`string[]`, the languages the server or adapter serves); a plain `lw health` probes and lists a language-server companion only when a workspace module names it in `lsp_servers` ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)) or, failing that, when its `languages` meet the workspace's, and a debug-adapter companion ([loomworks core §8.9.6](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)) only when its `languages` do — a companion with neither shows only under `lw health --all` ([loomworks core §16.36](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) |
 
 The integration's module body calls
 `require("loomworks.lsp").register(name, M)` as its last action, then
@@ -358,33 +347,21 @@ When a trigger fires:
 
 ### 13.4 Loading side effects
 
-Loading a workspace (whether via auto-load or `:LoomworksInit`) always:
-- Reads `loomworks.json` (if it exists), `loomworks.cache.json`,
-  `loomworks.user.json` asynchronously (non-blocking)
-- When loomworks.json does not exist, the shared baseline is empty
-  (no shared projects, config sets, or profiles)
-- Creates `.nvim/loomworks.cache.json` if it does not exist
-- Emits `workspace_changed` and `active_set_changed` events once
-  initialized
-- Starts asynchronous tool detection in the background
-- Reports initialization and detection progress via fidget.nvim
-  (if available)
+Loading a workspace (whether via auto-load or `:LoomworksInit`) connects the
+editor to the workspace's daemon through a relay (§19.16 "Through the
+relay"); the daemon loads the workspace when the editor connects (§19.16
+"Loaded on attach"). The editor reads and creates none of the workspace's
+files and detects no toolchains (§19.16 "End state"). The daemon's tasks
+show their progress through fidget.nvim when it is installed (§19.16
+"Tasks in the task runner").
 
 ### 13.5 Workspace initialization (`N`)
 
-When no workspace exists (no loomworks.json, no user.json), the user
-presses `N` on the status page to initialize:
-
-1. Creates `.nvim/loomworks.user.json` with minimal content
-   (`{ "_meta": { "version": 2 } }`)
-2. Loads the workspace from user.json (empty shared baseline)
-3. The status page shows an empty workspace with "Add project" sentinel
-
-The user then follows the normal workflow: add projects via the project
-browser, create configuration sets, create profiles.
-
-No loomworks.json is created during initialization. It is created only
-when the user explicitly publishes (`:w`).
+The editor does not create a workspace. `N` on the status page writes
+nothing and shows an error notification: `creating a workspace is not
+available with the workspace daemon — run lw init in a terminal` (§19.16
+"Model writes"). `lw init` creates the workspace; the editor then loads it
+as any other (§13.4).
 
 ### 13.6 Limitations
 
@@ -403,21 +380,12 @@ when the user explicitly publishes (`:w`).
 |---------|------|-------------|
 | `:LoomworksInit [path]` | Optional directory | Initialize workspace (default: cwd) |
 | `:LoomworksInfo` | None | Open/focus status page |
-| `:LoomworksCompileCommand [file]` | Optional file (default: current buffer) | Show the compile command loomworks' owned LSP database uses for the file, under the active profile |
+| `:LoomworksDaemon [connect\|status]` | Optional subcommand (default: `status`) | `connect`: connect to the workspace daemon through an ordinary relay, which starts the daemon when none is live (§19.16 "Through the relay"); `status`: show the Runtime line and the host binary a launch would use, with its source (§19.16 "Host binary") |
 | `:LoomworksTrust` | None | Review a refused working copy ([loomworks core §17.4](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)): show its summary, then trust (re-sign), discard, or cancel |
-
-`:LoomworksCompileCommand` resolves the active profile, finds the module
-ConfigUnit whose project source tree is the nearest ancestor of the file, and
-calls the module's `compile_command_for` hook ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)). It displays the
-resolved `directory` and the argv one argument per line in a float. When the
-returned `origin` is `attributed` (the file has no entry of its own — e.g. a
-header), it first shows a note that the command was **borrowed**: the target it
-was attributed to, how (`listed` as a target source, or nearest source
-`directory`), and the representative source file when one is available. An
-`own` command shows no such note. It never guesses: with no active profile, no
-owning project, a module that owns no database (e.g. meson — its database is
-build-system generated), or a file the module cannot attribute to a target, it
-states that plainly instead of showing a command.
+| `:LoomworksCompileCommand [file]` | Optional file (default: current buffer) | Refused: `compile command: not available with the workspace daemon` (§19.16 "Public API") |
+| `:LoomworksLog` | None | Open the loaded workspace's `.nvim/loomworks.log` in a float; a note when no workspace is loaded or no log exists |
+| `:LoomworksFidgetClear` | None | Cancel every tracked fidget progress entry and report how many were cleared |
+| `:LoomworksReload` | None | Development: tear down the workspace and reload the plugin's code |
 
 ---
 
@@ -431,36 +399,7 @@ a foreign executable ([loomworks core §18.1](https://github.com/samienne/loomwo
 
 ### 19.16 The editor as a client
 
-*Status: master for the observer ([loomworks core §19.19](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) step 4: `daemon/observer.lua`,
-`daemon/remote_task.lua`); the host-binary order of step 5h.1
-(`provision/select.lua`, `provision/managed.lua`) and the download, check and
-pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
-`provision/sha256.lua`, `provision/cache.lua`), the plugin pin of step 5h.4
-(`provision/pinned.lua`, `provision/needs.lua`, `scripts/release/pin.sh`, the
-two-stage `release.yml`), the pre-launch probe of step 5h.5
-(`provision/probe.lua`, `provision/needs.lua` `problems`), the editor's
-retirement of an incompatible daemon of step 5h.5 (`daemon/editor_retire.lua`,
-`Observer:_weigh_retire`; channel upgrades are step 5h.5, plan); remote tasks shown as
-local ones (Running state, Joining late, End, UI below), the origin marker
-and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
-and the attached editor future. The interface client ("Interface client"
-below): the subscription to `/tasks` and `/workspace` is implemented, step
-5g.3 (`daemon/observer.lua` `_subscribe`); no editor fallbacks
-("Availability"), step 5s, *done*; the views
-and operations steps 5j–5o ([loomworks core §19.19](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)), *done*; the editor without a model of
-its own in `daemon` mode ("End state", "Public API"), step 6b-α, plan; its
-"Load warnings", step 6b-α part F, *done*; the connection through the `--stdio`
-relay, step 5i PR G: its spec (PR G0) *done*; the relay transport and
-lifecycle ("Through the relay" except "Skipping an incompatible daemon",
-`--retiring`) PR G1, *done* (`daemon/client.lua` `relay`, `daemon/observer.lua`
-`_spawn` / `_on_relay`); the incompatible-daemon policy over the relay
-("Skipping an incompatible daemon", retirement only over `via = "relay"`)
-PR G2, *done* (`daemon/observer.lua` `_skip`, `_weigh_retire`). From G1 the observer no longer watches the handle or
-launches a daemon itself ("Step 4" below marks what G1 superseded). The editor-owned child daemon of the
-earlier plan (step 5p) is dropped.*
-
-**End state.** *(Step 5i, done; the editor without a model of its own,
-step 6b-α, plan.)* The editor is a **pure `lw` client**
+**End state.** The editor is a **pure `lw` client**
 of the **same daemon as the CLI**. It spawns `lw daemon run --root <root>
 --stdio`, which connects to the workspace's shared daemon or starts it first
 ([loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Connections"), and speaks the protocol through that relay; it reads
@@ -475,8 +414,8 @@ binary ("Host binary" below): with none the editor spawns no relay and runs
 language servers it manages are withheld ("LSP configuration" below),
 operations are refused with that reason ("Availability" below), and nothing
 of the workspace is loaded or run in the editor; it does not observe a
-daemon another client started. **In `daemon` mode the editor holds no
-workspace model**, connected or not (step 6b-α): it loads none, detects no
+daemon another client started. **The editor holds no
+workspace model**, connected or not: it loads none, detects no
 toolchains or build targets, runs no file tracker on the workspace's files,
 writes none of them (the cache included) and builds no view in-process.
 Everything it shows comes from the daemon's views and replies, and every
@@ -484,13 +423,11 @@ public function answers from them ("Public API" below). Its tasks are
 owned by its connection, so an editor that quits or crashes leaves no task
 running; the daemon itself outlives it under [loomworks core §19.11](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md). Operations move from the
 editor to commands in the order of [loomworks core §19.19](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md). When the shared daemon cannot be
-started, the editor reports it and runs degraded (step 5s); there is no
+started, the editor reports it and runs degraded; there is no
 private-daemon fallback. The editor never runs the daemon code inside its own
-process (the earlier design D8, superseded), nor a child daemon of its own
-(the earlier step 5p, dropped).
+process, nor a child daemon of its own.
 
-**Through the relay.** *(Step 5i PR G1; "Skipping an incompatible
-daemon" PR G2.)* The editor spawns the relay instead of reading the handle
+**Through the relay.** The editor spawns the relay instead of reading the handle
 and the machine key itself; "Launch" and "Connect" below then happen inside
 the relay (loomworks spec [PROTOCOL.md §3](https://github.com/samienne/loomworks/blob/main/spec/protocol/PROTOCOL.md), [loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Connections"). Before each spawn
 it selects the host binary ("Host binary" below, with its pre-launch probe;
@@ -579,8 +516,7 @@ degraded ("End state").
   binary and its source, as for a launch); no launch — waiting for a
   workspace daemon, none is launched (`:LoomworksDaemon connect` starts
   one); retiring — waiting for the retiring daemon to exit; skip — the
-  incompatible-daemon note ("Connect" below). A progress line from the relay
-  is not part of step 5i (BACKLOG).
+  incompatible-daemon note ("Connect" below). The relay reports no progress line.
 - **Exit before `welcome`.** A relay that exits before `welcome` is mapped
   from its exit status ([loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Relay exit status") to a Runtime-line note,
   with the relay's `lw: ...` standard-error line as detail (never the
@@ -591,7 +527,7 @@ degraded ("End state").
 
   | Status | Note | Follow-up |
   |--|--|--|
-  | 10 | could not start the workspace daemon; the editor runs degraded (step 5s) | one no-launch relay, then wait |
+  | 10 | could not start the workspace daemon; the editor runs degraded | one no-launch relay, then wait |
   | 11 | the workspace daemon is not responding | one no-launch relay, then wait |
   | 12 | the daemon belongs to another loomworks data dir, or is not a loomworks daemon | wait |
   | 13 | the workspace daemon runs on another host | wait |
@@ -648,8 +584,7 @@ degraded ("End state").
     the successor — at most **one per retirement episode**. A further 16 in
     the same episode is a note and a wait. The episode, and its count, end
     at the next `welcome` and on `:LoomworksDaemon connect`.
-- **Skipping an incompatible daemon.** *(Step 5i PR G2, `daemon/observer.lua`
-  `_skip`.)* The editor learns that a daemon is
+- **Skipping an incompatible daemon.** The editor learns that a daemon is
   incompatible only from `welcome.daemon`, after the relay connected; a new
   relay of either form would connect straight back to it. So when the editor
   does not observe an incompatible daemon — "Incompatible daemon" below,
@@ -670,11 +605,7 @@ degraded ("End state").
   that relay and stays degraded for the session; it spawns no skip relay,
   and retries only on `:LoomworksDaemon connect`.
 
-**Interface client.** *(Step 5g.3: discovery through `Root.describe` with
-`welcome.objects` as the fallback, the `/tasks` and `/workspace`
-subscriptions, `objects_changed` and the per-feature note; the views and
-operations: done, steps 5j–5o — the `/views` features of step 5j specified,
-part 0, and implemented, part C.)* On every connect, including
+**Interface client.** On every connect, including
 each reconnect, the editor **discovers** the daemon through the root object
 (`welcome.objects`, `Root.describe`; [loomworks core §19.20](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)), picks per interface the highest
 version both sides support, and subscribes to the views and tasks it shows,
@@ -682,22 +613,22 @@ taking their full state from each subscription's `initial`. A missing or
 incompatible interface degrades only the feature that needs it, with one
 Runtime-line note naming the interface and both versions (e.g. `lsp
 configuration: daemon offers loomworks.LspConfig/2, editor needs /1`); it
-never fails the connection or the other features. The features of step 5j
-are `statusline` (`loomworks.view.Header/1`) and `project index`
+never fails the connection or the other features. The view features are
+`statusline` (`loomworks.view.Header/1`) and `project index`
 (`loomworks.view.ProjectsIndex/1`), beside `tasks` and `model changes`; a
-degraded view is built in-process ([loomworks core §19.13](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Two sources, one shape";
-in `daemon` mode shown unavailable instead, never built in-process). Step 5k
-adds `operations` (`loomworks.Build/1` with `configure`, `units`, `jobs` and
-qualified targets), `launch` (`loomworks.Launch/1` with `prepare_debug` and
-`build_scope`), `debug adapters` (`loomworks.DebugConfig/1`) and, in `tasks`,
-`Tasks/1.cancel` and `list`; a degraded one refuses its operations, never
-running them in-process ("Availability" below). Step 5l adds `lsp configuration`
-(`loomworks.LspConfig/1`); when it is degraded the language servers are
-withheld, never configured in-process ("LSP configuration" below). Step 5m
-adds `tests` (`loomworks.Tests/1` with `discover`, `run_cases`,
-`prepare_debug`, `collect` and `result`, and `loomworks.view.Tests/1`); when
-it is degraded the test explorer shows tests unavailable, never discovering
-or running them in-process ("Tests" below). The describe is bounded
+degraded view is shown unavailable, never built in-process. The operation
+features are `operations` (`loomworks.Build/1` with `configure`, `units`,
+`jobs` and qualified targets), `launch` (`loomworks.Launch/1` with
+`prepare_debug` and `build_scope`), `debug adapters`
+(`loomworks.DebugConfig/1`) and, in `tasks`, `Tasks/1.cancel` and `list`;
+a degraded one refuses its operations, never running them in-process
+("Availability" below). When `lsp configuration` (`loomworks.LspConfig/1`)
+is degraded the language servers are withheld, never configured in-process
+("LSP configuration" below). When `tests` (`loomworks.Tests/1` with
+`discover`, `run_cases`, `prepare_debug`, `collect` and `result`, and
+`loomworks.view.Tests/1`) is degraded the test explorer shows tests
+unavailable, never discovering or running them in-process ("Tests" below).
+The describe is bounded
 (about 3 s) and never blocks the editor; when it fails or times out the editor
 uses `welcome.objects`. Between a lost connection and the reconnect the
 editor's workspace is unloaded ("Unloaded on disconnect" below); the
@@ -707,7 +638,7 @@ retried once, on the next `objects_changed` or reconnect. A missing interface
 is noted only when the editor gets nothing for it: a daemon whose
 `describe` reports `delivery: "subscription"` sends a transport-11
 connection only what it subscribed to, so a missing interface is noted; a
-daemon of transport 11 without it (step 5g.1, or a describe that failed)
+daemon of transport 11 without it (an older daemon, or a describe that failed)
 still sends the protocol-10 broadcasts, and one that offers none of the
 observed views is observed through them without a note. Only a transport mismatch
 (no overlap of the ranges, [loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)) makes the daemon incompatible as a whole.
@@ -715,22 +646,18 @@ Against a daemon of protocol 10 (no `welcome.objects`) the editor observes
 through the v0 broadcasts as below and notes interface features as "daemon
 too old".
 
-**Editor operations.** *(Step 5k, done: part 0 the spec; B1 and B2 the
-daemon side, [loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Editor scopes and configure", "Debug", "Build scope of a
-launch", [API.md](protocol/API.md) §12; C1 the calls, task runner and cancellation;
-C2 run and debug through preparation and the debug adapters.)* In `daemon`
-mode, while connected to a compatible daemon, the editor runs these
+**Editor operations.** While connected to a compatible daemon, the editor runs these
 operations as **interface calls**, owning their tasks ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "The editor as
 owner"):
 
 - builds — of a profile (`Build/1.build { profile }`), of configuration units
-  (`units`), serial (`jobs = 1`). *(Step 5o C2d.)* The status page names the
+  (`units`), serial (`jobs = 1`). The status page names the
   profile and the units by its view rows' ids (`{ id }`, a unit row's
   `unit_id`), never by key; a row without an id offers no operation. Its
   cancel and task output of a row are the tasks whose meta names the row's
   ids ([API.md](protocol/API.md) §4.2) — cancel only for a task the editor
   owns;
-- *(step 5t)* the build of a non-device launch target (`Launch/1.build`; the
+- the build of a non-device launch target (`Launch/1.build`; the
   editor's *Build default target*), as one owned task — its dependencies, its
   pre-build deploy and its own build never run in the editor; its progress
   entry follows the task's current step ([API.md](protocol/API.md) §4.3). The
@@ -742,7 +669,7 @@ owner"):
   clean's task ended successfully;
 - the preparation of run and debug launches of non-device targets
   (`Launch/1.prepare_run`, `Launch/1.prepare_debug`, both with `build_scope =
-  "target"`; from step 5t with `force` as for a build, the progress entry
+  "target"`, with `force` as for a build, the progress entry
   following the current step): the editor then runs the returned `launch` in its task runner,
   or hands the returned `debug` to its debugger (its adapter-specific shape
   and the installed-adapter check, made before the call, stay in the editor,
@@ -751,18 +678,17 @@ owner"):
   mapping: while it is not carried, its read failed, or it does not name the
   language, nothing is checked before the call and the debugger checks the
   prepared adapter). A preparation that ends with
-  `device = true` (a target found foreign by probing its artifact, [loomworks core §18.1](https://github.com/samienne/loomworks/blob/main/spec/core/remote-exec.md)) is **refused** *(step 6b-α; before it the run continued in the
-  editor from the post-build deploy)*: the editor does not execute foreign
+  `device = true` (a target found foreign by probing its artifact, [loomworks core §18.1](https://github.com/samienne/loomworks/blob/main/spec/core/remote-exec.md)) is **refused**: the editor does not execute foreign
   targets (spec §18.11), so no program is started and nothing of the run
   continues in the editor. Its error notification names the target and the
   remedy, `<target> runs on a device: the editor does not execute foreign
   targets (spec §18.11); run it with lw run`. Runner devices ([loomworks core §18](https://github.com/samienne/loomworks/blob/main/spec/core/remote-exec.md)) stay out
   of the editor. A device target of [loomworks core §11](https://github.com/samienne/loomworks/blob/main/spec/core/integrations.md) is launched through
   `Devices/1` ("Devices" below). The program is the editor's, never the daemon's; stopping a run or
-  debug session stops it as in-process. While the preparation runs, a stop
+  debug session stops that program. While the preparation runs, a stop
   cancels its task (`Tasks/1.cancel`) and no program is started, and a
   second launch asks, as for a running session, before it replaces it.
-  *(Step 5l.)* While the workspace is unloaded — the daemon reports it
+  While the workspace is unloaded — the daemon reports it
   `unloaded`, or the connection is lost ("Unloaded on disconnect" below) —
   a run or debug launch is not offered and, when asked for, is refused with
   that status, never prepared in-process: its launch information comes
@@ -772,11 +698,10 @@ owner"):
   `changed`; while it is not carried the section is unavailable and its
   writes fail, as any operation is refused ("Availability" below).
 
-Test runs and discovery go through `Tests/1` (step 5m, "Tests" below);
-device-target launches through `Launch/1.build` and `Devices/1` (step 5n,
-"Devices" below). The editor runs no operation itself.
+Test runs and discovery go through `Tests/1` ("Tests" below);
+device-target launches through `Launch/1.build` and `Devices/1` ("Devices" below). The editor runs no operation itself.
 
-**Model writes.** *(Step 5o.)* In `daemon` mode the editor writes nothing
+**Model writes.** The editor writes nothing
 to the workspace's files and runs no deletion: every status-page action and
 editor dialog that changes the model is a call to a command method of
 [loomworks core §19.14](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md), naming its entities by the ids of `view.Workspace/1` — for a
@@ -793,42 +718,26 @@ shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is
 not carried the action is refused ("Availability"), never run in-process.
 With no workspace loaded (its load failed, or a trust or schema refusal
-unloaded it; from step 6b-α as `view.Header/1`'s `state` reports it) the
-mode is the editor's setup selection; in `daemon` mode every action is
+unloaded it, as `view.Header/1`'s `state` reports it) every action is
 refused, nothing sent and nothing run — the nuke, trust and the removal of
 the working copy name their command (`lw nuke`, `lw trust`, `lw trust
---discard`) *(until the editor can connect to a daemon for a root it has
-not loaded)*. Creating a workspace (the status page's `N`, a new
-`loomworks.json` where none is) is likewise refused in `daemon` mode, loaded
-or not, nothing written: its error notification names `lw init` *(step
-6b-α; [API.md](protocol/API.md) §6 defers `Workspace/1.create` until a
-server serves a root with no `loomworks.json`)*.
-*(Status: every status-page action is a call. Its `Workspace/1`,
-`Profiles/1` and `ConfigSets/1` actions are calls from step 5o part C2a,
-its `Projects/1` actions from C2b (the removals, variable and
-`type_config` edits and project add from its first half, the
-configuration editor (C2b2-1) and the launch, deploy and path editors
-(C2b2-2) from its second), the SDK section's `Sdks/1` actions and the
-toolchain rescan from C2c-1, and its deletions and nuke — the project
-row's removal and the project browser's among them — from C2c-2: a
-confirmed `Maintenance/1` call is a task the editor owns, reported when
-it ends; and the Profiles section's builds, configures, cleans, cancels,
-task output, options and device choice name their rows by id from step 5o
-C2d.)*
+--discard`). Creating a workspace (the status page's `N`, a new
+`loomworks.json` where none is) is likewise refused, loaded or not, nothing
+written: its error notification names `lw init` ([API.md](protocol/API.md)
+§6 defers `Workspace/1.create` until a server serves a root with no
+`loomworks.json`).
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Confirmation"); so is the
 artifact-conflict question of a build ([loomworks core §5.9](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md)) for the units whose artifacts
-are known then (configured ones; in `daemon` mode as the view's unit rows
-report them, `artifact_block`, never from the editor's model), its Yes sent
+are known then (configured ones, as the view's unit rows report them, `artifact_block`, never from the editor's model), its Yes sent
 as `force` — a conflict found only after the routed build's own configure
 ends the task as the CLI's routed build does (the refusal naming `--force`). Each call
 carries the editor process's whole environment **at call time**, under the
 rules of [loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Environment" — what an in-process task of the editor
 inherits.
 
-**Availability.** *(Step 5s, done; before it the editor ran an operation it
-could not carry in-process.)* The editor routes an operation only when it
+**Availability.** The editor routes an operation only when it
 can be carried; otherwise it refuses it. It is carried
 while connected through interfaces to a compatible daemon that offers
 `loomworks.Build/1` and `loomworks.Tasks/1` (its `cancel`: an operation the
@@ -847,8 +756,7 @@ missing on this connection:
   visible;
 - `declined` (a foreign kit, trust, another environment while a build runs):
   the operation fails with the reason as one notification line;
-- `refused`: the operation fails with the refusal's message, as the
-  in-process operation would have refused it;
+- `refused`: the operation fails with the refusal's message;
 - the connection lost **after** `accepted`: the operation fails ("the
   workspace daemon disconnected") and is **never re-run in-process** (for a
   launch: no program is started), as for the CLI ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Cancellation").
@@ -856,13 +764,9 @@ missing on this connection:
   calls"): the operation fails and is not re-run.
 
 There is no in-process fallback and no opt-out; the editor never runs
-workspace logic itself. *(Transition, until step 6b-β: the deprecated
-`runtime.mode = "in-process"` editor of [loomworks core §19.1](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) runs every operation
-in-process, never routing; the cross-process build-directory locks ([loomworks core §16.6](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md))
-serialize its operations with a daemon's.)*
+workspace logic itself.
 
-**Public API.** *(Step 6b-α, plan; a breaking change of the plugin's Lua
-API in `daemon` mode.)* In `daemon` mode the plugin's public functions answer
+**Public API.** The plugin's public functions answer
 only from what the daemon gave the editor — its views, the `LspConfig/1`
 state ("LSP configuration" below) and replies — never from a model (the
 editor holds none, "End state"). A getter returns **plain tables**: copies
@@ -928,14 +832,10 @@ The deploy editor's source targets are `view.Workspace/1`'s
 offers its targets too. A refused or uncarried call is an error
 notification and changes nothing ("Availability").
 `lw.compile_command_for_file(file)` and `:LoomworksCompileCommand` are
-**refused** in `daemon` mode — `not available with the workspace daemon` —
-and never read a compilation database or a model (BACKLOG "Per-file compile
-command over the daemon"). *(Transition, until step 6b-β: in `in-process`
-mode every function keeps its model objects and behaviour.)*
+**refused** — `not available with the workspace daemon` — and never read a
+compilation database or a model.
 
-**LSP configuration.** *(Step 5l, done: part 0 the spec; A the
-host-neutral builder of the state, in-process only; B the daemon side,
-[API.md](protocol/API.md) §13; C the editor side.)* In `daemon` mode what the
+**LSP configuration.** What the
 editor's language servers are configured with — each project's
 `lsp_configs` entries with their `db_state` (§9.1), the working copy's
 per-server options ([loomworks core §2](https://github.com/samienne/loomworks/blob/main/spec/core/three-file-model.md), `user.json` `lsp`), and whether the active profile's
@@ -1028,18 +928,7 @@ an entry's server binary resolves as the editor would run it.
   `lw.buf_project` ([loomworks core §19.13](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md), separator-bounded), matching the record to the
   state's project by key; `lw.project_for_buf` stays public API.
 
-*(Transition, until step 6b-β.)* In `in-process` mode the editor still builds
-the state from its own model with the same builder (§9.2), generates the
-owned databases and writes options in-process, under §9.7 as before 5l; the
-buffer → project rule above applies there too. That path is the
-`in-process` mode's, removed with the in-process editor ([loomworks core §19.19](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) 6b-β); it is
-never used in `daemon` mode.
-
-**Tests.** *(Step 5m, done: part 0 the spec; A the host-neutral builder of
-the view and loomtest's adapter-executed runs, in-process only; B1 the
-daemon's discovery and view, B2 its runs, debug preparation and results,
-[API.md](protocol/API.md) §10, §14.3; C1 the editor's read path, C2 its
-runs and debug.)* In `daemon` mode the editor computes nothing about tests:
+**Tests.** The editor computes nothing about tests:
 it does not discover them, build or run a test program, parse a test
 program's output or results file, match a test to a build target, or keep
 results of its own. The test tree, its states and the last results come
@@ -1100,22 +989,11 @@ editor's — rendering, navigation, the cursor's test, the output window.
   last results; a discovery, run or preparation the editor owned past
   `accepted` fails with the connection ("Editor operations" above) and is
   never re-run.
-- **Neotest.** The neotest adapter ([loomworks core §8.9.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)) is **not available** in `daemon`
-  mode in this step: it discovers nothing and, the first time neotest asks
+- **Neotest.** The neotest adapter ([loomworks core §8.9.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)) is **not available**: it discovers nothing and, the first time neotest asks
   it for anything in a session, shows one notification (`loomworks: neotest
   is not available with the workspace daemon — use the loomtest explorer`).
-  A daemon-mode neotest (positions from the view, runs through a CLI relay)
-  is later ([loomworks core §19.19](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) 5m part D).
 
-*(Transition, until step 6b-β.)* In `in-process` mode the editor keeps its
-in-process discovery, its RunSpec runs with loomtest's own streaming and
-results parsing, its `ensure_built` and the neotest adapter, unchanged; that
-path is never used in `daemon` mode.
-
-**Devices.** *(Step 5n, done: part 0 the spec; B2 the daemon side,
-[API.md](protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use — implemented;
-B3 the device log stream, [API.md](protocol/API.md) §9.5 — implemented; C3 its editor use — implemented.)*
-In `daemon` mode the editor neither lists nor probes devices, nor installs
+**Devices.** The editor neither lists nor probes devices, nor installs
 or launches on them. The device list comes only from `Devices/1.list` and
 its `changed` signal. A scan is a `Devices/1.scan` task carrying the
 editor's environment. A device target's launch is a `Launch/1.build` call,
@@ -1143,9 +1021,8 @@ ended.
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, [loomworks core §12](https://github.com/samienne/loomworks/blob/main/spec/core/integrations.md)) — one per daemon
 task, not one per step: a profile build is one entry whose output carries the
-`==> [build] <project>` lines, where in-process it is one entry per project;
-the units' states come from `meta.units` (Running state below). *(Step 5t:)*
-a task carrying steps ([API.md](protocol/API.md) §4.3) keeps its one entry, which
+`==> [build] <project>` lines; the units' states come from `meta.units`
+(Running state below). A task carrying steps ([API.md](protocol/API.md) §4.3) keeps its one entry, which
 follows the task's current step.
 
 - An **editor-owned** task is a task-runner task whose start is the call,
@@ -1184,11 +1061,10 @@ entry — the remote-task entry of UI below, with no origin marker — and the
 editor's own progress wrapper is not shown for a routed operation; a launch's
 or debug session's final phase (running, debugging) keeps its own entry.
 
-**Step 4: the observer.** In `daemon` mode ([loomworks core §19.1](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)), each
-workspace the editor loads gets an **observer**. It watches the task streams
-and model changes of operations started elsewhere (a `lw build` in a
-terminal). It runs none of the editor's own operations; where those run is
-"Editor operations" and "Availability" above. In `in-process` mode nothing below happens.
+**The observer.** Each workspace the editor loads gets an **observer**. It
+watches the task streams and model changes of operations started elsewhere
+(a `lw build` in a terminal). It runs none of the editor's own operations;
+where those run is "Editor operations" and "Availability" above.
 
 - **Host binary.** The observer selects the host binary it launches the
   daemon from; first match wins:
@@ -1206,13 +1082,13 @@ terminal). It runs none of the editor's own operations; where those run is
      script shim cannot start the daemon detached), so an extensionless `lw`
      or an `lw.cmd` in an earlier entry neither is chosen nor hides a later
      `lw.exe`. Used when it offers the interfaces the plugin needs, as the
-     pre-launch probe below decides *(step 5h.5, `provision/probe.lua`)*.
+     pre-launch probe below decides.
   3. **The plugin-managed `lw`** under the editor's data directory: used when
      there is no system `lw`, or when it is too old (a status note says so).
      "Too old" is a **definite** failure of the probe; an unknown result is
      not a failure.
 
-  **Pre-launch probe** (step 5h.5). Before launching from an `lw` found on
+  **Pre-launch probe**. Before launching from an `lw` found on
   the search path or named explicitly, the observer runs `<binary> version
   --json` ([loomworks core §16.41](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) — asynchronously, bounded by a short timeout (about 3 s),
   with the editor's data directory as working directory (never the
@@ -1261,12 +1137,12 @@ terminal). It runs none of the editor's own operations; where those run is
 
   The editor **reads no `lw.pin`**. A global or managed `lw` follows the
   repository's pin itself: the daemon commands the editor launches (`daemon
-  run` and its `--stdio` relay form, step 5i) are redirect commands
-  ([loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md), step 5h.2), so they run the pinned version — unless the pinned
+  run` and its `--stdio` relay form) are redirect commands
+  ([loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)), so they run the pinned version — unless the pinned
   release predates the command ([loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md) "A pin older than the command"): then
   the launch is refused and the editor works without a daemon. Compatibility is
   decided after connecting, by the handshake and `Root.describe` ([loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md),
-  [loomworks core §19.20](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)); the pre-launch `lw version --json` probe (above, step 5h.5) is only
+  [loomworks core §19.20](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)); the pre-launch `lw version --json` probe (above) is only
   a quick pre-check. It describes the binary probed, not what a redirect
   command runs in a pinned repository ([loomworks core §16.41](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)): a repository pinned to an
   incompatible release is caught by the handshake after the launch, and the
@@ -1275,11 +1151,10 @@ terminal). It runs none of the editor's own operations; where those run is
   downloads is hash-checked (against the hash the plugin release carries,
   "Plugin pin" below, or one the pinned `lw` obtained from a release's signed
   `SHA256SUMS`, "Channel upgrades" below); binaries the user
-  installed (search path, explicit) get compatibility checks only. In daemon
-  mode the plugin may download its managed `lw` automatically (step 5h.3;
-  `binary.download = false` turns that off): official releases only ([loomworks core §17.8](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)).
+  installed (search path, explicit) get compatibility checks only. The plugin may download its managed `lw` automatically
+  (`binary.download = false` turns that off): official releases only ([loomworks core §17.8](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)).
 
-  **Plugin pin** (step 5h.4). The plugin carries the release it downloads:
+  **Plugin pin**. The plugin carries the release it downloads:
   `lua/loomworks/provision/pinned.lua`, `{ version, assets = { [<asset>]
   = <sha256> } }` with one hash per published host asset (`lw-linux-x86_64`,
   `lw-macos-arm64`, `lw-windows-x86_64.exe`; the plugin keeps its own copy of
@@ -1310,7 +1185,7 @@ terminal). It runs none of the editor's own operations; where those run is
   than the last release (the editor then degrades with feature notes;
   developers point `binary.path` / `LOOMWORKS_LW` at a newer `lw`).
 
-  **The plugin-managed `lw`** (step 5h.3) lives at
+  **The plugin-managed `lw`** lives at
   `<editor data>/loomworks/lw/<sha256>/lw` (`lw.exe` on Windows),
   content-addressed by the binary's SHA-256, so a binary is never replaced in
   place (a running daemon keeps its file). The binary the plugin wants is a
@@ -1318,7 +1193,7 @@ terminal). It runs none of the editor's own operations; where those run is
   asset of the plugin pin ("Plugin pin" above; a platform with no published
   asset, or a pin without this host's asset, wants none and the slot only says
   why), or — with `binary.channel` set — a newer compatible release of that
-  channel ("Channel upgrades" below; step 5h.5). When the selection reaches a wanted managed `lw` that is not
+  channel ("Channel upgrades" below). When the selection reaches a wanted managed `lw` that is not
   installed, that decides the search: in daemon mode the observer downloads it
   — asynchronously, the editor is degraded meanwhile and the Runtime note
   says it is downloading, from where — then launches from it (or connects to a
@@ -1410,10 +1285,9 @@ terminal). It runs none of the editor's own operations; where those run is
   nothing another process left there; it removes only its own temporary file
   and staging directory of a failed attempt. Slot directory mtimes (binary and
   bundle slots) still record last use for that future pruning. A search-path or explicit `lw` is probed before
-  the launch ("Pre-launch probe" above, step 5h.5); the managed `lw` is not.
+  the launch ("Pre-launch probe" above); the managed `lw` is not.
 
-  **Channel upgrades** (step 5h.5; *implemented*,
-  `provision/channel.lua`). The setup option `binary.channel`
+  **Channel upgrades**. The setup option `binary.channel`
   (`"stable"` or `"unstable"`; default unset = the plugin pin only, no
   channel lookups) lets the managed `lw` move ahead of the pin. It applies
   only when the selection reaches the managed source, `binary.download` is
@@ -1464,7 +1338,7 @@ terminal). It runs none of the editor's own operations; where those run is
   search-path `lw` is selected, `binary.channel` has no effect and the status
   note says why (`binary.prefer = "managed"` changes that).
 
-  **Retiring an incompatible daemon** (step 5h.5; [loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Editor
+  **Retiring an incompatible daemon** ([loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Editor
   retirement"). On connect, a daemon is **incompatible** with the editor
   when its transport range does not overlap the editor's (detected at the
   handshake; `ping`, `status` and `retire` are version-stable, loomworks spec [PROTOCOL.md §7](https://github.com/samienne/loomworks/blob/main/spec/protocol/PROTOCOL.md), so the
@@ -1480,7 +1354,7 @@ terminal). It runs none of the editor's own operations; where those run is
   compatible one whose code identity differs from the relay's
   (`welcome.relay`) ([loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Editor retirement"), only when all of these hold:
   - the daemon is idle (no busy client, [loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Busy") — the editor's own
-    connection included: from step 5k a task the editor owns makes it busy,
+    connection included: a task the editor owns makes it busy,
     so the editor never retires a daemon under its own running tasks (and it
     routes nothing to a daemon it found incompatible, "Editor operations"
     above);
@@ -1547,55 +1421,40 @@ terminal). It runs none of the editor's own operations; where those run is
   observer launches, its note names the binary and its source.
   `:LoomworksDaemon status` and `:checkhealth loomworks` list every source
   with its verdict. The editor never launches a daemon from its own plugin
-  source unless `binary.source` asks for it, and runs no loopback runtime
-  until the thin-client part of [loomworks core §19.19](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) step 5 (the CLI's attached runs of
-  step 5e do not include the editor). Until step 5i PR G1 it still watches
-  for a daemon another client starts and observes that one. From PR G1 it
-  does not: the editor follows daemons only through relays, which need a
-  host binary, so with none it spawns no relay, runs degraded, and does
-  not observe a daemon another client started ("End state").
-- **Launch.** The observer launches `<binary> daemon run --root <root>`
-  ([loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md): detached, no inherited handles, the state directory as working
-  directory) only when no daemon is live on workspace load or on an explicit
-  `:LoomworksDaemon connect`, and once after a retirement (below). Readiness is not awaited in a blocking wait: the
-  observer watches the handle. An early exit other than "another daemon won"
-  is a note. A daemon that is starting, hung, of another host, or attached is
-  not launched over; the observer notes it and watches. *(Until step 5i PR
-  G1. From G1 the editor launches nothing itself and starts no child daemon:
-  an ordinary relay launches the daemon when none is live, on the same
-  occasions ("Through the relay" above, its forms), and a relay's exit before
-  `welcome` replaces the early-exit note ("Exit before `welcome`").)*
-- **Connect.** The observer handshakes as `client = "editor"`,
-  `role = "observer"` — also from step 5k, when it owns tasks: an observer
-  may start and own operations ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "The editor as owner"); there is no
-  separate role. It observes a daemon whose transport range overlaps
-  its own and whose schemas are not newer ([loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md); the host version may
-  differ; editors of protocol 10 required an equal protocol). *(From step 5i
-  PR G1 the handshake runs inside the relay and the editor judges
-  `welcome.daemon`; a `welcome` without `via` is observed without this check,
-  "Through the relay" above.)*
+source unless `binary.source` asks for it. It follows daemons only through
+relays, which need a host binary, so with none it spawns no relay, runs
+degraded, and does not observe a daemon another client started ("End
+state").
+- **Launch.** The editor launches no daemon itself and starts no child
+  daemon: an ordinary relay launches the daemon when none is live, on the
+  occasions "Through the relay" above lists, and a relay that exits before
+  `welcome` is handled under "Exit before `welcome`".
+- **Connect.** The relay handshakes for the editor as `client = "editor"`,
+  `role = "observer"`. An observer may start and own operations
+  ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "The editor as owner"); there is no separate role. The
+  editor judges `welcome.daemon`: it observes a daemon whose transport range
+  overlaps its own and whose schemas are not newer ([loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md);
+  the host version may differ). A `welcome` without `via` is observed
+  without this check ("Through the relay" above).
   - **Incompatible daemon.** A daemon with older schemas (and nothing else
     wrong) is observed; any other incompatible daemon (no transport overlap,
     newer schemas, or, over transport 11, a missing root interface) the
-    observer notes and does not observe, and does not connect to it again
-    (from step 5i PR G2, through the relay it follows a successor with
-    `--no-launch --skip-instance`, "Skipping an incompatible daemon" above).
-    It never restarts an incompatible daemon; it retires it only under
-    "Retiring an incompatible daemon" above *(step 5h.5)*, which also says
-    how long an older-schema daemon stays observed.
+    observer notes and does not observe, and does not connect to it again;
+    through the relay it follows a successor with `--no-launch
+    --skip-instance` ("Skipping an incompatible daemon" above). It never
+    restarts an incompatible daemon; it retires it only under "Retiring an
+    incompatible daemon" above, which also says how long an older-schema
+    daemon stays observed.
   - **Keepalive.** While connected it sends `ping` about every 30 s.
 - **No relaunch after a stop.** When the connection drops because the daemon
-  stopped (`lw daemon stop`), crashed or dropped this observer, the observer
-  never launches a daemon by itself. This keeps `lw daemon stop` meaningful.
-  It watches the handle (about every 2 s) and connects again when a live
-  daemon appears. It skips one it was told is `retiring` or found
-  incompatible, identified by pid and start time. *(Until step 5i PR G1;
-  then replaced by "Following a stopped or retiring daemon without
-  relaunching it" and, from PR G2, "Skipping an incompatible daemon" under
-  "Through the relay" above — a `--no-launch` relay, with `--skip-instance`
-  for an incompatible daemon, instead of watching the handle. The editor
-  then keeps no list of skipped daemons of its own.)*
-- **Loaded on attach.** *(Step 5l.)* When an editor connects (`role =
+  stopped (`lw daemon stop`), crashed or dropped this observer, the editor
+  never launches a daemon by itself; this keeps `lw daemon stop`
+  meaningful. It follows the daemon as "Following a stopped or retiring
+  daemon without relaunching it" and "Skipping an incompatible daemon" under
+  "Through the relay" above say: a `--no-launch` relay, with
+  `--skip-instance` for an incompatible daemon. The editor keeps no list of
+  skipped daemons of its own.
+- **Loaded on attach.** When an editor connects (`role =
   "observer"`), the daemon, after its `welcome`, starts loading the
   workspace unless it is loaded or a load is under way — as a `snapshot`
   loads it, in the daemon's own environment and without waiting for tool
@@ -1604,10 +1463,10 @@ terminal). It runs none of the editor's own operations; where those run is
   `LspConfig/1.get` still never loads. Because this load uses the daemon's
   own environment, a later operation from a client whose environment
   differs reloads the workspace first ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)).
-- **Unloaded on disconnect.** *(Step 5l.)* When a connection the editor
+- **Unloaded on disconnect.** When a connection the editor
   held is lost, for any reason (the daemon stopped, crashed, retired or
   dropped this client, the relay ended), the editor's workspace is
-  **unloaded** in `daemon` mode until a reconnect's daemon reports it
+  **unloaded** until a reconnect's daemon reports it
   `loaded` again — as if the daemon had answered `unloaded`: nothing of the
   daemon's runs for it. Its remote tasks end ("Tasks" below), an operation
   past `accepted` fails ("Editor operations" above), and the controlled
@@ -1619,15 +1478,12 @@ terminal). It runs none of the editor's own operations; where those run is
   waiting for it`, UI §1.1) until the daemon reports `loaded`. A
   workspace swap or shutdown is not a lost connection ("Teardown" below).
 - **Retiring.** On `retiring` (broadcast, or in `welcome`) the observer
-  disconnects at once, so a version change completes ([loomworks core §19.11](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)). Once that
-  daemon has exited and no other daemon is live, the observer launches one
-  daemon itself (one attempt, not a loop: an early exit is a note) and
-  connects to it; a successor another client started first is observed
-  instead. *(Until step 5i PR G1; then replaced by "Following a stopped or
-  retiring daemon without relaunching it" under "Through the relay" above —
-  the wait happens in a relay (`RELAY_RETIRE_WAIT`, or `--no-launch`, with
+  disconnects at once, so a version change completes ([loomworks core §19.11](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)).
+  It then follows the daemon as "Following a stopped or retiring daemon
+  without relaunching it" under "Through the relay" above says: the wait
+  happens in a relay (`RELAY_RETIRE_WAIT`, or `--no-launch`, with
   `--retiring` when the instance is known, ending in exit 16), and the one
-  launch per retirement episode is an ordinary relay's.)*
+  launch per retirement episode is an ordinary relay's.
 - **Model changes.** On `model_change` the editor applies its files' pending
   changes at once (loomworks spec [PROTOCOL.md §12–§13](https://github.com/samienne/loomworks/blob/main/spec/protocol/PROTOCOL.md)).
 - **Tasks.** Each observed task becomes a **remote task** in the editor.
@@ -1645,7 +1501,7 @@ terminal). It runs none of the editor's own operations; where those run is
     having an active operation (UI §1.5). A remote `clean` shows its
     units `cleaning`, the display of the transient clean state ([loomworks core §3.1](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md), transition rule 5),
     without changing their cached state; a remote `test` or `run` shows
-    `building`. *(Step 5d.)* A remote `reset` shows its units
+    `building`. A remote `reset` shows its units
     `deleting`, the display of the transient deletion state ([loomworks core §3.1](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md), transition
     rule 5) of the in-process reset, whose deletion is not a clean. A
     `reset --all` has no profile (`meta.scope = "all"`, [loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) Reset): its
@@ -1681,19 +1537,18 @@ terminal). It runs none of the editor's own operations; where those run is
     status page's Profiles and Tasks sections (UI §1.5, §1.9), and
     in the status line. It is neither cancelled nor restarted from the editor
     ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)). Its only difference is an **origin marker** naming who started
-    it, from `meta.origin` ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)). *(From step 5k:)* it is also listed
+    it, from `meta.origin` ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)). It is also listed
     read-only in the task runner's task list, and a task the editor itself
     started through a call is shown the same way without an origin marker,
     cancelled and restarted from the editor ("Tasks in the task runner"
     above).
 - **Teardown.** Unloading or swapping the workspace stops its observer: the
   timers stop, the connection closes, remote tasks are cleared. The daemon
-  keeps running ([loomworks core §19.11](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)); from step 5k the close cancels the tasks the
-  editor owns ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "The editor as owner"), and their operations end as
-  failed in the editor. *(From step 5i PR G1 the connection closes by
-  closing the relay's standard input, a waiting relay is ended the same way,
-  never by a process-tree kill: "The relay process" under "Through the
-  relay" above.)*
+  keeps running ([loomworks core §19.11](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)); the close cancels the tasks the editor
+  owns ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "The editor as owner"), and their operations end as
+  failed in the editor. The connection closes by closing the relay's
+  standard input, and a waiting relay is ended the same way, never by a
+  process-tree kill ("The relay process" under "Through the relay" above).
 - **Quiet degradation.** Every problem is the observer's one current note,
   shown on the status page's Runtime line, never a notification or a repeated
   message.
@@ -1707,7 +1562,7 @@ daemon's handle `exe`, [loomworks core §19.6](https://github.com/samienne/loomw
 not name one), and the remedy (update
 the plugin, or pin or install a matching lw), e.g. `Runtime:   daemon
 (default) — lw v0.1.44 (protocol 7) does not match this plugin (protocol 6):
-update the plugin or the pin — running degraded`. *(Step 5g.3.)*
+update the plugin or the pin — running degraded`.
 From protocol 11 this whole-daemon note applies only to a transport mismatch;
 a missing interface version is the per-feature note of "Interface client".
 
@@ -1806,7 +1661,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
 | `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
-| `N`     | init_workspace | Initialize workspace: create user.json in cwd |
+| `N`     | create_workspace | Refused, naming `lw init` (core §13.5); nothing written |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
