@@ -154,10 +154,6 @@ The user's explicit `capabilities` always wins.
   stopping clients whose entry became withheld (§3.1) is done by the LSP layer's
   re-evaluation (plugin.md §9.8) through the managed-stop path; the hook does
   not restart a client into a withheld state.
-- `on_workspace_changed()` — restart all pre-existing clangd clients
-  so they pick up loomworks-aware routing; a pre-existing client for a
-  buffer under the workspace root whose entry is withheld is stopped
-  instead (not restarted).
 - **Deferred start (plugin.md §9.7)** normally holds clangd until the workspace is ready, so in the default path it starts already-correct and no startup restart occurs. `reconcile_on_attach(client)` remains as the repair path for the `lsp = false` opt-out (where loomworks cannot hold the start) and as a safety net: on attach, if a client's recorded cmd lacks the resolved `--compile-commands-dir`, it is restarted once. In the gated default path it finds the directory already applied and does nothing.
 
 ## 8. Status fields

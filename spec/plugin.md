@@ -125,7 +125,6 @@ Each `integrations/lsp/<server>.lua` returns a table with these fields
 | `status_extras(entry) → table` | Per-server fields merged into `extra` on the status page |
 | `withhold_reason(entry) → string\|nil` | Whether this entry can back a running server (§9.8). Returns `nil` when the server may start for buffers routed to the entry, or a reason string when it must be **withheld** — `"unconfigured"` (the entry's `db_state` is `"unconfigured"`) or `"no_db"` (the unit is configured here but the server's required database is absent). An integration without the hook never withholds; its server starts as before |
 | `on_active_set_changed()` | Called on profile/active-set change |
-| `on_workspace_changed()` | Called on workspace swap / first load |
 | `on_unexpected_exit(info) → decision` | Restart policy for an unexpected client death (see §9.6). `info` carries `{ server, root_dir, exit_code, signal, attempt, args }`. `decision` is `{ restart: boolean, args?: string[], reason?: string }` |
 | `reset(root_dir)` | Clear any adaptive state for a root (UI Reset action) |
 | `reset_label` | Display label for the UI Reset row |

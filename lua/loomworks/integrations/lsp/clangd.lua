@@ -503,17 +503,6 @@ function M.on_active_set_changed()
     _client_state = new_state
 end
 
---- Restart all clangd clients when a workspace loads for the first time.
---- Pre-existing clients were started without loomworks awareness. The restart
---- re-resolves every attached buffer through `root_dir`, so a buffer whose
---- entry is withheld (§3.1) gets no new client — its old one is just stopped.
-function M.on_workspace_changed()
-    local clients = vim.lsp.get_clients({ name = "clangd" })
-    if #clients == 0 then return end
-    vim.notify("loomworks: restarting " .. #clients .. " clangd client(s) for workspace integration")
-    restart_clients(clients)
-end
-
 --- Whether a clangd client started with `resolved` args needs a restart to pick
 --- up `desired` compile-commands-dir. Pure (given the module's `normalize`), so
 --- it's unit-testable. Only acts when we have something to apply (`desired` set)

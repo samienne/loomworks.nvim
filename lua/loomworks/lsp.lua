@@ -17,7 +17,6 @@
 ---   @field status_extras? fun(entry: table): table              -- fields for status page
 ---   @field withhold_reason? fun(entry: table): string|nil       -- §9.8: nil → may start; "unconfigured"/"no_db" → withhold (no client)
 ---   @field on_active_set_changed? fun()                         -- wired by lsp.lua
----   @field on_workspace_changed? fun()                          -- wired by lsp.lua
 ---   @field reconcile_on_attach? fun(client: vim.lsp.Client)     -- wired by lsp.lua (LspAttach); fix stale cmd from a startup race
 ---   @field on_owned_database_changed? fun(root_dir: string)     -- wired by lsp.lua (§9.7 nudge); reconcile-if-needed when an owned DB appears
 ---   @field on_lsp_options_changed? fun(payload: { server: string, key: string, value: any })
