@@ -112,7 +112,7 @@ end, {
 
 vim.api.nvim_create_user_command("LoomworksFidgetClear", function()
   -- Recovery hatch for stuck fidget popups. The fidget integration
-  -- relies on event sequences (operation_finished, task_stopped, dap
+  -- relies on event sequences (daemon_task_stopped, dap
   -- event_initialized/event_terminated) firing in a specific order;
   -- when something disrupts that order, a handle is orphaned and the
   -- popup spins forever even after every overseer task has completed.
