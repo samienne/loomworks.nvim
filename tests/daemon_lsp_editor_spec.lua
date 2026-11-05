@@ -224,29 +224,29 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
         end)
 
         it("a junction nested in a project into a shorter physical path maps to the junction's project", function()
-            -- A at C:/src/ws; B at C:/src/ws/ext, a junction to D:/e. The
-            -- buffer C:/src/ws/ext/f.c is physically D:/e/f.c: under B's
+            -- A at C:/proj/ws; B at C:/proj/ws/ext, a junction to D:/e. The
+            -- buffer C:/proj/ws/ext/f.c is physically D:/e/f.c: under B's
             -- physical root (shorter than A's) and under A only by spelling.
             -- Physical containment wins, so both spellings map to B.
             local saved = views._fs_realpath
             local owner = {}
             views._fs_realpath = function(p)
                 p = p:gsub("\\", "/")
-                local rest = p:match("^[Cc]:/src/ws/ext(.*)$")
+                local rest = p:match("^[Cc]:/proj/ws/ext(.*)$")
                 if rest and (rest == "" or rest:sub(1, 1) == "/") then return "D:\\e" .. rest end
-                if p:match("^[Cc]:/src/ws$") or p:match("^[Cc]:/src/ws/") then return p end
+                if p:match("^[Cc]:/proj/ws$") or p:match("^[Cc]:/proj/ws/") then return p end
                 if p:match("^[Dd]:/e$") or p:match("^[Dd]:/e/") then return p end
                 return nil
             end
             local ok, err = pcall(function()
                 local index = { projects = {
-                    { key = "a", abs_path = "C:/src/ws" },
-                    { key = "b", abs_path = "C:/src/ws/ext" },
+                    { key = "a", abs_path = "C:/proj/ws" },
+                    { key = "b", abs_path = "C:/proj/ws/ext" },
                 } }
                 views.set(owner, "projects", index) -- forget cached identities
-                assert.equals("b", views.match(index, "C:/src/ws/ext/f.c").key)
+                assert.equals("b", views.match(index, "C:/proj/ws/ext/f.c").key)
                 assert.equals("b", views.match(index, "D:/e/f.c").key)
-                assert.equals("a", views.match(index, "C:/src/ws/f.c").key)
+                assert.equals("a", views.match(index, "C:/proj/ws/f.c").key)
             end)
             views._fs_realpath = saved
             views.clear(owner)
