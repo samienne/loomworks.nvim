@@ -51,7 +51,9 @@ local function le32(n)
     return string.char(n % 256, math.floor(n / 256) % 256, math.floor(n / 65536) % 256, math.floor(n / 16777216) % 256)
 end
 
---- entries: { name, content?, method? (0|8), made_by?, ext?, crc? }
+--- entries: { name, content?, method? (0|8, or any other number: stored
+--- bytes under that method), made_by?, ext?, crc?, flags?, usize? (the
+--- central directory's recorded uncompressed size) }
 local function zip(entries)
     local body, central = {}, {}
     local off = 0
@@ -62,11 +64,12 @@ local function zip(entries)
         local crc = e.crc or unzip.crc32(content)
         local dir = e.name:sub(-1) == "/"
         local ext = e.ext or ((dir and 0x41ED or 0x81A4) * 65536)
-        local lh = le32(0x04034b50) .. le16(20) .. le16(0) .. le16(method) .. le16(0) .. le16(0) .. le32(crc)
+        local flags = e.flags or 0
+        local lh = le32(0x04034b50) .. le16(20) .. le16(flags) .. le16(method) .. le16(0) .. le16(0) .. le32(crc)
             .. le32(#data) .. le32(#content) .. le16(#e.name) .. le16(0) .. e.name
         body[#body + 1] = lh .. data
-        central[#central + 1] = le32(0x02014b50) .. le16(e.made_by or 0x0314) .. le16(20) .. le16(0) .. le16(method)
-            .. le16(0) .. le16(0) .. le32(crc) .. le32(#data) .. le32(#content) .. le16(#e.name) .. le16(0) .. le16(0)
+        central[#central + 1] = le32(0x02014b50) .. le16(e.made_by or 0x0314) .. le16(20) .. le16(flags) .. le16(method)
+            .. le16(0) .. le16(0) .. le32(crc) .. le32(#data) .. le32(e.usize or #content) .. le16(#e.name) .. le16(0) .. le16(0)
             .. le16(0) .. le16(0) .. le32(ext) .. le32(off) .. e.name
         off = off + #lh + #data
     end
@@ -139,6 +142,25 @@ describe("provision.unzip (§19.16: nothing installed unless every entry passes)
     it("refuses a CRC mismatch", function()
         refused({ { name = "loomworks/cli.lua", content = CLI, crc = 12345 } }, "CRC-32")
         refused({ { name = "loomworks/cli.lua", content = CLI, crc = 12345, method = 0 } }, "CRC-32")
+    end)
+
+    it("refuses zip64, an encrypted entry and an unknown compression method", function()
+        refused({ { name = "loomworks/cli.lua", content = CLI, usize = 0xFFFFFFFF } }, "zip64")
+        refused({ { name = "loomworks/cli.lua", content = CLI, flags = 1 } }, "encrypted")
+        refused({ { name = "loomworks/cli.lua", content = CLI, method = 12 } }, "compression method 12")
+    end)
+
+    it("refuses archives whose recorded sizes total more than the bound, before inflating", function()
+        local half = math.floor(unzip.MAX_TOTAL / 2) + 1
+        refused({ { name = "loomworks/cli.lua", content = CLI },
+            { name = "loomworks/a.bin", content = "x", method = 0, usize = half },
+            { name = "loomworks/b.bin", content = "y", method = 0, usize = half } }, "more than the limit")
+        refused({ { name = "loomworks/cli.lua", content = CLI, usize = unzip.MAX_TOTAL + 1 } }, "more than the limit")
+    end)
+
+    it("refuses an entry that inflates to another length than recorded", function()
+        refused({ { name = "loomworks/cli.lua", content = CLI, usize = #CLI + 1 } }, "inflates to")
+        refused({ { name = "loomworks/cli.lua", content = CLI, usize = #CLI - 1, method = 0 } }, "inflates to")
     end)
 
     it("refuses a truncated archive", function()
@@ -369,6 +391,73 @@ describe("provision.fetch: the managed bundle (§19.16)", function()
             assert.equals("keep", read(target))
             assert.is_nil(ltype(tmp))
         end
+    end)
+end)
+
+describe("provision.bundle.install (§19.16: nothing installed unless every entry passes)", function()
+    local data, bdir, dir
+    before_each(function()
+        data, dir = tmpdir(), tmpdir()
+        bdir = managed.bundle_dir(data)
+        vim.fn.mkdir(bdir, "p")
+    end)
+    after_each(function() vim.fn.delete(data, "rf"); vim.fn.delete(dir, "rf") end)
+
+    local function install(z, o)
+        local p = dir .. "/bundle.dl"
+        write(p, z)
+        local w = { bundle_sha256 = sha256.lua(z), version = VERSION }
+        local res
+        bundle.install(p, w, vim.tbl_extend("force", { data = data }, o or {}), function(...) res = { ... } end)
+        assert.is_true(vim.wait(5000, function() return res ~= nil end, 10), "timed out")
+        return res, w
+    end
+    local function nothing_installed(res, pattern)
+        assert.is_nil(res[1])
+        assert.truthy(tostring(res[2]):find(pattern, 1, true), res[2])
+        assert.same({}, listdir(bdir)) -- no slot, no staging directory
+    end
+
+    it("refuses zip64, encryption, an unknown method and an oversize total: nothing installed", function()
+        local cli = { name = "loomworks/cli.lua", content = CLI }
+        nothing_installed(install(zip({ cli, { name = "loomworks/z", content = "z", usize = 0xFFFFFFFF } })), "zip64")
+        nothing_installed(install(zip({ cli, { name = "loomworks/e", content = "e", flags = 1 } })), "encrypted")
+        nothing_installed(install(zip({ cli, { name = "loomworks/m", content = "m", method = 14 } })), "compression method 14")
+        nothing_installed(install(zip({ cli, { name = "loomworks/big", content = "b", method = 0,
+            usize = unzip.MAX_TOTAL + 1 } })), "more than the limit")
+    end)
+
+    it("a short write installs nothing and removes its own staging directory", function()
+        local real = uv.fs_write
+        uv.fs_write = function(fd, content, off)
+            if type(content) == "string" and #content > 1 then return real(fd, content:sub(1, -2), off) end
+            return real(fd, content, off)
+        end
+        local ok, err = pcall(function()
+            nothing_installed(install(zip(good_entries())), "short write")
+        end)
+        uv.fs_write = real
+        assert(ok, err)
+    end)
+
+    it("the hash covers the very bytes unzipped: the file is read once", function()
+        local good = zip(good_entries())
+        local evil = zip({ { name = "loomworks/cli.lua", content = "return 'evil'\n" } })
+        -- Swapped on disk right after the one read: the verified bytes install.
+        local reads = 0
+        local res, w = install(good, { read = function(p)
+            reads = reads + 1
+            local d = read(p)
+            write(p, evil)
+            return d
+        end })
+        assert.equals(1, reads)
+        assert.equals(bdir .. "/" .. w.bundle_sha256, res[1], res[2])
+        assert.equals(CLI, read(res[1] .. "/lua-" .. VERSION .. "/loomworks/cli.lua"))
+        vim.fn.delete(bdir, "rf"); vim.fn.mkdir(bdir, "p")
+        -- Swapped before the read (after any earlier hash): refused, nothing installed.
+        nothing_installed(install(good, { read = function(p) write(p, evil); return read(p) end }),
+            "expected " .. sha256.lua(good))
     end)
 end)
 

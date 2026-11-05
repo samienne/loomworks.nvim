@@ -388,7 +388,7 @@ end
 ---   release_url  the setup option `binary.release_url`
 ---   getenv       replaces os.getenv
 ---   transfer     fun(url, dest, cb(ok, err), opts) → { cancel }|nil — replaces the download
----   hash         fun(path) → sha256|nil, err — replaces the file hash
+---   hash         fun(path) → sha256|nil, err — replaces the binary's file hash
 ---   rename       fun(from, to) → ok, err, code — replaces uv.fs_rename
 ---   on_state     fun(state) — called when the state changes
 ---   install      fun(zip, wanted, opts, cb) — replaces loomworks.provision.bundle.install
@@ -419,8 +419,9 @@ end
 --- in any other state is never used, repaired or removed (`cb(nil, why)`,
 --- nothing downloaded). Otherwise the zip is fetched into
 --- `loomworks/bundle/<sha256>.<pid>.<n>.dl` (whatever is at that path first
---- is unlinked, never written through), hash-checked, installed, and the
---- partial file removed. Concurrent calls for one hash share one
+--- is unlinked, never written through), hash-checked and installed from one
+--- read of it (loomworks.provision.bundle.install), and the partial file
+--- removed. Concurrent calls for one hash share one
 --- provisioning. opts: as `ensure`.
 --- @param w loomworks.provision.Wanted (with bundle_sha256)
 --- @param opts? table
@@ -493,13 +494,10 @@ function M.ensure_bundle(w, opts, cb)
     end
     local ctl = (opts.transfer or M.transfer)(url, tmp, vim.schedule_wrap(step(function(ok, err)
         if not ok then return fail("download of " .. url .. " failed: " .. tostring(err)) end
-        local got, herr = (opts.hash or require("loomworks.provision.sha256").file)(tmp)
-        if not got then return fail(herr) end
-        if got:lower() ~= sha then
-            return fail(string.format("%s has SHA-256 %s, expected %s (not installed)", url, got, sha))
-        end
+        -- The install reads the zip once, hash-checks that buffer and
+        -- unzips the same bytes.
         local install = opts.install or bundle.install
-        install(tmp, w, { data = opts.data, win = opts.win, rename = opts.rename_bundle },
+        install(tmp, w, { data = opts.data, win = opts.win, rename = opts.rename_bundle, source = url },
             step(function(islot, ierr)
                 clear(tmp)
                 if not islot then return finish(st, false, nil, ierr) end

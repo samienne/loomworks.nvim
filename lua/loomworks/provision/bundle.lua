@@ -128,25 +128,31 @@ local function mkdir_new(p)
 end
 
 --- Write `content` into a newly created regular file `p` (O_EXCL: never
---- through an existing file or link).
+--- through an existing file or link); every byte, or a failure.
 local function write_new(p, content)
     local fd, err = uv.fs_open(p, "wx", 420)
     if not fd then return false, "cannot create " .. p .. ": " .. tostring(err) end
-    local ok, werr = uv.fs_write(fd, content, 0)
+    local n, werr = uv.fs_write(fd, content, 0)
     uv.fs_close(fd)
-    if not ok then return false, "cannot write " .. p .. ": " .. tostring(werr) end
+    if type(n) ~= "number" then return false, "cannot write " .. p .. ": " .. tostring(werr) end
+    if n ~= #content then
+        return false, string.format("cannot write %s: short write (%d of %d bytes)", p, n, #content)
+    end
     return true
 end
 
---- Install the bundle zip at `zip_path` (already hash-checked) into the slot
---- of `w.bundle_sha256` for release `w.version`. Every entry is checked and
+--- Install the bundle zip at `zip_path` into the slot of `w.bundle_sha256`
+--- for release `w.version`. The file is read once: the SHA-256 of that very
+--- buffer must be `w.bundle_sha256`, and that buffer is what is unzipped.
+--- Every entry is checked and
 --- inflated (loomworks.provision.unzip) before anything is written; the
 --- staging directory is renamed onto the slot, never replacing a non-empty
 --- directory: a slot another editor installed meanwhile is used. On a
 --- failure this process's staging directory is removed and nothing is
 --- installed. `cb(slot)` or `cb(nil, err)`.
 --- opts: data, win, rename (fun(from, to) → ok, err, code; tests),
---- read (fun(path) → data|nil, err; tests)
+--- read (fun(path) → data|nil, err; tests), source (the zip's name in a
+--- hash mismatch; default the asset name)
 --- @param zip_path string
 --- @param w loomworks.provision.Wanted
 --- @param opts? table
@@ -166,6 +172,11 @@ function M.install(zip_path, w, opts, cb)
         if f then data = f:read("*a"); f:close() else rerr = "cannot read " .. zip_path end
     end
     if not data then return cb(nil, rerr) end
+    local got = require("loomworks.provision.sha256").hex(data)
+    if got:lower() ~= sha then
+        return cb(nil, string.format("%s has SHA-256 %s, expected %s (not installed)",
+            opts.source or managed.bundle_asset(w.version), got, sha))
+    end
     local unzip = require("loomworks.provision.unzip")
     local entries, uerr = unzip.read(data)
     data = nil

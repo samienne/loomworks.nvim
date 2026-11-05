@@ -18,7 +18,9 @@
 ---   * has a name no other entry repeats case-insensitively;
 ---   * lies wholly inside the archive, its local header naming it as the
 ---     central directory does;
----   * inflates to its recorded size and matches its CRC-32.
+---   * inflates to its recorded size and matches its CRC-32;
+--- and the entries' recorded (uncompressed) sizes total at most `MAX_TOTAL`,
+--- checked before anything is inflated.
 
 local bit = require("bit")
 
@@ -26,6 +28,11 @@ local M = {}
 
 --- The one top-level directory a bundle's entries live under.
 M.TOP = "loomworks"
+
+--- The most the entries of one bundle may total uncompressed (bytes). The
+--- release bundle is about 1.3 MB zipped; an archive past this is refused
+--- before anything is inflated.
+M.MAX_TOTAL = 64 * 1024 * 1024
 
 local function u16(s, i)
     local a, b = s:byte(i, i + 1)
@@ -144,6 +151,7 @@ function M.list(data)
     end
     if cd_off + cd_size > eocd - 1 then return nil, "the central directory lies outside the archive (truncated?)" end
     local entries, seen = {}, {}
+    local total = 0
     local p = cd_off + 1
     for _ = 1, count do
         if p + 46 - 1 > eocd - 1 or u32(data, p) ~= 0x02014b50 then
@@ -176,6 +184,10 @@ function M.list(data)
             return nil, "entry " .. name .. " is not under " .. M.TOP .. "/"
         end
         if t == "directory" and usize ~= 0 then return nil, "directory entry " .. name .. " has data" end
+        total = total + usize
+        if total > M.MAX_TOTAL then
+            return nil, string.format("the entries total more than the limit of %d bytes uncompressed", M.MAX_TOTAL)
+        end
         -- The local header: inside the archive, naming the same entry.
         local l = loff + 1
         if l + 30 - 1 > cd_off or u32(data, l) ~= 0x04034b50 then
