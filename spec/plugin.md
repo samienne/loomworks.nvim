@@ -394,7 +394,7 @@ as any other (§13.4).
 In this version the editor does not execute foreign targets: launch and debug
 refuse through [loomworks core §18.1](https://github.com/samienne/loomworks/blob/main/spec/core/remote-exec.md) with the platform message, and test discovery never probes
 a foreign executable ([loomworks core §18.1](https://github.com/samienne/loomworks/blob/main/spec/core/remote-exec.md)). Remote execution is headless only ([loomworks core §16.17](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md),
-[loomworks core §16.34](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)); the editor launch chain is deferred (BACKLOG).
+[loomworks core §16.34](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)); the editor launch chain is deferred ([#398](https://github.com/samienne/loomworks.nvim/issues/398)).
 
 ### 19.16 The editor as a client
 
@@ -1502,7 +1502,7 @@ state").
     without changing their cached state; a remote `test` or `run` shows
     `building`. A remote `reset` shows its units
     `deleting`, the display of the transient deletion state ([loomworks core §3.1](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md), transition
-    rule 5) of the in-process reset, whose deletion is not a clean. A
+    rule 5) of a reset, whose deletion is not a clean. A
     `reset --all` has no profile (`meta.scope = "all"`, [loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) Reset): its
     units are resolved by project key and configuration-unit key among the
     workspace's configuration units, and every profile with a resolved unit

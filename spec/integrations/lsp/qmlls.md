@@ -123,9 +123,9 @@ The user's explicit `capabilities` always wins.
   goes through the `mark_managed_stop` path so the generic LSP throttle
   treats it as a managed stop.
 
-This integration does **not** implement `on_workspace_changed`,
-`on_unexpected_exit`, `reconcile_on_attach`, or `reset` — the generic
-dispatcher tolerates their absence.
+This integration does **not** implement `on_unexpected_exit`,
+`reconcile_on_attach`, or `reset` — the generic dispatcher tolerates their
+absence.
 
 ## 8. Status fields
 
