@@ -35,11 +35,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   devices and the language-server configuration all come from the daemon of
   the workspace, which the editor starts when none is running. There is no
   in-process fallback; without a usable `lw` the status page shows the
-  workspace unloaded with the reason (#TBD).
+  workspace unloaded with the reason (#414).
 - `lw`, the workspace daemon, the modules (cmake, meson, shell, typescript),
   the SDK providers and the workspace engine moved to
   [samienne/loomworks](https://github.com/samienne/loomworks), which publishes
-  `lw` from 0.2.0 on. This repository now holds only the Neovim plugin (#TBD).
+  `lw` from 0.2.0 on. This repository now holds only the Neovim plugin (#414).
 
 ### Upgrade notes
 - The plugin provisions its own `lw`: when neither `LOOMWORKS_LW` nor the
@@ -50,31 +50,50 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   `binary` also takes `prefer = "managed"` (the downloaded `lw` before one on
   `PATH`), `download = false`, `release_url` (a mirror), `channel` (`stable`
   or `unstable`) and `source` (a loomworks source tree, for development)
-  (#TBD).
+  (#414).
 - Remove `log_level`, `user_prefs_root` from your `setup()` call: they are no
-  longer read. Calls of `require("loomworks").get_setup_error()` must go (#TBD).
+  longer read. Calls of `require("loomworks").get_setup_error()` must go (#414).
+
+### Added
+- `:LoomworksDaemon [connect|status]`: `connect` connects the editor to the
+  workspace daemon, starting one when none is running; `status` shows the
+  daemon's runtime line and the `lw` a launch would use (#414).
+
+### Changed
+- `:LoomworksCompileCommand` and `compile_command_for_file()` now always
+  refuse: "compile command: not available with the workspace daemon" (#414).
+- The status page's `N` (create workspace) and `create_workspace()` now
+  refuse and point at `lw init`: "creating a workspace is not available with
+  the workspace daemon - run lw init in a terminal" (#414).
 
 ### Fixed
-
 - The editor's plugin-managed `lw` could not start: a release `lw` carries
   no Lua of its own. The plugin now also downloads the release's Lua bundle
   (`loomworks-lua-<version>.zip`, SHA-256 pinned like the binary), unpacks it
   itself into `<data>/loomworks/bundle/<sha256>/` and starts every process
-  of the managed `lw` with that folder as `LOOMWORKS_INSTALL_DIR`.
+  of the managed `lw` with that folder as `LOOMWORKS_INSTALL_DIR` (#414).
 
 ### Removed
 - The setup options `log_level` and `user_prefs_root`, and
-  `get_setup_error()` (#TBD).
+  `get_setup_error()` (#414).
 - From the status page: the build-directory lock list, force-releasing a
   lock, and "Reset all task & lock state". Locks are the daemon's; `lw unlock`
-  and `lw reset` handle a stuck one (#TBD).
+  and `lw reset` handle a stuck one (#414).
 - The editor's own overseer task runner: builds, configures, cleans and tests
   are daemon tasks, shown in overseer as they run; the editor no longer
-  generates or runs module tasks itself (#TBD).
+  generates or runs module tasks itself (#414).
 - neotest support: the `loomworks` neotest adapter only refuses, pointing to
-  the loomtest explorer, which shows the daemon's tests (#TBD).
+  the loomtest explorer, which shows the daemon's tests (#414).
 - The editor-side removal of build directories (`wipe_build_dir`): deleting,
-  cleaning and resetting run in the daemon (#TBD).
+  cleaning and resetting run in the daemon (#414).
+- These public functions of `require("loomworks")`, which drove the editor's
+  own workspace: `after_deletions`, `cancel_task`,
+  `cancel_tasks_for_profile`, `cancel_tasks_for_project`,
+  `create_operation`, `delete_user_prefs`, `execute_deletion`,
+  `find_running_tasks_for_items`, `force_release_build_dir_lock`,
+  `get_active_tasks`, `get_build_dir_locks_info`, `has_pending_deletions`,
+  `has_running_tasks`, `lsp_ready`, `nuke_cache`, `record_task_result`,
+  `reload_config` and `rescan_tools` (#414).
 
 ## 0.1.49 - 2026-10-19
 
