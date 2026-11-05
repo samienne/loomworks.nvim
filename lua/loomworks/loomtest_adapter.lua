@@ -500,13 +500,6 @@ function M.setup()
         end,
     }
 
-    lw.on("active_set_changed", function()
-        -- The view follows the profile itself (it turns stale): re-render.
-        vim.defer_fn(function()
-            if test_source.attached() then M._render() end
-        end, 200)
-    end)
-
     -- Daemon mode (§19.16 "Tests"): the tree follows the daemon's view and
     -- where it stands; opening the explorer discovers a stale view.
     lw.on("daemon_view_changed", function(d)

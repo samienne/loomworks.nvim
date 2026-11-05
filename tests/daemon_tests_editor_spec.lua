@@ -379,7 +379,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             local orig, renders = adapter_mod._render, 0
             adapter_mod._render = function() renders = renders + 1 end
             local ok, err = pcall(function()
-                require("loomworks")._emit("active_set_changed")
+                require("loomworks")._emit("daemon_view_changed", { view = "tests" })
                 vim.wait(400)
             end)
             adapter_mod._render = orig

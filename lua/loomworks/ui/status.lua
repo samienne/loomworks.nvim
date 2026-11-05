@@ -277,16 +277,6 @@ local view = View.new({
     end,
     on_revert = function(force) return M._on_revert(force) end,
     events = {
-        "task_started",
-        "task_stopped",
-        "task_result",
-        "task_progress",
-        "deletion_started",
-        "deletion_completed",
-        "deletion_failed",
-        "active_set_changed",
-        "operation_started",
-        "operation_finished",
         "daemon_runtime_changed",
         "daemon_view_changed",
         "daemon_debug_adapters",
@@ -295,7 +285,6 @@ local view = View.new({
         "daemon_task_progress",
         "daemon_task_step",
         "daemon_task_stopped",
-        "tests_invalidated",
     },
 })
 
