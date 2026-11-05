@@ -150,9 +150,9 @@ README): a whole-server `{ lsp = { qmlls = false } }`, or replacing the
 
 ## 10. Environment inventory (`health_inventory`)
 
-Declares `lsp:qmlls` (category *language servers*) in its inventory companion
-(`integrations/inventory/qmlls.lua`; the editor integration does not carry
-it): a search-path lookup (version from `qmlls --version`) and
+Declares `lsp:qmlls` (category *language servers*) in its inventory companion,
+loomworks' `lua/loomworks/integrations/inventory/qmlls.lua` (the editor
+integration does not carry it): a search-path lookup (version from `qmlls --version`) and
 Mason's `bin` directory (the clangd §14 `<data>` rule; no version — there is
 no receipt to read and nothing is spawned). Qt
 installations are not searched (qmlls ships inside a Qt kit's `bin`; finding

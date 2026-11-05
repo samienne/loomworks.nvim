@@ -34,8 +34,8 @@ Standard Mason check. Loomworks does not vendor a copy.
 
 ## 6. Environment inventory
 
-Declares `dap:cppdbg` (category *debug adapters*) in its inventory companion
-(`integrations/inventory/cppdbg.lua`, core §9.3). Found when the Mason
+Declares `dap:cppdbg` (category *debug adapters*) in its inventory companion,
+loomworks' `lua/loomworks/integrations/inventory/cppdbg.lua` (plugin.md §9.3). Found when the Mason
 `cpptools` package's `extension/debugAdapters/bin/OpenDebugAD7[.exe]` exists
 under `<data>/mason/packages` (`<data>` per clangd §14) or `OpenDebugAD7` is on
 the search path. Version from the Mason install receipt when present.
