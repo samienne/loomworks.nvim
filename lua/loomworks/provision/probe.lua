@@ -157,13 +157,18 @@ function M.run(path, opts, cb)
     local timeout = opts.timeout_ms or M.TIMEOUT_MS
     local cwd = opts.cwd or vim.fn.stdpath("data")
     if not uv.fs_stat(cwd) then cwd = nil end
+    local started = uv.now() -- loop time: the clock vim.system's timer runs on
     local ok, err = pcall(vim.system, opts.argv or { path, "version", "--json" },
         { cwd = cwd, text = true, timeout = timeout, env = opts.env },
         function(r)
-            -- vim.system reports its own timeout as status 124 after
-            -- killing the process.
+            -- vim.system reports its own timeout as status 124 after sending
+            -- SIGTERM. The signal field cannot tell: a process that handles
+            -- SIGTERM and exits (as on POSIX) reports signal 0. A 124 that
+            -- comes only once the bound has passed is the timeout; an earlier
+            -- one is the binary's own exit status.
+            local elapsed_ms = uv.now() - started
             local res = { code = r.code, stdout = r.stdout, stderr = r.stderr,
-                timed_out = r.code == 124 and (r.signal or 0) ~= 0 }
+                timed_out = r.code == 124 and elapsed_ms >= timeout }
             vim.schedule(function() finish(M.classify(res)) end)
         end)
     if not ok then

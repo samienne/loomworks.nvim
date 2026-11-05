@@ -380,11 +380,15 @@ function M.run(pinned, channel, opts, cb)
     if not uv.fs_stat(cwd) then cwd = nil end
     local argv = { pinned }
     vim.list_extend(argv, M.args(channel))
+    local timeout = opts.timeout_ms or M.PROCESS_TIMEOUT_MS
+    local started = uv.now() -- loop time: the clock vim.system's timer runs on
     local ok, err = pcall(vim.system, argv,
-        { cwd = cwd, text = true, timeout = opts.timeout_ms or M.PROCESS_TIMEOUT_MS, env = M.env(opts) },
+        { cwd = cwd, text = true, timeout = timeout, env = M.env(opts) },
         function(r)
+            -- vim.system's timeout is status 124 once the bound has passed;
+            -- the signal is 0 when the process handles SIGTERM and exits.
             local res = { code = r.code, stdout = r.stdout, stderr = r.stderr,
-                timed_out = r.code == 124 and (r.signal or 0) ~= 0 }
+                timed_out = r.code == 124 and uv.now() - started >= timeout }
             vim.schedule(function() cb(res) end)
         end)
     if not ok then
