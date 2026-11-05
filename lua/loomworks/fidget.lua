@@ -1,12 +1,12 @@
 --- loomworks/fidget.lua — Optional fidget.nvim integration for build progress.
 ---
---- Shows aggregated progress notifications via fidget.nvim when
---- configure/build operations are running. No-op if fidget is not installed.
+--- Shows a progress entry per daemon task (the observer's daemon_task_*
+--- events) and per user action. No-op if fidget is not installed.
 
 local M = {}
 
 local fidget_progress
-local handles = {} -- keyed by profile_key or "task:<task_id>"
+local handles = {} -- keyed by "daemon:<task id>" or "action:<title>:<clock>"
 
 --- Maximum visible width for fidget title/message text. Bounded
 --- here so an unusually long ninja step description, deploy path,
@@ -32,7 +32,19 @@ local ACTION_TITLE = {
     ["configure+build"] = "Building",
     delete = "Deleting",
     clean = "Cleaning",
+    reset = "Resetting",
+    test = "Testing",
+    run = "Preparing",
 }
+
+--- A remote task's entry message: its action and origin marker
+--- (`Building (lw)`).
+--- @param task loomworks.RemoteTask
+--- @return string
+local function daemon_title(task)
+    local origin = task:origin_label()
+    return (ACTION_TITLE[task.kind] or task.kind) .. (origin and (" (" .. origin .. ")") or "")
+end
 
 --- Create a fidget handle for an operation or task.
 --- @param key string handle key
@@ -52,50 +64,6 @@ local function create_handle(key, title, message)
     return handle
 end
 
---- Finish and remove a handle.
---- @param key string handle key
-local function finish_handle(key)
-    local handle = handles[key]
-    if handle then
-        handle:finish()
-        handles[key] = nil
-    end
-end
-
---- Cancel and remove a handle.
---- @param key string handle key
-local function cancel_handle(key)
-    local handle = handles[key]
-    if handle then
-        handle:cancel()
-        handles[key] = nil
-    end
-end
-
---- Find the handle key for a task (either its operation or standalone).
---- @param data table event data with project_key, configuration_key
---- @return string|nil key
-local function find_handle_for_task(data)
-    local unit = data.unit
-    if not unit then return nil end
-    local refs = unit:referencing_profiles()
-    for _, profile in ipairs(refs) do
-        for _, op in ipairs(profile:active_operations()) do
-            if op:has_unit(unit) then
-                local key = "op:" .. op.id
-                if handles[key] then
-                    return key
-                end
-            end
-        end
-    end
-    local task_key = "task:" .. data.task_id
-    if handles[task_key] then
-        return task_key
-    end
-    return nil
-end
-
 --- Initialize fidget integration. Call from setup().
 --- No-op if fidget.nvim is not available.
 --- @param opts? { progress_max_width?: integer }
@@ -111,95 +79,39 @@ function M.setup(opts)
 
     local lw = require("loomworks")
 
-    lw.on("workspace_initializing", function()
-        create_handle("init", "", "Initializing...")
+    -- Operations observed in the workspace daemon (spec §19.16): e.g. `lw
+    -- build` in a terminal — the same entry as a local operation of the kind
+    -- and profile, plus the origin marker. Keyed by the daemon's task id.
+    lw.on("daemon_task_started", function(data)
+        local task = data.task
+        create_handle("daemon:" .. task.id, daemon_title(task), task.profile_name or task.name)
     end)
 
-    lw.on("workspace_changed", function()
-        local handle = handles["init"]
-        if handle then
-            handle:report({ message = "Done" })
-            handle:finish()
-            handles["init"] = nil
+    lw.on("daemon_task_progress", function(data)
+        local handle = handles["daemon:" .. data.task.id]
+        if handle and data.task.pct then
+            handle:report({ percentage = data.task.pct })
         end
     end)
 
-    lw.on("tools_scanning", function()
-        create_handle("tools", "", "Detecting tools...")
-    end)
-
-    lw.on("tools_detected", function()
-        local handle = handles["tools"]
-        if handle then
-            handle:report({ message = "Done" })
-            handle:finish()
-            handles["tools"] = nil
-        end
-    end)
-
-    lw.on("operation_started", function(data)
-        local title = ACTION_TITLE[data.action] or data.action
-        local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
-        local message = data.profile_key or "workspace"
-        create_handle(key, title, message)
-    end)
-
-    lw.on("operation_finished", function(data)
-        local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
-        local handle = handles[key]
-        if handle then
-            handle:report({
-                message = clip(data.message),
-            })
-            handle:finish()
-            handles[key] = nil
-        end
-    end)
-
-    lw.on("task_started", function(data)
-        local handle_key = find_handle_for_task(data)
-        if handle_key then
-            -- Already tracked by an operation — just update message
-            local handle = handles[handle_key]
-            if handle then
-                local action_label = data.action == "configure" and "configuring" or "building"
-                local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
-                handle:report({ message = clip(pkey .. " " .. action_label) })
-            end
-        else
-            -- Standalone task (from Projects section)
-            local title = ACTION_TITLE[data.action] or data.action
-            local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
-            local ckey = data.unit:config_key() or data.unit.id
-            local message = pkey .. "/" .. ckey
-            create_handle("task:" .. data.task_id, title, message)
-        end
-    end)
-
-    lw.on("task_progress", function(data)
-        local handle_key = find_handle_for_task(data)
-        if not handle_key then return end
-        local handle = handles[handle_key]
+    -- A task carrying steps (step 5t, §19.15 "Steps of a task") keeps its
+    -- one entry, which follows its current step.
+    lw.on("daemon_task_step", function(data)
+        local task = data.task
+        local handle = handles["daemon:" .. task.id]
         if not handle then return end
-
-        local p = data.progress
-        if p then
-            local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
-            if p.total and p.total > 0 then
-                local pct = math.floor(p.current / p.total * 100)
-                local msg = pkey .. " [" .. p.current .. "/" .. p.total .. "]"
-                if p.message then msg = msg .. " " .. p.message end
-                handle:report({ message = clip(msg), percentage = pct })
-            elseif p.message then
-                handle:report({ message = clip(pkey .. ": " .. p.message) })
-            end
-        end
+        -- No step running: the entry's own message again, without the step.
+        handle:report({ message = clip(task:step_text() or daemon_title(task)) })
     end)
 
-    lw.on("task_stopped", function(data)
-        -- Only finish standalone task handles; operation handles finish via operation_finished
-        local task_key = "task:" .. data.task_id
-        finish_handle(task_key)
+    lw.on("daemon_task_stopped", function(data)
+        local task = data.task
+        local key = "daemon:" .. task.id
+        local handle = handles[key]
+        if not handle then return end
+        handle:report({ message = clip(task:outcome()) })
+        handle:finish()
+        handles[key] = nil
     end)
 end
 
@@ -216,6 +128,18 @@ function M.start_action(title)
     if not fidget_progress then return nil end
     local key = "action:" .. title .. ":" .. tostring(os.clock())
     return create_handle(key, "", title)
+end
+
+--- The progress entry of a user action that runs a build, configure or
+--- clean (spec §19.16 "Editor operations"): none in `daemon` mode — the
+--- routed task's own entry is its one progress entry, and an operation the
+--- daemon cannot carry is refused ("Availability") — and in the
+--- `in-process` mode exactly `start_action(title)`.
+--- @param title string
+--- @return table|nil handle
+function M.start_op_action(title)
+    if require("loomworks.daemon.observer").current() then return nil end
+    return M.start_action(title)
 end
 
 --- Report progress on a handle (nil-safe).
@@ -247,7 +171,7 @@ end
 ---
 --- Recovery hatch for cases where a handle has been orphaned —
 --- typically because an event sequence the integration relies on
---- (operation_finished, task_stopped, dap event_initialized /
+--- (daemon_task_stopped, dap event_initialized /
 --- event_terminated) didn't fire as expected, leaving the popup
 --- spinning forever after every overseer task has already
 --- completed. Bound to `:LoomworksFidgetClear`.

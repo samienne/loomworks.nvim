@@ -2,7 +2,7 @@
 -- working-tree boundary (a repository root or a linked worktree) but walks
 -- THROUGH submodules to the superproject's workspace. Fixtures are plain
 -- directories with hand-written `.git` files/dirs — no git needed. The same
--- search backs `lw` (cli.lua) and the editor's auto-load (§13).
+-- search backs the editor's auto-load (§13).
 
 local uv = vim.uv or vim.loop
 local finder = require("loomworks.root_finder")
@@ -239,7 +239,7 @@ describe("editor auto-load from a submodule cwd (§13)", function()
         local calls = {}
         package.loaded["loomworks"] = {
             _auto_load_mode = function() return "auto" end,
-            get_workspace = function() return loaded_root and { root = loaded_root } or nil end,
+            loaded_root = function() return loaded_root end,
             setup = function(opts) calls[#calls + 1] = opts end,
         }
         return calls
@@ -271,48 +271,5 @@ describe("editor auto-load from a submodule cwd (§13)", function()
         vim.cmd("noautocmd cd " .. vim.fn.fnameescape(root .. "/wt"))
         auto_load.check_cwd()
         assert.equals(0, #calls)
-    end)
-end)
-
-describe("lw from inside a submodule (§1.1, §16 status)", function()
-    _G.LOOMWORKS_CLI_NO_AUTORUN = true
-    local cli = require("loomworks.cli")
-
-    local function capture(fn)
-        local buf = {}
-        local rw = io.write
-        io.write = function(...) for _, s in ipairs({ ... }) do buf[#buf + 1] = s end end
-        local ok, err = pcall(fn)
-        io.write = rw
-        if not ok then error(err, 0) end
-        return table.concat(buf)
-    end
-
-    local function ts_superproject()
-        local _, super = superproject()
-        write(super .. "/loomworks.json", vim.json.encode({ projects = { App = {
-            typescript = vim.empty_dict(),
-        } } }))
-        mkdir(super .. "/App")
-        return super
-    end
-
-    it("resolves the superproject root instead of 'run lw init'", function()
-        local super = ts_superproject()
-        local r, info = cli._find_root(super .. "/sub/src")
-        assert.equals(super, norm(r))
-        assert.equals(super .. "/sub", norm(info.submodule))
-    end)
-
-    it("`lw status` names the superproject and the submodule it came from", function()
-        local super = ts_superproject()
-        local out = capture(function()
-            cli.cmd_status(super, { submodule = super .. "/sub" })
-        end)
-        assert.is_truthy(out:find("superproject", 1, true), out)
-        assert.is_truthy(out:find("submodule sub", 1, true), out)
-        -- Without the submodule hop there is no note.
-        local plain = capture(function() cli.cmd_status(super, {}) end)
-        assert.is_nil(plain:find("superproject", 1, true))
     end)
 end)

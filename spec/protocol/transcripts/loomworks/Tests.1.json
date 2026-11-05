@@ -1,0 +1,190 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Tests",
+  "version": 1,
+  "description": "Object /tests (API.md §10): run as a task-streamed method with its structured results; the editor's run_cases, prepare_debug, collect and result: their refusals and argument checks (their runs over discovered tests: tests/daemon_test_runs_spec.lua).",
+  "cases": [
+    {
+      "name": "run builds, finds no tests and ends with the structured results",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "command": "lw test" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" }, "profile_key": "dev" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "kind": "test", "profile": "dev" }
+        } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
+            "result": { "exit_code": 0, "steps": [], "junit": [], "failed": { "$absent": true } }
+        }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "an unknown profile is refused and unknown arguments are invalid",
+      "fixture": "shell",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "filter": "x" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "run accepts no_build (a profile without tests ends as without it; the CLI parity is tests/daemon_test_cli_spec.lua); a non-boolean no_build is invalid",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "no_build": true, "command": "lw test" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" }, "profile_key": "dev" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
+            "result": { "exit_code": 0, "steps": [], "junit": [], "failed": { "$absent": true } }
+        }, "timeout_ms": 120000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "no_build": "yes" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "discover runs as a task: a line per probed unit, the summary and its result; a current tree is probed again only with force",
+      "fixture": "tests",
+      "allow": [
+        { "kind": "task" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "b" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "b" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },
+
+        { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "d1" }, "profile_key": "dev" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "d1" }, "phase": "start",
+            "meta": { "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "kind": "discover", "profile": "dev",
+              "units": [ { "project": "app", "configuration": "Debug" } ] }
+        } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug", "role": "phase" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "line", "stream": "out", "text": "app/Debug: 3 tests" }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "line", "stream": "out", "text": "DISCOVER OK: dev (3 tests, 0 failed)" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "done", "exit_code": 0,
+            "result": { "$exact": { "exit_code": 0, "tests": 3, "failed": 0 } } } },
+
+        { "send": { "kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "d2" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d2" }, "phase": "line", "stream": "out", "text": "DISCOVER OK: dev (3 tests, 0 failed)" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d2" }, "phase": "done", "exit_code": 0, "result": { "tests": 3, "failed": 0 } } },
+
+        { "send": { "kind": "call", "req_id": 4, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": { "force": true }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "accepted", "task_id": { "$bind": "d3" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d3" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug", "role": "phase" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d3" }, "phase": "done", "exit_code": 0, "result": { "tests": 3, "failed": 0 } }, "timeout_ms": 60000 }
+      ]
+    },
+    {
+      "name": "a cancel stops discover at its probe, which ran in the caller's environment; the view stays stale",
+      "fixture": "tests",
+      "allow": [
+        { "kind": "task" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env", "$with": { "LW_TEST_DISCOVER_SLEEP": "60000" } } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "b" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "b" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": {}, "env": { "$var": "env", "$with": { "LW_TEST_DISCOVER_SLEEP": "60000" } } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "d" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug", "role": "phase" } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": { "$var": "d" } } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d" }, "phase": "done", "exit_code": 130,
+            "error": "discover stopped: cancelled by the client that started it",
+            "result": { "exit_code": 130, "tests": { "$absent": true } } }, "timeout_ms": 30000 },
+        { "send": { "kind": "call", "req_id": 4, "object": "/views", "iface": "loomworks.view.Tests", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "stale": true, "discovering": { "$absent": true },
+            "units": [ { "project": "app", "state": "pending", "nodes": [] } ] } } }
+      ]
+    },
+    {
+      "name": "discover without an active profile is refused; unknown arguments are invalid",
+      "fixture": "shell",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$pattern": "^no active profile" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "run_cases and prepare_debug refuse a node id that names no test before acceptance",
+      "fixture": "shell",
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {"select": [{"id": "nope"}]}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$pattern": "^no such test"}, "exit_code": 1}}},
+        {"send": {"kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "prepare_debug", "args": {"select": {"id": "nope"}, "no_build": true}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 2, "result": {"outcome": "refused", "message": {"$pattern": "^no such test"}, "exit_code": 1}}},
+        {"send": {"kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "result", "args": {"id": "nope"}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 3, "result": {"outcome": "refused", "message": {"$pattern": "^no such test"}, "exit_code": 1}}}
+      ]
+    },
+    {
+      "name": "run-all without an active profile is refused",
+      "fixture": "shell",
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$pattern": "^no active profile"}, "exit_code": 1}}}
+      ]
+    },
+    {
+      "name": "collect refuses a token this connection does not hold",
+      "fixture": "shell",
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "collect", "args": {"prepared": "pd-0-1"}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$type": "string"}, "exit_code": 1}}}
+      ]
+    },
+    {
+      "name": "malformed selections are invalid arguments",
+      "fixture": "shell",
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {"select": []}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 1, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "prepare_debug", "args": {"select": [{"id": "x"}]}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 2, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "prepare_debug", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 3, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 4, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {"select": [{"key": "x"}]}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 4, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 5, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "collect", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 5, "error": {"code": "invalid_args"}}}
+      ]
+    },
+    {
+      "name": "the results signal is subscribable",
+      "fixture": "shell",
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": {"object": "/tests", "iface": "loomworks.Tests", "v": 1, "signals": ["results"]}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"sub_id": {"$bind": "sub"}}}}
+      ]
+    },
+    {
+      "name": "a subscriber receives a run's per-case results, with its task, before the run ends",
+      "fixture": "tests",
+      "allow": [{"kind": "task"}, {"kind": "signal", "object": "/tests", "name": "results"}],
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": {"object": "/tests", "iface": "loomworks.Tests", "v": 1}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"sub_id": {"$bind": "sub"}, "seq": {"$type": "integer"}}}},
+        {"send": {"kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": {"profile": {"key": "dev"}}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 2, "result": {"outcome": "accepted", "task_id": {"$bind": "b"}}}},
+        {"expect": {"kind": "task", "task_id": {"$var": "b"}, "phase": "done", "exit_code": 0}, "timeout_ms": 120000},
+        {"send": {"kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 3, "result": {"outcome": "accepted", "task_id": {"$bind": "r"}}}},
+        {"expect": {"kind": "signal", "object": "/tests", "iface": "loomworks.Tests", "v": 1, "name": "results", "sub_id": {"$var": "sub"}, "args": {"task_id": {"$var": "r"}, "cases": {"$type": "array"}}}, "timeout_ms": 120000},
+        {"expect": {"kind": "task", "task_id": {"$var": "r"}, "phase": "done", "exit_code": 1, "result": {"cases": {"$contains": [{"id": {"$type": "string"}, "status": "failed"}]}}}, "timeout_ms": 120000}
+      ]
+    }
+  ]
+}

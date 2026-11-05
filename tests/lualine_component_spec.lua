@@ -3,7 +3,7 @@
 -- where `%` starts a statusline item (`%#Group#`, `%{expr}`, `%!`, …). Those
 -- names can come from a cloned loomworks.json, so each one must reach the
 -- statusline inert: `%` doubled to `%%` and control characters removed
--- (spec/ui.md §3, core §17.11). The component's own highlight escapes are
+-- (spec/plugin.md UI §3, core §17.11). The component's own highlight escapes are
 -- unaffected. Status markers colour through lualine highlights (create_hl /
 -- format_hl / get_default_hl), never raw `%#Group#…%*` escapes.
 

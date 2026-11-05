@@ -67,17 +67,16 @@ local function resolve_build_dir(entry)
     return dir
 end
 
---- Get the qmlls entry for a project by asking the core for this server.
---- @param project loomworks.Project
---- @return table|nil
-local function entry_for(project)
-    local lsp = require("loomworks.lsp")
-    return lsp.entry_for_project(project, "qmlls")
+--- The qmlls entry of a project record of the LSP configuration state.
+--- @param rec loomworks.LspConfigProject
+--- @return loomworks.LspStateEntry|nil
+local function entry_for(rec)
+    return require("loomworks.lsp_config").entry(rec, "qmlls")
 end
 
 --- Find the qmlls entry for a given root_dir by asking the core.
 --- @param root_dir string|nil
---- @return loomworks.Project|nil project, table|nil entry
+--- @return loomworks.LspConfigProject|nil record, loomworks.LspStateEntry|nil entry
 local function find_by_root(root_dir)
     if not root_dir then return nil, nil end
     local lsp = require("loomworks.lsp")
@@ -167,7 +166,7 @@ function M.cmd_factory(base_cmd)
 
         -- A bare binary name (the default `qmlls`) is resolved from absolute
         -- PATH entries only — never the current directory (libuv on Windows).
-        require("loomworks.exe").resolve_server_cmd(args, config.cmd_env, "loomworks.qmlls")
+        require("loomworks.lsp_server_cmd").resolve_cmd(args, config.cmd_env, "loomworks.qmlls")
 
         if config.root_dir then
             _resolved_cmd[normalize(config.root_dir)] = vim.list_extend({}, args)
@@ -185,7 +184,7 @@ end
 --- uses the loomworks project's qmlls entry root_dir when the buffer's
 --- project has one. Falls through to the provided fallback otherwise. Skips
 --- excluded buffers (see `loomworks.lsp.excluded`) before any resolution.
---- Routed through the readiness gate (core §9.7): a buffer under the workspace
+--- Routed through the readiness gate (spec/plugin.md §9.7): a buffer under the workspace
 --- root is held until the workspace resolves, so qmlls starts once with the
 --- resolved build dir. Resolution behavior is unchanged — only WHEN it runs is
 --- deferred. Excluded buffers take the immediate fall-through, never held.
@@ -194,15 +193,12 @@ end
 function M.root_dir_factory(fallback)
     --- The existing per-buffer resolution: routed project entry, else fallback.
     local function resolve(bufnr, on_dir)
-        local ok, lw = pcall(require, "loomworks")
-        if ok then
-            local project = lw.project_for_buf(bufnr)
-            if project then
-                local entry = entry_for(project)
-                if entry and entry.root_dir then
-                    on_dir(normalize(entry.root_dir))
-                    return
-                end
+        local rec = require("loomworks.lsp_source").project_for_buf(bufnr)
+        if rec then
+            local entry = entry_for(rec)
+            if entry and entry.root_dir then
+                on_dir(normalize(entry.root_dir))
+                return
             end
         end
         if fallback then fallback(bufnr, on_dir) end
@@ -330,12 +326,12 @@ end
 --- Detect qmlls state changes after a profile/active set change and restart
 --- clients whose resolved build dir (or binary) moved.
 function M.on_active_set_changed()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok or not lw.get_workspace() then return end
+    local source = require("loomworks.lsp_source")
+    if not source.loaded() then return end
 
     local new_state = {}
-    for _, project in pairs(lw.get_projects()) do
-        local entry = entry_for(project)
+    for _, rec in ipairs(source.projects()) do
+        local entry = entry_for(rec)
         if entry and entry.root_dir then
             local key = normalize(entry.root_dir)
             local new = {
@@ -356,7 +352,7 @@ function M.on_active_set_changed()
                     if new.binary ~= prev.binary then
                         parts[#parts + 1] = "binary: " .. (new.binary or "default")
                     end
-                    vim.notify("loomworks: restarting qmlls for " .. project.key
+                    vim.notify("loomworks: restarting qmlls for " .. rec.project
                         .. (#parts > 0 and " (" .. table.concat(parts, ", ") .. ")" or ""))
                     restart_clients(clients)
                 end
@@ -366,11 +362,6 @@ function M.on_active_set_changed()
     _client_state = new_state
 end
 
---- Environment-inventory declaration (qmlls §10, core §9.3 / §16.33).
---- Lives in the host-neutral companion so the standalone host can load it
---- without this file's editor-only dependencies; re-exported here so the
---- integration table carries the hook the contract names.
-M.health_inventory = require("loomworks.integrations.inventory.qmlls").health_inventory
 
 -- Self-register with the core LSP registry.
 require("loomworks.lsp").register("qmlls", M)

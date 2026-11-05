@@ -240,7 +240,7 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer, on_done)
     local test_program = spec.cmd[1] or "test"
     local task_name = "loomtest: "
         .. (test_program:match("[/\\]([^/\\]+)$") or test_program)
-    local wrapped_cmd = require("loomworks.nice").wrap_cmd(spec.cmd)
+    local wrapped_cmd = require("loomtest.nice").wrap_cmd(spec.cmd)
     local task = overseer.new_task({
         name = task_name,
         cmd = wrapped_cmd,
@@ -421,8 +421,6 @@ function M.debug(adapter, spec, test_ids, opts)
     local function start_debug()
         -- The spec's own preparation (a saved launch entry's deploy) first.
         if not prepare_spec(spec, test_ids, loomtest, explorer) then return end
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
 
         for _, id in ipairs(test_ids) do
             local node = loomtest.get_node(id)
@@ -443,10 +441,9 @@ function M.debug(adapter, spec, test_ids, opts)
             args[#args + 1] = spec.cmd[i]
         end
 
-        local adapter_type = "codelldb"
-        if ws then
-            adapter_type = debug_mod.resolve_adapter(ws, "c++")
-        end
+        -- The adapter the RunSpec names, else loomtest's default (loomtest
+        -- reads no workspace model).
+        local adapter_type = spec.debug_adapter or "codelldb"
 
         debug_mod.run({
             name = "Debug test",
@@ -495,6 +492,149 @@ function M.debug(adapter, spec, test_ids, opts)
     end
 
     start_debug()
+end
+
+--- @type loomtest.RunHandle|nil the running adapter-executed run's handle
+local _active_handle = nil
+
+--- Redraw what shows node statuses: the explorer, signs and inline marks.
+local function redraw()
+    vim.schedule(function()
+        local explorer = require("loomtest.explorer")
+        if explorer.is_open() then explorer.refresh() end
+        require("loomtest.signs").update_all()
+        require("loomtest.inline").update_all()
+    end)
+end
+
+--- Apply node statuses by exact id (LOOMTEST.md §3: a sink's `status`, and
+--- an adapter's statuses of a run it did not start — another client's) and
+--- redraw. A changed status drops the node's loaded output (§8: read again
+--- from the adapter's `result` when shown).
+--- @param updates { id: string, status: string, duration?: number, message?: string }[]
+function M.apply_status(updates)
+    local loomtest = require("loomtest")
+    for _, u in ipairs(updates or {}) do
+        local node = type(u) == "table" and loomtest.get_node(u.id) or nil
+        if node then
+            node.status = u.status
+            node.duration = u.duration
+            node.message = u.message
+            node._output, node._errors, node._result_loaded = nil, nil, nil
+        end
+    end
+    redraw()
+end
+
+--- Run through the adapter's own execution (LOOMTEST.md §3 "Adapter-executed
+--- runs", §5): `adapter.start` builds, runs and parses; loomtest shows the
+--- statuses the adapter reports through the sink and the final state. The
+--- staleness clearing (§5.3) and the progress line (§5.6) still apply;
+--- nothing is streamed or parsed here.
+--- @param adapter loomtest.TestAdapter an adapter with `start`
+--- @param selection string[]|nil the selected node ids; nil runs all
+--- @param test_ids string[] the test nodes the run covers (progress, staleness)
+--- @param opts? table { skip_build?: boolean }
+--- @return loomtest.RunHandle|nil
+function M.start(adapter, selection, test_ids, opts)
+    opts = opts or {}
+    local loomtest = require("loomtest")
+
+    clear_stale_tests(test_ids, loomtest)
+
+    local finished = false
+    local handle
+    --- @type loomtest.RunSink
+    local sink = {
+        status = function(updates)
+            M.apply_status(updates)
+            if not finished then fidget_update(format_progress(test_ids, loomtest)) end
+        end,
+        done = function(ok, err)
+            if finished then return end
+            finished = true
+            if _active_handle == handle then _active_handle = nil end
+            -- A covered node left queued or running had no result.
+            for _, id in ipairs(test_ids) do
+                local node = loomtest.get_node(id)
+                if node and (node.status == "queued" or node.status == "running") then
+                    node.status = nil
+                end
+            end
+            _last_run_time = os.time()
+            if not ok then
+                vim.schedule(function()
+                    vim.notify("loomtest: " .. tostring(err or "test run failed"), vim.log.levels.ERROR)
+                end)
+            end
+            fidget_update(format_progress(test_ids, loomtest), true)
+            redraw()
+        end,
+    }
+
+    fidget_update(opts.skip_build and "starting..." or "building...")
+    handle = adapter.start(selection, { no_build = opts.skip_build == true }, sink)
+    if not finished then _active_handle = handle end
+    return handle
+end
+
+--- Debug through the adapter's own debug form (LOOMTEST.md §3, §13.1):
+--- `adapter.debug_start` prepares, starts the debugger and reports the
+--- results through the sink, as `start` does for a run. The covered tests
+--- show pending meanwhile; one left pending or running had no result. A
+--- failure is notified once, with the adapter's text (a `done(false)`
+--- without one was already said by the adapter).
+--- @param adapter loomtest.TestAdapter an adapter with `debug_start`
+--- @param test_id string the node to debug
+--- @param test_ids string[] the test nodes it covers
+--- @return loomtest.RunHandle|nil
+function M.start_debug(adapter, test_id, test_ids)
+    local loomtest = require("loomtest")
+    for _, id in ipairs(test_ids) do
+        local node = loomtest.get_node(id)
+        if node then
+            node.status, node.message = "pending", nil
+            node._output, node._errors, node._result_loaded = nil, nil, nil
+        end
+    end
+    redraw()
+    local finished = false
+    local handle
+    --- @type loomtest.RunSink
+    local sink = {
+        status = function(updates) M.apply_status(updates) end,
+        done = function(ok, err)
+            if finished then return end
+            finished = true
+            if _active_handle == handle then _active_handle = nil end
+            for _, id in ipairs(test_ids) do
+                local node = loomtest.get_node(id)
+                if node and (node.status == "pending" or node.status == "queued" or node.status == "running") then
+                    node.status = nil
+                end
+            end
+            _last_run_time = os.time()
+            if not ok and err then
+                vim.schedule(function()
+                    vim.notify("loomtest: " .. tostring(err), vim.log.levels.ERROR)
+                end)
+            end
+            redraw()
+        end,
+    }
+    handle = adapter.debug_start(test_id, sink)
+    -- Its stop (`cancel`) is the run's, as a run's is.
+    if not finished then _active_handle = handle end
+    return handle
+end
+
+--- Cancel the running adapter-executed run, if any.
+--- @return boolean cancelled
+function M.cancel()
+    local h = _active_handle
+    if not h or type(h.cancel) ~= "function" then return false end
+    h.cancel()
+    return true
 end
 
 --- Get the last task ID.

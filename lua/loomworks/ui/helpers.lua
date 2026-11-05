@@ -36,35 +36,6 @@ function M.format_elapsed(seconds)
     return " " .. h .. "h" .. string.format("%02d", m) .. "m"
 end
 
---- Compute weighted percentage across multiple ProfileProjects.
---- Configure counts as 10% of overall work, build as 90%.
---- @param pps loomworks.ProfileProject[]
---- @return number|nil percentage 0-100
-function M.aggregate_progress(pps)
-    local lw = require("loomworks")
-    local has_any = false
-    local total_pct = 0
-    local count = 0
-    for _, pp in ipairs(pps) do
-        local status = pp:status()
-        if status == "configuring" or status == "building" then
-            local p = pp._config_unit:progress()
-            if p and p.current and p.total and p.total > 0 then
-                has_any = true
-                local phase_pct = p.current / p.total
-                if status == "configuring" then
-                    total_pct = total_pct + 10 * phase_pct
-                else
-                    total_pct = total_pct + 10 + 90 * phase_pct
-                end
-                count = count + 1
-            end
-        end
-    end
-    if not has_any then return nil end
-    return math.floor(total_pct / count)
-end
-
 M.STATUS_HL = {
     unconfigured     = "LoomworksUnconfigured",
     configured       = "LoomworksConfigured",
@@ -133,19 +104,22 @@ function M.status_marker(status)
     return (M.STATUS_ICON[status] or "○") .. " "
 end
 
---- Resolve the live status for a ConfigUnit.
---- Used by both profile and project sections — ConfigUnit is the single source of truth.
---- @param unit loomworks.ConfigUnit
+--- The status of a unit as the workspace view carries it (`state`,
+--- `deleting_reason`; view_state.lua) with its running step's progress,
+--- which is not in the view (API.md §14.4): the label, its highlight, the
+--- progress text and whether it spins.
+--- @param u table a unit's live state from `loomworks.view.Workspace/1`
+--- @param prog? { progress?: { current?: integer, total?: integer, message?: string }, elapsed?: number }
+---        the running step's progress and elapsed seconds (the page's progress source)
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_unit_status(unit)
-    local state = unit:state()
+function M.unit_status(u, prog)
+    local state = u.state or "unconfigured"
     if state == "deleting" then
-        local label = unit:deleting_reason() or "deleting"
-        return label, M.STATUS_HL.deleting, "", true
+        return u.deleting_reason or "deleting", M.STATUS_HL.deleting, "", true
     end
     if state == "configuring" or state == "building" then
-        local progress_str = M.format_progress(unit:progress())
-                .. M.format_elapsed(unit:elapsed())
+        prog = prog or {}
+        local progress_str = M.format_progress(prog.progress) .. M.format_elapsed(prog.elapsed)
         return state, M.STATUS_HL[state] or "DiagnosticWarn", progress_str, true
     end
     -- Map ConfigUnit state names back to cache state names for HL lookup.
@@ -155,46 +129,18 @@ function M.resolve_unit_status(unit)
     return cache_state, M.STATUS_HL[cache_state] or "Comment", "", false
 end
 
---- Resolve the live status for a ProfileProject.
---- @param pp loomworks.ProfileProject
---- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
---- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_config_status(pp, cached)
-    if not pp._config_unit then
-        return "unconfigured", M.STATUS_HL.unconfigured, "", false
-    end
-    return M.resolve_unit_status(pp._config_unit)
-end
-
---- Resolve the live status for a ConfigUnit (profile-agnostic).
---- @param unit loomworks.ConfigUnit
---- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
---- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_config_status_global(unit, cached)
-    return M.resolve_unit_status(unit)
-end
-
---- Render cached configuration details as leaf lines.
----
---- Status is *not* rendered here — callers fold it into the parent
---- node's header line (matching the profile-level "(status)" suffix)
---- so the expansion doesn't repeat it.
+--- Render a unit's build directory and targets as leaf lines (its status is
+--- on the parent node's line).
 --- @param tree loomworks.Tree
---- @param config_status string (kept for call-site parity; currently unused)
---- @param status_hl string (likewise unused — see config_status)
---- @param cached loomworks.CachedConfig|nil (deprecated, reads from unit when nil)
+--- @param build_dir string|nil
+--- @param targets table<string, table>|nil by name: { type, artifact?, dependencies? }
 --- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
---- @param unit? loomworks.ConfigUnit for runtime-only data (targets) and first-class fields
-function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
-    local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
-
+function M.render_unit_details(tree, build_dir, targets, fold_prefix)
     if build_dir then
         tree:leaf("Build dir: " .. build_dir, "Comment")
     end
     -- The toolchain (generator/compiler/SDK kit) is shown once per profile in
     -- the profile-level Toolchain row, so it's not repeated per config here.
-
-    local targets = unit and unit.targets or nil
     if targets and next(targets) then
         M.render_targets(tree, targets, fold_prefix)
     end
@@ -278,52 +224,84 @@ function M.render_targets(tree, targets, fold_prefix)
     end)
 end
 
---- Cycle the intent: local → local+shared → shared → local.
+--- The next intent of the `P` cycle: local → local+shared → shared → local.
 --- All three states always available. Data stays in user.json while cycling.
---- @param item table domain object with _intent field
-function M.cycle_intent(item)
-    if item._intent == "local" then
-        item._intent = "local+shared"
-    elseif item._intent == "local+shared" then
-        item._intent = "shared"
-    else
-        item._intent = "local"
-    end
+--- @param intent string|nil an item's current intent
+--- @return "local"|"shared"|"local+shared"
+function M.next_intent(intent)
+    if intent == "local" then return "local+shared" end
+    if intent == "local+shared" then return "shared" end
+    return "local"
+end
+
+--- Cycle an item's intent (`P`) through the model command; a refusal is
+--- notified.
+--- @param row table the `view.Workspace/1` row of a profile, configuration set, project or configuration
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.cycle_intent(row, ws)
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "Workspace/1.set_intent", { item = row, intent = M.next_intent(row.intent) }, function(r)
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "the intent was not saved"), vim.log.levels.ERROR)
+        end
+    end)
+end
+
+--- Publish one item now; a refusal is notified.
+--- @param row table the item's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.publish_one(row, ws)
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "Workspace/1.publish_one", { item = row }, function(r)
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "publish failed: unknown"), vim.log.levels.ERROR)
+        end
+    end)
+end
+
+--- Revert one item to its baseline; a refusal is notified.
+--- @param row table the item's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.revert_one(row, ws)
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "Workspace/1.revert_one", { item = row }, function(r)
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "revert failed: unknown"), vim.log.levels.ERROR)
+        end
+    end)
 end
 
 --- Get the label for the next intent transition.
---- @param item table domain object with _intent field
+--- @param intent string|nil an item's `_intent` (a view row's `intent`)
 --- @return string
-function M.intent_action_label(item)
-    if item._intent == "local" then
+function M.intent_action_label(intent)
+    if intent == "local" then
         return "Share (→ local + shared)"
-    elseif item._intent == "local+shared" then
+    elseif intent == "local+shared" then
         return "Unpin local (→ shared)"
     else
         return "Pin local (→ local)"
     end
 end
 
---- Classify an item into a display group based on _intent.
---- @param item table domain object with _intent field
---- @return "local+shared"|"local"|"shared"
-function M.publish_group(item)
-    return item._intent or "local"
-end
 
 --- Sort items into intent groups and render with separators.
 --- Groups: Local + Shared (with pin icon on user-pinned), Local, Shared (dimmed).
 --- Empty groups are hidden.
 --- @param tree loomworks.Tree
---- @param items table[] array of items to group
+--- @param items table[] view rows to group, by their `intent`
 --- @param render_fn fun(tree: loomworks.Tree, item: table, group: string) render a single item
-function M.render_grouped(tree, items, render_fn)
+--- @param default? string the group of a row without an intent (default "local")
+function M.render_grouped(tree, items, render_fn, default)
     local both = {}
     local local_items = {}
     local shared = {}
 
     for _, item in ipairs(items) do
-        local group = M.publish_group(item)
+        local group = item.intent or default or "local"
         if group == "local+shared" then
             both[#both + 1] = item
         elseif group == "local" then
@@ -353,7 +331,7 @@ function M.render_grouped(tree, items, render_fn)
     end
 end
 
---- A description summary for a picker / dialog entry (spec/ui.md §1.16):
+--- A description summary for a picker / dialog entry (spec/plugin.md UI §1.16):
 --- "  <summary>" fitted to 40 display columns, rendered inert, as a plain
 --- string (no highlight markup). "" when there is no description.
 --- @param desc string|nil
@@ -366,7 +344,7 @@ function M.picker_summary(desc, cols)
     return "  " .. d.fit(d.inert_line(sum), cols or 40)
 end
 
---- Render a `Description ▸ <summary>` row in an editor dialog (spec/ui.md
+--- Render a `Description ▸ <summary>` row in an editor dialog (spec/plugin.md UI
 --- §1.16). `<CR>` opens the description editor for `item`; the description
 --- is saved by the editor itself (independently of the dialog's accept), and
 --- `refresh` re-renders the dialog afterwards. Nothing for a nil item (a set
@@ -389,30 +367,7 @@ function M.description_row(t, item, label, refresh)
     })
 end
 
---- A description handle for a launch configuration (spec §8.7): launches are
---- tables on their project, not domain objects, so the description editor and
---- `with_description` get this `{ description, set_description }` stand-in.
---- @param project loomworks.Project
---- @param name string
---- @return table
-function M.launch_handle(project, name)
-    local d = require("loomworks.description")
-    local cfg = project.launch and project.launch[name]
-    local h = {
-        description = type(cfg) == "table" and d.normalize(cfg.description) or nil,
-        _kind = "launch configuration",
-        _label = project.key .. ":" .. name,
-    }
-    function h:set_description(text)
-        local changed, err = project:set_launch_description(name, text)
-        local c = project.launch and project.launch[name]
-        self.description = type(c) == "table" and c.description or nil
-        return changed, err
-    end
-    return h
-end
-
---- The chunks of a project's launch rows (spec/ui.md §1.8): `{name}  {summary}
+--- The chunks of a project's launch rows (spec/plugin.md UI §1.8): `{name}  {summary}
 --- {runs}`, the summaries forming a column (at most 36 display columns, blank
 --- when absent) before the open-ended command line, which is cut to `width`.
 --- @param launches { name: string, config: table }[]
@@ -452,7 +407,7 @@ function M.launch_row_chunks(launches, width)
     return out
 end
 
---- Add the description affordances to a describable node's opts (spec/ui.md
+--- Add the description affordances to a describable node's opts (spec/plugin.md UI
 --- §1.16): the summary on the node line (`description`, render-only), `K`
 --- showing the full text (`hover`, only when there is one), and the `e` /
 --- "Edit description" action (`on_describe`). Returns `opts`.
@@ -461,66 +416,114 @@ end
 --- @return table opts
 function M.with_description(opts, item)
     if not item then return opts end
-    local desc = item.description
+    M.describe(opts, item.description, item._description_from_module)
+    return M.describe_action(opts, item)
+end
+
+--- The render half of `with_description`: the summary on the node line and
+--- `K` showing the full text (only when there is one).
+--- @param opts table node/item opts
+--- @param desc string|nil
+--- @param from_module boolean|nil a module default (read-only)
+--- @return table opts
+function M.describe(opts, desc, from_module)
     opts.description = desc
     if desc then
         opts.hover = function()
             local d = require("loomworks.description")
             local out = vim.split(d.inert(desc), "\n", { plain = true })
-            if item._description_from_module then
+            if from_module then
                 out[#out + 1] = ""
                 out[#out + 1] = "(from the project files; edit them to change it)"
             end
             return out
         end
     end
+    return opts
+end
+
+--- A describable item named by its `view.Workspace/1` row (step 5o C2a): the
+--- description editor's item for a row — its kind and label, the row's
+--- description, and the row the edit names (`_row`: model_calls sends its
+--- id). A generated
+--- configuration's row is read-only (`_readonly` the reason, core §1.10).
+--- @param kind "profile"|"configuration set"|"project"|"configuration"|"launch configuration"
+--- @param row table
+--- @param label? string the display name (default the row's key or name)
+--- @return table
+function M.row_item(kind, row, label)
+    local item = { _kind = kind, _label = label or row.key or row.name, _row = row, description = row.description }
+    if kind == "configuration" and (row.auto_gen or not row.user or row.source_missing) then
+        item._readonly = "configuration '" .. tostring(row.key) .. "' is generated from the project files, "
+            .. "which also supply its description; declare a configuration that inherits "
+            .. "it to give it your own"
+    end
+    return item
+end
+
+--- Whether a routed action (one ui/model_calls names by its row) can act on
+--- `row`: the row has an id (model_calls sends it, a row without one is
+--- refused) — never whether the editor holds the object (it holds no model).
+--- @param ctx table the section context (unused)
+--- @param row table|nil a view row
+--- @return boolean
+function M.actionable(ctx, row)
+    return row ~= nil and row.id ~= nil
+end
+
+--- Whether two view entries name the same entity: the same id. Never
+--- compared by key.
+--- @param a table|nil a view row or reference (e.g. a mapping's `project`)
+--- @param b table|nil
+--- @return boolean
+function M.same_entity(a, b)
+    if a == nil or b == nil then return false end
+    return a.id ~= nil and a.id == b.id
+end
+
+--- A profile row's configuration set as an entity reference,
+--- `{ id = row.config_set_id }`; nil when the set is orphaned
+--- (`orphaned_set`) or the row names none.
+--- @param row table the profile's view row
+--- @return table|nil
+function M.profile_set(row)
+    if row == nil or row.orphaned_set or row.config_set_id == nil then return nil end
+    return { id = row.config_set_id }
+end
+
+--- The action half of `with_description`: `e` / "Edit description".
+--- @param opts table node/item opts
+--- @param item table|nil the described domain object (nil: no action)
+--- @return table opts
+function M.describe_action(opts, item)
+    if not item then return opts end
     opts.on_describe = function()
         require("loomworks.ui.description_editor").open(item)
     end
     return opts
 end
 
---- The read-only saved test-targets line (spec/ui.md "Saved test targets
+--- The read-only saved test-targets line (spec/plugin.md UI "Saved test targets
 --- line", core §1.3.4) as `{text, hl}` chunks, or nil when nothing is
---- declared along the chain. Names in list order, cut with `+N` to `width`;
---- the source in parentheses unless it is `item` itself ("own"). With
---- `targets` (the unit's parsed build targets — known only when configured
---- here) a missing entry carries a ⚠; unknown targets are not flagged. An
---- invalid entry, and one naming a launch the trust filter ignored, are
---- missing whatever the targets, so they are always flagged. A name listed
---- several times appears once per entry; args are not shown.
---- @param eff { entries: loomworks.SavedTestEntry[], source: table, invalid: boolean|nil }|nil effective list
---- @param item table|nil the configuration / project the line belongs to
---- @param targets table<string, loomworks.Target>|nil
+--- declared along the chain. Formats a resolved view
+--- (`Project:saved_tests_view`): names in list order, cut with `+N` to
+--- `width`; the source in parentheses unless the list is the item's own; a
+--- missing entry carries a ⚠. A name listed several times appears once per
+--- entry; args are not shown.
+--- @param view { source: string|nil, invalid: boolean|nil, entries: { label: string, missing: boolean }[] }|nil
 --- @param width integer|nil available display width
---- @param project loomworks.Project|nil the declaring project (its launch configurations resolve names first)
 --- @return {[1]: string, [2]: string}[]|nil
-function M.test_targets_chunks(eff, item, targets, width, project)
-    if not eff then return nil end
-    local tt = require("loomworks.test_targets")
-    local src = ""
-    if eff.source ~= item then
-        src = "  (" .. tt.source_text(eff.source, item and item._project and item or nil) .. ")"
-    end
-    if eff.invalid then
+function M.test_targets_chunks(view, width)
+    if not view then return nil end
+    local src = view.source and ("  (" .. view.source .. ")") or ""
+    if view.invalid then
         return { { "Tests: ", "Comment" }, { "⚠ invalid (not an array)", "DiagnosticWarn" },
             src ~= "" and { src, "Comment" } or nil }
     end
-    if #eff.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
-    local ws = project and project._workspace
-    local rctx = {
-        launches = project and project.launch or nil,
-        launch_ignored = project and function(n)
-            return tt.launch_ignored(ws and ws._shared_ignored, project, n)
-        end or nil,
-        targets = targets,
-    }
+    if #view.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
     local names = {}
-    for _, e in ipairs(eff.entries) do
-        local r = tt.resolve_entry(e, rctx)
-        local bad = r.state == "missing"
-        local label = e.name or tt.entry_label(e)
-        names[#names + 1] = { (bad and "⚠ " or "") .. label, bad and "DiagnosticWarn" or "Comment" }
+    for _, e in ipairs(view.entries) do
+        names[#names + 1] = { (e.missing and "⚠ " or "") .. e.label, e.missing and "DiagnosticWarn" or "Comment" }
     end
     local avail = (width or 100) - vim.fn.strdisplaywidth("Tests: " .. src)
     local shown, used = 0, 0
@@ -540,6 +543,15 @@ function M.test_targets_chunks(eff, item, targets, width, project)
     if shown < #names then chunks[#chunks + 1] = { ", +" .. (#names - shown), "Comment" } end
     if src ~= "" then chunks[#chunks + 1] = { src, "Comment" } end
     return chunks
+end
+
+--- A deploy destination's sources as an array: the declaration holds one
+--- source descriptor or an array of them (spec §8.7).
+--- @param v table
+--- @return table[]
+function M.deploy_sources(v)
+    if v[1] then return v end
+    return { v }
 end
 
 return M

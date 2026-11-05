@@ -18,9 +18,9 @@ hl(0, "LoomworksRunning",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksDeleting",     { link = "DiagnosticError", default = true })
 hl(0, "LoomworksUnknown",      { link = "DiagnosticWarn",  default = true })
 hl(0, "LoomworksActionable",   { link = "Normal",          default = true })
--- Output-artifact conflict / overwritten unit (spec/ui.md §1.5, §1.8, §2).
+-- Output-artifact conflict / overwritten unit (spec/plugin.md UI §1.5, §1.8, §2).
 hl(0, "LoomworksConflict",     { link = "DiagnosticWarn",  default = true })
--- `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (spec/ui.md §1.5).
+-- `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (spec/plugin.md UI §1.5).
 hl(0, "LoomworksStale",        { link = "DiagnosticHint",  default = true })
 
 -- Entity-color scheme:
@@ -85,9 +85,34 @@ end, {
   force = true,
 })
 
+-- `:LoomworksDaemon [connect|status]` (spec §19.16): connect to the workspace
+-- daemon (launching it when none is live), or show the Runtime line and the
+-- host binary a launch would use.
+vim.api.nvim_create_user_command("LoomworksDaemon", function(cmd)
+  local lw = require("loomworks")
+  local sub = cmd.fargs[1] or "status"
+  if sub == "connect" then
+    local ok, why = lw.daemon_connect()
+    if not ok then vim.notify("loomworks: " .. tostring(why), vim.log.levels.WARN) end
+  elseif sub == "status" then
+    -- With the host binary a launch would use, and why (spec §19.16).
+    local sel = lw.host_binary_selection()
+    vim.notify("loomworks runtime: " .. (lw.daemon_runtime_line() or "no workspace daemon observed")
+      .. "\nhost lw: " .. require("loomworks.provision.select").describe(sel), vim.log.levels.INFO)
+  else
+    vim.notify("loomworks: unknown :LoomworksDaemon subcommand '" .. sub .. "' (connect, status)",
+      vim.log.levels.WARN)
+  end
+end, {
+  desc = "loomworks: observe the workspace daemon (connect | status)",
+  nargs = "?",
+  complete = function() return { "connect", "status" } end,
+  force = true,
+})
+
 vim.api.nvim_create_user_command("LoomworksFidgetClear", function()
   -- Recovery hatch for stuck fidget popups. The fidget integration
-  -- relies on event sequences (operation_finished, task_stopped, dap
+  -- relies on event sequences (daemon_task_stopped, dap
   -- event_initialized/event_terminated) firing in a specific order;
   -- when something disrupts that order, a handle is orphaned and the
   -- popup spins forever even after every overseer task has completed.
@@ -107,12 +132,13 @@ end, {
 
 vim.api.nvim_create_user_command("LoomworksLog", function()
   local lw = require("loomworks")
-  local ws = lw.get_workspace()
-  if not ws then
+  -- (In `daemon` mode the editor holds no model: the observed root.)
+  local root = lw.loaded_root()
+  if not root then
     vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
     return
   end
-  local path = ws.root .. "/.nvim/loomworks.log"
+  local path = root .. "/.nvim/loomworks.log"
   if not vim.uv.fs_stat(path) then
     vim.notify("loomworks: no log file yet", vim.log.levels.INFO)
     return
@@ -171,7 +197,9 @@ vim.api.nvim_create_user_command("LoomworksCompileCommand", function(cmd)
   -- command. The four messages are distinct so the reason is unambiguous.
   if res.status ~= "ok" then
     local msg
-    if res.status == "no_profile" then
+    if res.status == "refused" then
+      msg = "loomworks: compile command: " .. tostring(res.message)
+    elseif res.status == "no_profile" then
       msg = "loomworks: no active profile — activate a profile to resolve compile commands"
     elseif res.status == "no_project" then
       msg = "loomworks: " .. file .. " is not under any project of the active profile"

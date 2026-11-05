@@ -16,20 +16,38 @@
 --- @field invalidate fun()
 --- @field get_cursor_test fun(bufnr: number, line: number): string|nil
 --- @field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean)) optional: build test targets before running
+--- @field start? fun(selection: string[]|nil, opts: { no_build: boolean }, sink: loomtest.RunSink): loomtest.RunHandle|nil optional: an adapter-executed run (LOOMTEST.md §3) — when present loomtest calls it for every run (selection nil = run all) instead of run / run_suite / run_all / ensure_built / parse_results
+--- @field debug_start? fun(test_id: string, sink: loomtest.RunSink): loomtest.RunHandle|nil optional: the adapter's own debug form (LOOMTEST.md §3, §13.1) — when present loomtest calls it to debug one node instead of run / run_suite and its own debugger start
+--- @field result? fun(test_id: string, callback: fun(r: loomtest.TestResult|nil)) optional: a node's output and error locations on demand (LOOMTEST.md §3, §8), for an adapter that keeps them rather than loomtest
+--- @field status? fun(): loomtest.AdapterStatus|nil optional: the explorer header's status (LOOMTEST.md §4.2), replacing the description; `blocked` refuses run, debug and refresh with its text
+
+--- @class loomtest.AdapterStatus
+--- @field text string e.g. "tests: waiting for the workspace daemon"
+--- @field level string "info" | "warn" | "error"
+--- @field blocked boolean run, debug and refresh are refused with `text`
+
+--- An adapter-executed run's report channel (LOOMTEST.md §3).
+--- @class loomtest.RunSink
+--- @field status fun(updates: { id: string, status: string, duration?: number, message?: string }[]) node statuses by exact id
+--- @field done fun(ok: boolean, err?: string) the run ended
+
+--- @class loomtest.RunHandle
+--- @field cancel fun()
 
 --- @class loomtest.TestNode
 --- @field id string unique identifier
 --- @field name string display name
---- @field type string "target" | "suite" | "test"
+--- @field type string "target" | "suite" | "test" (adapter-supplied suites are shown as given, never inferred)
 --- @field parent string|nil parent node id
 --- @field file string|nil absolute source file path
 --- @field line number|nil 1-based line number in source
 --- @field runnable boolean whether this node can be executed
---- @field status string|nil "passed"|"failed"|"skipped"|"errored"|nil
+--- @field status string|nil "passed"|"failed"|"skipped"|"errored"|"running"|"pending"|"queued"|nil (`queued` shows as pending)
 --- @field message string|nil last failure message
 --- @field duration number|nil last duration in milliseconds
 --- @field _output string|nil captured stdout/stderr from the last run
 --- @field _errors loomtest.TestError[]|nil assertion error locations from the last run
+--- @field _result_loaded boolean|nil an adapter's `result` was read for the node's current status
 
 --- @class loomtest.RunSpec
 --- @field cmd string[] command and arguments
@@ -38,6 +56,7 @@
 --- @field output_path string|nil path for structured result output
 --- @field prepare (fun(): boolean, string|nil)|nil runs when the step executes, before its program (e.g. a saved launch entry's deploy); `false, err` fails the step without running it
 --- @field test_id string|nil the node a failed `prepare` marks failed
+--- @field debug_adapter string|nil the nvim-dap adapter a debug of it uses (default "codelldb")
 
 --- @class loomtest.TestResult
 --- @field test_id string matches a TestNode id

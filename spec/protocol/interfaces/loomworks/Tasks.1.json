@@ -1,0 +1,112 @@
+{
+  "interface": "loomworks.Tasks",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /tasks (API.md §7): the running tasks, their observation by subscription and their cancellation by their owner. The task frames themselves are the transport's task stream (PROTOCOL.md §14), not signals of this interface. Step 5t adds the steps of a target-scoped task: TaskInfo.steps and the step signal (API.md §4.3).",
+  "methods": {
+    "list": {
+      "description": "The running tasks (started, not ended), in start order.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": {
+        "type": "object",
+        "required": ["tasks"],
+        "properties": {
+          "tasks": { "type": "array", "items": { "$ref": "#/$defs/TaskInfo" } }
+        }
+      },
+      "needs_env": false,
+      "mutates": false
+    },
+    "cancel": {
+      "description": "Cancel a running task. Only its owner may (forbidden otherwise); a task that is not running (ended, unknown) is the refused result, never an error.",
+      "params": {
+        "type": "object",
+        "required": ["task_id"],
+        "additionalProperties": false,
+        "properties": { "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" } }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["outcome"],
+            "properties": { "outcome": { "const": "ok" } }
+          },
+          { "$ref": "loomworks.Common/1#/$defs/Refused" }
+        ]
+      },
+      "errors": ["forbidden"],
+      "needs_env": false,
+      "mutates": true
+    }
+  },
+  "signals": {
+    "started": {
+      "description": "A task started (after its start frame on the task stream).",
+      "args": {
+        "type": "object",
+        "required": ["task"],
+        "properties": { "task": { "$ref": "#/$defs/TaskInfo" } }
+      }
+    },
+    "ended": {
+      "description": "A task ended (after its done frame).",
+      "args": {
+        "type": "object",
+        "required": ["task_id", "exit_code"],
+        "properties": {
+          "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" },
+          "exit_code": { "type": "integer" },
+          "error": { "description": "The refusal or failure the owner prints as lw: <error>.", "type": "string" }
+        }
+      }
+    },
+    "step": {
+      "description": "A step of a target-scoped task changed state (API.md §4.3; step 5t), sent after the task's started and before its done. A delta on top of TaskInfo.steps: on a seq gap a client re-reads list.",
+      "args": {
+        "type": "object",
+        "required": ["task_id", "index", "state"],
+        "properties": {
+          "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" },
+          "index": { "description": "The step's 1-based position in TaskInfo.steps.", "type": "integer", "minimum": 1 },
+          "state": { "$ref": "loomworks.Common/1#/$defs/TaskStepState" },
+          "error": { "description": "A failed step's failure line.", "type": "string" }
+        }
+      }
+    }
+  },
+  "subscribe_args": {
+    "description": "Optionally only one task's signals.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": { "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" } }
+  },
+  "$defs": {
+    "TaskInfo": {
+      "description": "A running task: its start meta (API.md §4.2) with its id, when it started and its last percent.",
+      "type": "object",
+      "required": ["task_id"],
+      "properties": {
+        "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" },
+        "name": { "type": "string" },
+        "kind": { "description": "The operation (build, test, run, clean, reset, ...). Clients show an unknown kind as neutral.", "type": "string" },
+        "profile": { "description": "The profile's key.", "type": "string" },
+        "profile_id": { "description": "The profile's id: present exactly when profile is (TaskMeta.profile_id).", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "scope": { "type": "string" },
+        "units": {
+          "description": "As TaskMeta.units: a client matches a task to its records by the ids; the keys are for display.",
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta/properties/units"
+        },
+        "origin": { "description": "The owner's hello.client. Clients show an unknown origin as neutral.", "enum": ["cli", "editor"] },
+        "started_at": { "description": "Wall-clock seconds.", "type": "integer" },
+        "percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "owned": { "description": "The calling connection owns it (it may cancel it).", "type": "boolean" },
+        "steps": {
+          "description": "A target-scoped task's steps with their current states (API.md §4.3; step 5t); absent for other tasks.",
+          "type": "array",
+          "items": { "$ref": "loomworks.Common/1#/$defs/TaskStep" }
+        }
+      }
+    }
+  }
+}

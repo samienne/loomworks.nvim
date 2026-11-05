@@ -1,7 +1,7 @@
 # clangd LSP integration
 
 How the clangd integration implements the core LSP integration contract
-(`specification.md` §9). Lives at `lua/loomworks/integrations/lsp/clangd.lua`.
+(`spec/plugin.md` §9). Lives at `lua/loomworks/integrations/lsp/clangd.lua`.
 Section numbers in this file are local.
 
 ## 1. Server name
@@ -11,7 +11,7 @@ name to route their projects through this integration.
 
 ## 2. Per-server entry fields
 
-Beyond the core-defined `server` and `root_dir` fields (core §8.4
+Beyond the core-defined `server` and `root_dir` fields ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)
 `lsp_configs`), this integration recognises:
 
 | Field | Purpose |
@@ -26,7 +26,7 @@ internally (e.g., redirecting to another configuration's build dir for
 a `compile_commands_from` setting) — by the time the entry reaches
 this integration, all paths are fully resolved.
 
-Per core §9.1, `compile_commands_dir` is set **only** when the unit
+Per plugin.md §9.1, `compile_commands_dir` is set **only** when the unit
 supplying the database is configured on this machine; otherwise the entry
 carries `db_state = "unconfigured"` and no `compile_commands_dir`. The
 integration additionally **ignores** any `compile_commands_dir` on an entry
@@ -42,14 +42,14 @@ points clangd at its own generated `compile_commands.json` directory (under
 only Visual Studio / Xcode — unless the configuration sets
 `compile_commands_generated = false` (or redirects via
 `compile_commands_from`), in which case clangd points at the build
-directory's native database (see [`spec/modules/cmake.md`](../../modules/cmake.md)
+directory's native database (see [loomworks `spec/modules/cmake.md`](https://github.com/samienne/loomworks/blob/main/spec/modules/cmake.md)
 §12). clangd consumes the generated directory identically; for an MSVC
 compiler the entries use `cl.exe` as the driver so clangd's cl-compatible
 mode applies.
 
-**Trust (core §17).** A `binary` a module forwards comes either from the signed
-working copy (a module's program-bearing `type_config` key, core §17.6) or from
-the active tool's **detected** data (core §17.7); a binary override in
+**Trust ([loomworks core §17](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)).** A `binary` a module forwards comes either from the signed
+working copy (a module's program-bearing `type_config` key, [loomworks core §17.6](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)) or from
+the active tool's **detected** data ([loomworks core §17.7](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)); a binary override in
 `loomworks.json` never reaches this integration. The user options of §12
 (`extra_args` included — e.g. `--query-driver` makes clangd execute compilers)
 exist only in the signed working copy.
@@ -81,7 +81,7 @@ buffers outside any workspace.
 ### 3.1 Withholding (`withhold_reason`)
 
 clangd needs a compilation database to produce meaningful results inside
-a workspace project, so the integration implements core §9.3
+a workspace project, so the integration implements plugin.md §9.3
 `withhold_reason(entry)`:
 
 | Entry | Result |
@@ -90,20 +90,20 @@ a workspace project, so the integration implements core §9.3
 | `db_state` ready but no `compile_commands_dir`, or no `compile_commands.json` in it | `"no_db"` — configured here, but no database exists (yet). In the default path the §9.7 hold already waits for generation, so this is reached only when generation is impossible or failed |
 | otherwise | `nil` — start |
 
-A withheld buffer gets **no clangd client** (core §9.8): not a clangd
+A withheld buffer gets **no clangd client** (plugin.md §9.8): not a clangd
 started without `--compile-commands-dir`. It starts automatically once the
 database becomes available — the unit is configured, the owned database is
-generated (completion signal, core §8.4), or the user switches to a profile
+generated (completion signal, [loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)), or the user switches to a profile
 whose unit is configured here — and the workspace's clangd clients are
 stopped when the user switches to a profile whose unit for their project is
 not configured here. Buffers outside the workspace root are unaffected
 (§3 step 4). A buffer under the workspace root that belongs to no project
-uses the workspace entry (core §9.8 *Decision*): the database of the first
+uses the workspace entry (plugin.md §9.8 *Decision*): the database of the first
 project, in key order, whose entry is usable; when no project's entry is
 usable it is withheld too, so a stock clangd never discovers a stale
 `compile_commands.json` under the root (such as `<root>/build/`) on its own.
 
-With deferred start (core §9.7), in the default path this resolution runs only after the workspace is ready, so step 2 normally finds the project and the resolved directory on the first start. When the generated `compile_commands.json` first appears *after* the workspace became ready (a project's first-ever configure), the buffer was withheld (`"no_db"` or `"unconfigured"`, §3.1) rather than started without a database; core starts the client on the configure / generation-completion signal (core §8.4, §9.8, cmake §12.4) without the buffer being reopened.
+With deferred start (plugin.md §9.7), in the default path this resolution runs only after the workspace is ready, so step 2 normally finds the project and the resolved directory on the first start. When the generated `compile_commands.json` first appears *after* the workspace became ready (a project's first-ever configure), the buffer was withheld (`"no_db"` or `"unconfigured"`, §3.1) rather than started without a database; the LSP layer (plugin.md §9.2) starts the client on the configure / generation-completion signal ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md), plugin.md §9.8, [loomworks cmake spec §12.4](https://github.com/samienne/loomworks/blob/main/spec/modules/cmake.md)) without the buffer being reopened.
 
 ## 4. Per-buffer root_dir resolution
 
@@ -111,9 +111,9 @@ Same shape as cmd:
 
 1. If the buffer matches a project: use `entry.root_dir` — unless the
    entry is withheld (§3.1), in which case no root is reported and no
-   client starts (core §9.8).
+   client starts (plugin.md §9.8).
 2. If the buffer is under the workspace root but in no project: use the
-   workspace entry's `root_dir` (core §9.8 *Decision*), or report no root
+   workspace entry's `root_dir` (plugin.md §9.8 *Decision*), or report no root
    when it is withheld.
 3. Otherwise: `vim.fs.root(bufnr, root_markers)` against the
    integration's defaults.
@@ -151,14 +151,10 @@ The user's explicit `capabilities` always wins.
 - `on_active_set_changed()` — restart clients whose resolved `binary`
   or `compile_commands_dir` changed for the new active set and whose
   entry is still usable. Starting clients for newly usable buffers and
-  stopping clients whose entry became withheld (§3.1) is done by core's
-  re-evaluation (core §9.8) through the managed-stop path; the hook does
+  stopping clients whose entry became withheld (§3.1) is done by the LSP layer's
+  re-evaluation (plugin.md §9.8) through the managed-stop path; the hook does
   not restart a client into a withheld state.
-- `on_workspace_changed()` — restart all pre-existing clangd clients
-  so they pick up loomworks-aware routing; a pre-existing client for a
-  buffer under the workspace root whose entry is withheld is stopped
-  instead (not restarted).
-- **Deferred start (core §9.7)** normally holds clangd until the workspace is ready, so in the default path it starts already-correct and no startup restart occurs. `reconcile_on_attach(client)` remains as the repair path for the `lsp = false` opt-out (where loomworks cannot hold the start) and as a safety net: on attach, if a client's recorded cmd lacks the resolved `--compile-commands-dir`, it is restarted once. In the gated default path it finds the directory already applied and does nothing.
+- **Deferred start (plugin.md §9.7)** normally holds clangd until the workspace is ready, so in the default path it starts already-correct and no startup restart occurs. `reconcile_on_attach(client)` remains as the repair path for the `lsp = false` opt-out (where loomworks cannot hold the start) and as a safety net: on attach, if a client's recorded cmd lacks the resolved `--compile-commands-dir`, it is restarted once. In the gated default path it finds the directory already applied and does nothing.
 
 ## 8. Status fields
 
@@ -283,7 +279,7 @@ and the one most likely to die unexpectedly anyway.
 ## 12. User options (`user.json` → `lsp.clangd`)
 
 A subset of clangd's behavior is configurable per-workspace via the
-`lsp.clangd` block of `user.json` (core spec §2.2). Edits land via the
+`lsp.clangd` block of `user.json` ([loomworks core §2.2](https://github.com/samienne/loomworks/blob/main/spec/core/three-file-model.md)). Edits land via the
 status-page LSP section (§13) and persist to disk on every change.
 
 ### 12.1 Schema
@@ -365,9 +361,9 @@ user.json synchronously and restarts clients.
 
 ## 14. Environment inventory (`health_inventory`)
 
-Declares `lsp:clangd` (category *language servers*) in its inventory companion
-(`integrations/inventory/clangd.lua`, core §9.3), which this integration
-re-exports as its `health_inventory`. The probe reports every clangd it finds,
+Declares `lsp:clangd` (category *language servers*) in its inventory companion,
+loomworks' `lua/loomworks/integrations/inventory/clangd.lua` (plugin.md §9.3);
+the editor integration does not carry it. The probe reports every clangd it finds,
 one result each:
 
 - on the executable search path, with the version from `clangd --version`;
@@ -384,6 +380,6 @@ one result each:
 The Mason directory rule is shared by every integration that looks there
 (qmlls, the debug adapters). The compiler-sibling clangd a kit records (§2
 `binary`) is a toolchain detail and is not listed separately. clangd is never a
-workspace requirement (core §16.33). The Mason directory is probed even though
+workspace requirement ([loomworks core §16.33](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)). The Mason directory is probed even though
 it is a Neovim-package-manager convention: it is a plain filesystem read, and it
 is where most users' clangd and debug adapters live.

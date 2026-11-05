@@ -1,7 +1,7 @@
 # Release signing keys
 
 The standalone `lw` host verifies release bundles with an **ECDSA P-256**
-public key embedded at build time (spec §16.12). This directory holds the
+public key embedded at build time ([loomworks core §16.12](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)). This directory holds the
 **public** key; the matching **private** key is a CI secret and is never
 committed.
 

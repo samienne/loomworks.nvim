@@ -1,154 +1,167 @@
 --- loomworks/ui/sections/sdks.lua — SDKs section renderer.
 ---
 --- Shows installed SDKs with resolution status. Allows adding and
---- removing SDKs from the workspace.
+--- removing SDKs from the workspace: the picker lists what `Sdks/1.detect`
+--- finds, the add and the removal are `Sdks/1.add` / `Sdks/1.remove`
+--- (ui/model_calls: the workspace daemon's, step 5o C2c-1).
 
-local sdk_registry = require("loomworks.sdks")
+local helpers = require("loomworks.ui.helpers")
+
+--- A typed SDK path made absolute against the editor's working directory
+--- (the workspace daemon refuses a relative one: its working directory is
+--- not the editor's); surrounding whitespace and one pair of surrounding
+--- double or single quotes trimmed (Windows' "Copy as path" pastes them),
+--- `~` expanded, a trailing separator dropped. Nothing typed: nil.
+--- @param input string|nil
+--- @return string|nil
+local function absolute(input)
+    local path = vim.trim(input or "")
+    local q = path:sub(1, 1)
+    if #path >= 2 and (q == '"' or q == "'") and path:sub(-1) == q then path = vim.trim(path:sub(2, -2)) end
+    if path == "" then return nil end
+    local abs = vim.fn.fnamemodify(path, ":p")
+    if #abs > 1 and abs:match("[/\\]$") and not abs:match("^%a:[/\\]$") then abs = abs:sub(1, -2) end
+    return abs
+end
+
+--- Declare an SDK (`Sdks/1.add`); the outcome is notified.
+--- @param ws loomworks.Workspace|nil
+--- @param provider string
+--- @param path string absolute
+--- @param name string the picked entry's name for the SDK (the provider's
+---   label, with the detected version when known), for the message
+local function add_sdk(ws, provider, path, name)
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "Sdks/1.add", { provider = provider, path = path }, function(r)
+        local ok, err = model.result(r)
+        if r.sdk then
+            vim.notify("loomworks: SDK '" .. name .. "' added", vim.log.levels.INFO)
+            -- A detection that outran the wait (a warn note): reported too.
+            if not ok then vim.notify("loomworks: " .. tostring(err), vim.log.levels.WARN) end
+        else
+            vim.notify("loomworks: " .. (err or "failed to add SDK"), vim.log.levels.ERROR)
+        end
+        require("loomworks.ui.status").refresh()
+    end)
+end
+
+--- The picker's entries from a `Sdks/1.detect` outcome: each detected
+--- installation not declared yet (`declared`: lowercased paths), then a
+--- "browse for path" entry per provider.
+--- @param providers table[] `{ id, label, path_prompt?, found }`
+--- @param declared table<string, boolean>
+--- @return table[]
+local function candidates_of(providers, declared)
+    local out = {}
+    for _, p in ipairs(providers or {}) do
+        for _, inst in ipairs(p.found or {}) do
+            if not declared[(inst.path or ""):lower()] then
+                local name = p.label
+                if inst.version then name = name .. " " .. inst.version end
+                out[#out + 1] = { provider_id = p.id, path = inst.path, name = name, label = name .. "  " .. inst.path }
+            end
+        end
+        -- The provider's own prompt for a typed path (e.g. "Path to C/C++
+        -- compiler executable"), else a generic "<label> SDK path".
+        out[#out + 1] = { provider_id = p.id, browse = true, prompt = p.path_prompt or (p.label .. " SDK path"),
+            name = p.label, label = p.label .. "  (browse for path...)" }
+    end
+    return out
+end
 
 --- Render the SDKs section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw }
+--- @param ctx table { view, mode, ws } the workspace view's `sdks`
 return function(tree, ctx)
-    local lw = ctx.lw
-    local ws = lw.get_workspace()
-    if not ws then return end
-
-    local sdks = ws:sdks()
-
-    local providers = sdk_registry.list()
-    if #sdks == 0 and #providers == 0 then return end
+    local ws = ctx.ws
+    local sdks = ctx.view.sdks
+    if #sdks == 0 and ctx.view.sdk_providers == 0 then return end
 
     tree:blank()
     tree:leaf("SDKs", "Title")
     tree:blank()
 
-    for _, sdk in ipairs(sdks) do
-        local hl = sdk:is_resolved() and "Comment" or "DiagnosticWarn"
-        local path_str = sdk:sdk_path() and ("  " .. sdk:sdk_path()) or ""
-        local label = sdk:display_name() .. path_str
+    for _, row in ipairs(sdks) do
+        local hl = row.resolved and "Comment" or "DiagnosticWarn"
+        local path_str = row.path and ("  " .. row.path) or ""
+        local label = row.label .. path_str
 
         -- Enumerate kits the SDK exposes (platform × arch). Shown
         -- when the node is unfolded so the user can see at a glance
         -- which combinations are available. Picking still happens
         -- via the profile-level Toolchain row — these leaves are
         -- purely informational.
-        local kits = sdk:is_resolved() and sdk:kits() or {}
+        local kits = row.kits
 
         tree:node(label, {
-            fold_key = "sdk:" .. sdk.key,
+            fold_key = "sdk:" .. row.key,
             hl = hl,
-            on_delete = function()
+            on_delete = helpers.actionable(ctx, row) and function()
                 vim.ui.select({ "Yes", "No" }, {
-                    prompt = "Remove SDK '" .. sdk:display_name() .. "'?",
+                    prompt = "Remove SDK '" .. row.label .. "'?",
                 }, function(choice)
                     if choice ~= "Yes" then return end
-                    ws:remove_sdk(sdk.key)
-                    require("loomworks.ui.status").refresh()
+                    local model = require("loomworks.ui.model_calls")
+                    model.call(ws, "Sdks/1.remove", { sdk = row }, function(r)
+                        local ok, err = model.result(r)
+                        if not ok then
+                            vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+                        end
+                        require("loomworks.ui.status").refresh()
+                    end)
                 end)
-            end,
+            end or nil,
         }, function()
             if #kits == 0 then
-                if sdk:is_resolved() then
+                if row.resolved then
                     tree:leaf("(no kits exposed)", "Comment")
                 else
                     tree:leaf("(SDK not resolved — install missing)",
                         "DiagnosticWarn")
                 end
             else
-                for _, kit in ipairs(kits) do
-                    tree:leaf("  " .. sdk:kit_label(kit.platform, kit.arch),
-                        "Comment")
+                for _, kit_label in ipairs(kits) do
+                    tree:leaf("  " .. kit_label, "Comment")
                 end
             end
         end)
     end
 
-    if #providers > 0 then
+    if ctx.view.sdk_providers > 0 then
         tree:item("▸ Add SDK", {
             hl = "LoomworksActionable",
             direct = true,
             on_enter = function()
-                local candidates = {}
-                local existing_paths = {}
+                local declared = {}
                 for _, s in ipairs(sdks) do
-                    if s:sdk_path() then existing_paths[s:sdk_path():lower()] = true end
+                    if s.path then declared[s.path:lower()] = true end
                 end
-
-                for _, id in ipairs(providers) do
-                    local p = sdk_registry.get(id)
-                    if not p then goto next_provider end
-                    local display = p.display_name or id
-                    local ok, installations = pcall(p.detect_all)
-                    if ok then
-                        for _, inst in ipairs(installations) do
-                            if not existing_paths[(inst.path or ""):lower()] then
-                                local label = display
-                                if inst.version then label = label .. " " .. inst.version end
-                                label = label .. "  " .. inst.path
-                                candidates[#candidates + 1] = {
-                                    provider_id = id,
-                                    path = inst.path,
-                                    version = inst.version,
-                                    label = label,
-                                }
-                            end
-                        end
+                local model = require("loomworks.ui.model_calls")
+                model.call(ws, "Sdks/1.detect", {}, function(r)
+                    if r.outcome ~= "ok" then
+                        local _, err = model.result(r)
+                        vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+                        return
                     end
-                    candidates[#candidates + 1] = {
-                        provider_id = id,
-                        browse = true,
-                        label = display .. "  (browse for path...)",
-                    }
-                    ::next_provider::
-                end
-
-                if #candidates == 0 then
-                    vim.notify("loomworks: no SDK providers available", vim.log.levels.INFO)
-                    return
-                end
-
-                vim.ui.select(candidates, {
-                    prompt = "Add SDK:",
-                    format_item = function(item) return item.label end,
-                }, function(choice)
-                    if not choice then return end
-
-                    if choice.browse then
-                        -- Providers may override the prompt label via
-                        -- `path_prompt` — useful when "SDK path" is
-                        -- misleading (e.g. the C/C++ compiler
-                        -- provider wants "Path to C/C++ compiler
-                        -- executable"). Falls back to a generic
-                        -- "<display_name> SDK path" otherwise.
-                        local prov = sdk_registry.get(choice.provider_id)
-                        local prompt = prov and prov.path_prompt
-                            or ((prov and prov.display_name or choice.provider_id)
-                                .. " SDK path")
-                        vim.ui.input({
-                            prompt = prompt .. ": ",
-                        }, function(path)
-                            if not path or path == "" then return end
-                            local sdk2, err = ws:add_sdk(choice.provider_id, path)
-                            if sdk2 then
-                                vim.notify("loomworks: SDK '" .. sdk2:display_name() .. "' added",
-                                    vim.log.levels.INFO)
-                            else
-                                vim.notify("loomworks: " .. (err or "failed to add SDK"),
-                                    vim.log.levels.ERROR)
-                            end
-                            require("loomworks.ui.status").refresh()
+                    local candidates = candidates_of(r.providers, declared)
+                    if #candidates == 0 then
+                        vim.notify("loomworks: no SDK providers available", vim.log.levels.INFO)
+                        return
+                    end
+                    vim.ui.select(candidates, {
+                        prompt = "Add SDK:",
+                        format_item = function(item) return item.label end,
+                    }, function(choice)
+                        if not choice then return end
+                        if not choice.browse then
+                            return add_sdk(ws, choice.provider_id, choice.path, choice.name)
+                        end
+                        vim.ui.input({ prompt = choice.prompt .. ": " }, function(input)
+                            local path = absolute(input)
+                            if not path then return end
+                            add_sdk(ws, choice.provider_id, path, choice.name)
                         end)
-                    else
-                        local sdk2, err = ws:add_sdk(choice.provider_id, choice.path)
-                        if sdk2 then
-                            vim.notify("loomworks: SDK '" .. sdk2:display_name() .. "' added",
-                                vim.log.levels.INFO)
-                        else
-                            vim.notify("loomworks: " .. (err or "failed to add SDK"),
-                                vim.log.levels.ERROR)
-                        end
-                        require("loomworks.ui.status").refresh()
-                    end
+                    end)
                 end)
             end,
         })

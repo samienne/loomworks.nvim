@@ -1,11 +1,14 @@
 # Changelog
 
-What changed in each release of loomworks (the `lw` runner and the Neovim
-plugin). `lw release-notes` shows these notes offline, from the release you
-run; `lw self-update` shows what changed since your previous version.
+What changed in each release of loomworks.nvim, the Neovim plugin. Up to
+0.1.x a release also shipped the `lw` runner; from 0.2.0 `lw`, the workspace
+daemon and its protocol are released from
+[samienne/loomworks](https://github.com/samienne/loomworks), with their own
+CHANGELOG. The plugin's version is the newest release heading below
+(`lua/loomworks/version.lua`).
 
 <!--
-How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks it):
+How to write an entry (the same format as loomworks' CHANGELOG):
 
 * Every change adds its items under `## Unreleased`, in the section that fits.
 * Sections, each at most once per entry, in this order:
@@ -26,147 +29,71 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Breaking
+- The plugin is now only a client of the `lw` workspace daemon. It loads no
+  workspace of its own: the status page, profiles, builds, launches, tests,
+  devices and the language-server configuration all come from the daemon of
+  the workspace, which the editor starts when none is running. There is no
+  in-process fallback; without a usable `lw` the status page shows the
+  workspace unloaded with the reason (#414).
+- `lw`, the workspace daemon, the modules (cmake, meson, shell, typescript),
+  the SDK providers and the workspace engine moved to
+  [samienne/loomworks](https://github.com/samienne/loomworks), which publishes
+  `lw` from 0.2.0 on. This repository now holds only the Neovim plugin (#414).
+
 ### Upgrade notes
-- The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8
-  cache is migrated when it loads and written as version 9 by the next save;
-  after that an older `lw` or editor (including a pinned one) refuses the
-  workspace as a newer schema until it is updated. Each configuration of a
-  CMake multi-config build directory (Ninja Multi-Config, Visual Studio)
-  builds once more after the upgrade, incrementally, because its old state
-  could have come from another configuration's build. Running such a
-  configuration on a device stages it under a new directory on the device;
-  `lw device clean` removes the old one. (#357)
+- The plugin provisions its own `lw`: when neither `LOOMWORKS_LW` nor the
+  setup option `binary.path` names one and no compatible `lw` is on `PATH`, it
+  downloads the release it pins, verifies it against the release's signed
+  checksums, and installs it with its Lua bundle under Neovim's data
+  directory (`loomworks/lw/` and `loomworks/bundle/`). The setup option
+  `binary` also takes `prefer = "managed"` (the downloaded `lw` before one on
+  `PATH`), `download = false`, `release_url` (a mirror), `channel` (`stable`
+  or `unstable`) and `source` (a loomworks source tree, for development)
+  (#414).
+- Remove `log_level`, `user_prefs_root` from your `setup()` call: they are no
+  longer read. Calls of `require("loomworks").get_setup_error()` must go (#414).
 
 ### Added
-
-- `lw launch set` takes `--description <para>` (repeatable), like
-  `lw launch add`; it replaces the whole description, and
-  `--description ""` clears it. `--working-dir ""` clears the working
-  directory (#290).
+- `:LoomworksDaemon [connect|status]`: `connect` connects the editor to the
+  workspace daemon, starting one when none is running; `status` shows the
+  daemon's runtime line and the `lw` a launch would use (#414).
 
 ### Changed
-
-- lw 0.2 and later is published in samienne/loomworks. `lw` now fetches a
-  release from the repository it was published in: 0.0.x/0.1.x from
-  samienne/loomworks.nvim, 0.2 and later from samienne/loomworks, in
-  `lw self-update`, `lw bootstrap install` / `upgrade`, pinned provisioning and
-  the `lw.sh` / `lw.cmd` launchers. The newest release (both channels) is still
-  looked up in samienne/loomworks.nvim, so `lw self-update` stays within 0.1.x;
-  moving to 0.2 takes an explicit version or pin. `LOOMWORKS_RELEASE_URL` /
-  `release-url` is still one mirror for all versions. `lw bootstrap` and
-  `lw health` report earlier launchers as broken only for a pin of 0.2 or
-  later (#389).
-- Every usage error now exits 2 (it was 1 for many of them): an unknown,
-  repeated or misplaced option, a missing or malformed value (`--timeout 0`,
-  an invalid launch name, an unknown `lw config set` parameter or health
-  area), an empty value, an extra operand, and a missing operand lw cannot
-  ask for, such as no profile named in non-interactive mode. An error about
-  the workspace's state, such as no unambiguous default profile, still exits
-  1 (#290).
-- Every option that takes a value now also accepts it joined with `=`, on
-  every command: `--working-dir=build`, `--env=PORT=8080`, `--cwd=out`
-  (the split is at the first `=`) (#290).
-- An option that holds one value is refused (exit 2) when it is given twice,
-  instead of the last one winning. This includes `--cwd` with `--working-dir`,
-  `--working-dir` with `--clear-working-dir`, and `--command` with
-  `--from-target` on `lw launch set`. `--env`, `--unset-env`, `--description`,
-  `-m`, `--prefix`, `--target` and `--log` may still repeat (#290).
-- An empty option value is refused (exit 2), as in `lw run --cwd= app`, except
-  where `""` clears: `--working-dir ""` and `--description ""` on
-  `lw launch set`, `--working-dir ""` on `lw launch add` (no working
-  directory), and `-m ""` on `describe` (#290).
-- A value that starts with `--` must now be joined with `=`
-  (`--working-dir=--odd`, `lw run --prefix gdb --prefix=--args`): a valued
-  option followed by `--`, by another `--` token or by nothing is a missing
-  value (exit 2) (#290).
-- On `lw launch add <project> <name> <command>`, every token after the command
-  is the program's, including lw's own options: `--env`, `--working-dir` and
-  `--description` go before the command (#290).
-- `lw launch set` no longer turns an unknown option into an argument: an
-  unknown option before `--` is a usage error (exit 2) and nothing changes.
-  An argument starting with `-` now goes after `--`
-  (`lw launch set app run -- --port 1`); bare arguments still work as before
-  (#290).
+- `:LoomworksCompileCommand` and `compile_command_for_file()` now always
+  refuse: "compile command: not available with the workspace daemon" (#414).
+- The status page's `N` (create workspace) and `create_workspace()` now
+  refuse and point at `lw init`: "creating a workspace is not available with
+  the workspace daemon - run lw init in a terminal" (#414).
 
 ### Fixed
+- The editor's plugin-managed `lw` could not start: a release `lw` carries
+  no Lua of its own. The plugin now also downloads the release's Lua bundle
+  (`loomworks-lua-<version>.zip`, SHA-256 pinned like the binary), unpacks it
+  itself into `<data>/loomworks/bundle/<sha256>/` and starts every process
+  of the managed `lw` with that folder as `LOOMWORKS_INSTALL_DIR` (#414).
 
-- Deleting a profile or a configuration from the status page no longer
-  reports it removed when a build directory could not be removed; only the
-  error is shown. Scripts and plugins calling the deletion now get `false`
-  in that case instead of `true`. (#364)
-- With a CMake multi-config generator (Ninja Multi-Config, Visual Studio),
-  Debug and Release are separate configurations again, each with its own
-  state, artifacts and status line, although they share one build directory.
-  They were one unit, so building Debug made Release show as built and a
-  build of Release could be skipped. Deleting one of them keeps the shared
-  directory while the other still uses it. (#357)
-- Renaming a project no longer throws away its configured and built build
-  directories' state on the next reload: the project's configurations keep
-  their build state and are not reconfigured from scratch (#342).
-- Rebuilding a configuration from the status page (`R`) built even when its
-  clean failed; it now stops and reports the failed clean (#328).
-- A failed, stopped or refused clean no longer leaves the config shown as
-  "cleaning" for the rest of the session (it also blocked removing or
-  renaming that config); the same holds for a deletion that errors before it
-  finishes (#330).
-
-- A profile created from an SDK in the status page's tool picker lost its
-  SDK on the next load: it was saved without toolchains, came back as the
-  configuration set's toolless profile, and its key clashed with an existing
-  toolless profile of that set. It now stores the SDK's kit toolchains as
-  its tools, as picking the kit does. The picker offers an SDK only when it
-  yields a kit for the set's project types. (#312)
-
-- Orphan cleanup could delete a live build directory when the workspace was
-  reached through a different spelling of the same path (e.g. a Windows 8.3
-  short name like `RUNNER~1`): its parent under `.nvim/build` was listed as a
-  stray directory. Stray detection now compares directory identity, and
-  cleanup refuses any directory that holds a live build dir (#293).
-- Orphan cleanup on the status page dropped the orphaned entries even when
-  removing their build directories failed, and reported success. It now marks
-  the entries `unknown` before removing anything, keeps them when a removal
-  fails, never removes a directory a live configuration still uses, reports a
-  failed stray-directory removal (the status page no longer says "cleaned"
-  after a failure), and also removes the owned LSP database of each orphan it
-  deleted. Deleting or cleaning an ordinary configuration also
-  left its cache entry in its old state on disk while the build directory was
-  being removed, so a crash mid-removal could not be recognized; the entry is
-  now `unknown` on disk first (#298).
-- Deleting a single orphaned configuration on the status page (`D`) could
-  remove a live build directory: when the build-dir template gained a level
-  (`.nvim/build/App` -> `.nvim/build/App/Debug`) the orphan's directory
-  contained the live one, and an orphan naming a live directory by another
-  spelling (a Windows 8.3 short name) was removed outright. It also dropped
-  the entry before removing anything, so a failed removal lost it. It now
-  follows the same rules as Clean all: such a directory is kept (only the
-  entry is dropped), the entry is `unknown` on disk before a removal and kept
-  when the removal fails, and the notification says what actually happened
-  instead of always "removed" (#304).
-- Deleting, cleaning or resetting a configuration went on to remove its build
-  directory even when the cache could not be saved first (a failed write, or
-  a save refused because another process changed the cache), so a crash
-  mid-removal could not be recognized. Now nothing is removed, the entries
-  keep their state, and the deletion is reported as failed (#304).
-- Deleting, cleaning or resetting a configuration on Windows could remove a
-  build directory another configuration still used, when the two recorded it
-  under different spellings (a long path and its 8.3 short name, such as
-  `C:/Users/RUNNER~1/...`). Shared build directories are now recognized by
-  the directory itself, not its spelling, and are kept (#308).
-- `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
-  the `--` as the first argument. A target-backed add has no command token, so
-  its `--` is lw's separator and is dropped; before it an unknown option or a
-  bare argument is a usage error instead of becoming an argument (#290).
-- `lw launch set <project> <name> --description text` replaced the config's
-  arguments with `--description text`; it now sets the description (#290).
-- `lw launch describe -m <para> --project P --launch N` took the paragraph as
-  the project name when `-m` came before the address (#290).
-- `lw launch set ... --working-dir` with no value cleared the working
-  directory, and `--command` / `--from-target` with no value stored none; a
-  missing value is now a usage error and nothing changes (#290).
-- `lw <kind> describe <item> -- <text>` refused the `--`; it now ends lw's
-  options, so a description may start with `-` (#290).
-- `lw launch show --json <project> <name>` refused `--json` before the
-  address (#290).
+### Removed
+- The setup options `log_level` and `user_prefs_root`, and
+  `get_setup_error()` (#414).
+- From the status page: the build-directory lock list, force-releasing a
+  lock, and "Reset all task & lock state". Locks are the daemon's; `lw unlock`
+  and `lw reset` handle a stuck one (#414).
+- The editor's own overseer task runner: builds, configures, cleans and tests
+  are daemon tasks, shown in overseer as they run; the editor no longer
+  generates or runs module tasks itself (#414).
+- neotest support: the `loomworks` neotest adapter only refuses, pointing to
+  the loomtest explorer, which shows the daemon's tests (#414).
+- The editor-side removal of build directories (`wipe_build_dir`): deleting,
+  cleaning and resetting run in the daemon (#414).
+- These public functions of `require("loomworks")`, which drove the editor's
+  own workspace: `after_deletions`, `cancel_task`,
+  `cancel_tasks_for_profile`, `cancel_tasks_for_project`,
+  `create_operation`, `delete_user_prefs`, `execute_deletion`,
+  `find_running_tasks_for_items`, `force_release_build_dir_lock`,
+  `get_active_tasks`, `get_build_dir_locks_info`, `has_pending_deletions`,
+  `has_running_tasks`, `lsp_ready`, `nuke_cache`, `record_task_result`,
+  `reload_config` and `rescan_tools` (#414).
 
 ## 0.1.49 - 2026-10-19
 

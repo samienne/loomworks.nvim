@@ -7,8 +7,15 @@ on:
 
 jobs:
   test:
-    name: Tests (Windows)
-    runs-on: windows-latest
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
 
@@ -18,149 +25,55 @@ jobs:
           neovim: true
           version: stable
 
-      - name: Install Ninja
-        run: choco install ninja -y
+      - name: Install GNU make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make -y
 
+      # tests/minimal_init.lua puts <stdpath data>/lazy/plenary.nvim on the
+      # runtimepath.
       - name: Install plenary.nvim
-        shell: pwsh
         run: |
-          $dest = "$env:LOCALAPPDATA\nvim-data\lazy\plenary.nvim"
-          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim $dest
+          data="$(nvim --clean --headless -c 'lua io.write(vim.fn.stdpath("data"))' -c 'qa!')"
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim "$data/lazy/plenary.nvim"
 
-      # Plenary runs every spec file concurrently under ONE whole-suite budget
-      # (default 50 s); a file still running at the deadline prints no summary
-      # and fails the job. Size it for a loaded 4-core runner (see Makefile).
+      # The specs run a real lw: the release the plugin pins
+      # (lua/loomworks/provision/pinned.lua), provisioned into .lw-test/ by
+      # `make lw` (scripts/test_lw.lua) with the plugin's own download code.
+      # A new pin is a new cache key.
+      - name: Cache the pinned lw
+        uses: actions/cache@v4
+        with:
+          path: .lw-test
+          key: lw-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lua/loomworks/provision/pinned.lua') }}
+
+      - name: Provision the pinned lw
+        run: make lw
+
+      # scripts/run_specs.lua runs every spec file at once under one
+      # whole-suite budget (TEST_TIMEOUT, see Makefile) and names each file
+      # that failed; `make test` points the specs at .lw-test/ (LOOMWORKS_LW).
       - name: Run test suite
-        shell: pwsh
-        run: |
-          nvim --headless -u tests/minimal_init.lua `
-            -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua', timeout = 600000}"
+        run: make test
 
-  standalone:
-    name: Standalone bootstrap tests (Linux)
+  vendor-check:
+    name: Vendored files
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      # The boot modules (verify/json/paths/download/update) depend on luvi's
-      # OpenSSL, so they run under luvi rather than the nvim/busted suite. Running
-      # on Linux also guards the byte-exact signature fixtures against EOL drift.
-      - name: Fetch luvi
+      # The vendored files match VENDOR.MANIFEST (sha256 of each, no extra
+      # files under a vendored directory).
+      - name: Check the manifest
+        run: scripts/vendor.sh --check
+
+      # The manifest matches loomworks itself: re-vendoring from the
+      # manifest's tag reproduces the tree and the manifest (tag, commit and
+      # every file) byte for byte.
+      - name: Re-vendor from the manifest's tag
         run: |
-          curl -fsSL -o luvi \
-            https://github.com/luvit/luvi/releases/download/v2.15.0/luvi-Linux-x86_64-luajit-regular
-          chmod +x luvi
-
-      - name: Run standalone suite
-        run: ./luvi tests/standalone
-
-  standalone-windows:
-    name: Standalone bootstrap tests (Windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      # The Windows-only sections: lw.cmd against real cmd.exe (PATH-shadowed
-      # system tools, download retry, console Ctrl-C / Ctrl-Break with no
-      # "Terminate batch job" prompt) and the redirect's re-exec under a
-      # console interrupt.
-      - name: Fetch luvi
-        shell: bash
-        run: |
-          curl -fsSL -o luvi.exe \
-            https://github.com/luvit/luvi/releases/download/v2.15.0/luvi-Windows-amd64-luajit-regular.exe
-
-      - name: Run standalone suite
-        shell: bash
-        run: ./luvi.exe tests/standalone
-
-  cli-e2e:
-    name: CLI e2e (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            luvi_asset: luvi-Linux-x86_64-luajit-regular
-          - os: macos-latest
-            luvi_asset: luvi-Darwin-arm64-luajit-regular
-          - os: windows-latest
-            luvi_asset: luvi-Windows-amd64-luajit-regular.exe
-    steps:
-      - uses: actions/checkout@v5
-
-      # A C/C++ toolchain + cmake/meson/ninja so the CLI can actually configure
-      # and build the sample projects. On Windows we use mingw (self-contained
-      # gcc — no VS dev-shell needed) which also exercises the run-env DLL setup.
-      - name: Install build tools (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build meson g++
-
-      - name: Install build tools (macOS)
-        if: runner.os == 'macOS'
-        run: brew install cmake ninja meson
-
-      - name: Install build tools (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install ninja mingw -y
-          python -m pip install --upgrade meson
-
-      - name: Fetch luvi
-        shell: bash
-        run: |
-          asset="${{ matrix.luvi_asset }}"
-          out="luvi"; [ "${asset##*.}" = "exe" ] && out="luvi.exe"
-          curl -fsSL -o "$out" \
-            "https://github.com/luvit/luvi/releases/download/v2.15.0/${asset}"
-          chmod +x "$out" || true
-
-      - name: Fuse the lw binary
-        shell: bash
-        run: |
-          if [ -f luvi.exe ]; then ./luvi.exe lua --output lw.exe; else ./luvi lua --output lw && chmod +x lw; fi
-
-      - name: Smoke test — the fused binary runs
-        shell: bash
-        run: |
-          export LOOMWORKS_LUA="$PWD/lua"
-          lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
-          "$lw" version
-
-      # Fuses real old/new hosts and lets the old one self-update (spec §16.32)
-      # against a local signed mirror — on Windows this is the only check of
-      # the running-.exe rename-aside swap.
-      - name: Host self-update end-to-end
-        shell: bash
-        run: |
-          l="$PWD/luvi"; [ -f "$PWD/luvi.exe" ] && l="$PWD/luvi.exe"
-          bash scripts/ci/host-self-update-e2e.sh "$l"
-
-      - name: Run CLI end-to-end (meson + cmake, build/run/test/clean)
-        shell: bash
-        run: |
-          export LOOMWORKS_LUA="$PWD/lua"
-          lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
-          LW="$lw" bash scripts/ci/cli-e2e.sh
-
-  # The bundle from this checkout under real released hosts (spec §16.14): an
-  # old host that `lw self-update`d runs the newest bundle with its own, older
-  # boot modules. Hosts are downloaded from GitHub releases and verified against
-  # each release's signed SHA256SUMS; nothing else touches the network.
-  old-host-compat:
-    name: Old-host compat (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Run the bundle under v0.1.2 / v0.1.28 / v0.1.33 / v0.1.37 / v0.1.42 hosts
-        shell: bash
-        env:
-          REPO_SLUG: ${{ github.repository }}
-        run: bash scripts/ci/old-host-compat.sh
+          tag="$(sed -n 's/^tag //p' VENDOR.MANIFEST)"
+          src="$RUNNER_TEMP/loomworks"
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" https://github.com/samienne/loomworks "$src"
+          scripts/vendor.sh "$src" "$tag"
+          git status --porcelain
+          test -z "$(git status --porcelain)"

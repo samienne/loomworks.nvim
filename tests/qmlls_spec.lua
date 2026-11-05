@@ -1,9 +1,8 @@
---- Tests for the qmlls LSP integration and the cmake module's qmlls
---- lsp_configs entry. Follows the pure-seam style of lsp_spec.lua and
---- clangd_restart_spec.lua: the cmake side is exercised with a fake
---- project/workspace fixture (as in shell_spec.lua), and the integration
---- side is exercised through its pure arg-builder and root_dir_factory so
---- we never spawn a real qmlls process.
+--- Tests for the qmlls LSP integration. Follows the pure-seam style of
+--- lsp_spec.lua and clangd_restart_spec.lua: the integration is exercised
+--- through its pure arg-builder and root_dir_factory so we never spawn a
+--- real qmlls process. (The cmake module's qmlls lsp_configs entry is
+--- loomworks' to test.)
 
 -- Load lsp.lua FIRST so its bottom-of-module discover() doesn't try to
 -- pcall(require, "...qmlls") at the exact moment we're mid-loading qmlls
@@ -11,139 +10,15 @@
 -- body and registers — no recursive discover() call.
 require("loomworks.lsp")
 
-package.loaded["loomworks.modules.cmake"] = nil
-local cmake = require("loomworks.modules.cmake")
-
 package.loaded["loomworks.integrations.lsp.qmlls"] = nil
 local qmlls = require("loomworks.integrations.lsp.qmlls")
 
-local uv = vim.uv or vim.loop
-
---- A real on-disk directory, so resolve_build_dir's uv.fs_stat check passes.
+--- A real on-disk directory, so the arg builder's existence check passes.
 local function make_tmp_dir()
     local tmp = vim.fn.tempname()
     vim.fn.mkdir(tmp, "p")
     return tmp
 end
-
--- ---------------------------------------------------------------------------
--- cmake M.lsp_configs — qmlls entry shape
--- ---------------------------------------------------------------------------
-
-describe("cmake lsp_configs qmlls entry", function()
-    --- Build a minimal fake Project + Workspace for cmake.lsp_configs.
-    --- Mirrors shell_spec.lua's fake_project. The active profile carries a
-    --- ProfileProject whose build_dir feeds both the clangd and qmlls entries.
-    local function fake_project(opts)
-        opts = opts or {}
-        local build_dir = opts.build_dir
-        local ws = {
-            root = opts.ws_root or "/work",
-            get_active_profile = function()
-                if not build_dir then return nil end
-                return {
-                    project = function(_, _key)
-                        return {
-                            build_dir = function() return build_dir end,
-                            -- Configured on this machine (spec §9.1) unless asked.
-                            configured_here = function() return opts.unconfigured ~= true end,
-                        }
-                    end,
-                    tool_for = function() return nil end,
-                }
-            end,
-        }
-        return {
-            key = opts.key or "myapp",
-            path = opts.path or "myapp",
-            type = "cmake",
-            type_config = opts.type_config or {},
-            tool_data = opts.tool_data,
-            cached = opts.cached,
-            _workspace = ws,
-        }
-    end
-
-    it("emits a qmlls entry as the second config", function()
-        local cfgs = cmake.lsp_configs(fake_project({
-            build_dir = "/work/.nvim/build/myapp/Debug",
-        }))
-        assert.equals(2, #cfgs)
-        assert.equals("clangd", cfgs[1].server)
-        assert.equals("qmlls", cfgs[2].server)
-    end)
-
-    it("carries the active profile build_dir and project root_dir", function()
-        local cfgs = cmake.lsp_configs(fake_project({
-            build_dir = "/work/.nvim/build/myapp/Debug",
-        }))
-        local q = cfgs[2]
-        assert.equals("/work/.nvim/build/myapp/Debug", q.build_dir)
-        assert.equals("/work/myapp", q.root_dir)
-        -- clangd now routes through the loomworks-owned generated DB dir for
-        -- every cmake generator (cmake.md §12), so it no longer equals the
-        -- qmlls build dir; qmlls still resolves against the real build dir.
-        assert.are_not.equal(q.build_dir, cfgs[1].compile_commands_dir)
-        assert.is_truthy(cfgs[1].compile_commands_dir:find("/.nvim/cache/cc/", 1, true))
-    end)
-
-    it("qmlls keeps the project.cached.build_dir fallback without an active profile", function()
-        local cfgs = cmake.lsp_configs(fake_project({
-            cached = { build_dir = "/work/.nvim/build/myapp/Cached" },
-        }))
-        assert.equals("/work/.nvim/build/myapp/Cached", cfgs[2].build_dir)
-        -- clangd never gets a database without a unit configured here (§9.1).
-        assert.is_nil(cfgs[1].compile_commands_dir)
-        assert.equals("unconfigured", cfgs[1].db_state)
-    end)
-
-    it("qmlls follows a compile_commands_from redirect's first unit, as before", function()
-        local function unit(bd, here)
-            return { build_dir = function() return bd end, configured_here = function() return here end }
-        end
-        local p = fake_project({ type_config = { compile_commands_from = "Release" } })
-        p.get_configuration = function() return {} end
-        p.config_units_for_configuration = function()
-            return { unit("/work/out/A", false), unit("/work/out/B", true) }
-        end
-        local cfgs = cmake.lsp_configs(p)
-        assert.equals("/work/out/A", cfgs[2].build_dir)
-        assert.equals("/work/out/B", cfgs[1].compile_commands_dir)
-    end)
-
-    it("type_config.qmlls flows into entry.binary; absent ⇒ nil", function()
-        local with = cmake.lsp_configs(fake_project({
-            build_dir = "/work/out",
-            type_config = { qmlls = "/opt/qt/bin/qmlls" },
-        }))
-        assert.equals("/opt/qt/bin/qmlls", with[2].binary)
-
-        local without = cmake.lsp_configs(fake_project({ build_dir = "/work/out" }))
-        assert.is_nil(without[2].binary)
-    end)
-
-    it("type_config.qmlls_required flows into entry.binary_required", function()
-        local cfgs = cmake.lsp_configs(fake_project({
-            build_dir = "/work/out",
-            type_config = { qmlls = "/opt/qt/bin/qmlls", qmlls_required = true },
-        }))
-        assert.is_true(cfgs[2].binary_required)
-
-        local dflt = cmake.lsp_configs(fake_project({ build_dir = "/work/out" }))
-        assert.is_false(dflt[2].binary_required)
-    end)
-
-    it("type_config.qml_import_paths flows into entry.import_paths", function()
-        local cfgs = cmake.lsp_configs(fake_project({
-            build_dir = "/work/out",
-            type_config = { qml_import_paths = { "/a/qml", "/b/qml" } },
-        }))
-        assert.same({ "/a/qml", "/b/qml" }, cfgs[2].import_paths)
-
-        local none = cmake.lsp_configs(fake_project({ build_dir = "/work/out" }))
-        assert.is_nil(none[2].import_paths)
-    end)
-end)
 
 -- ---------------------------------------------------------------------------
 -- qmlls integration — pure arg builder
@@ -206,36 +81,6 @@ describe("qmlls root_dir_factory", function()
         root_fn(0, function(dir) result = dir end)
         assert.is_true(fallback_called)
         assert.equals("/fallback/root", result)
-    end)
-
-    it("resolves the entry root_dir for a matching project buffer", function()
-        local lw = require("loomworks")
-        local orig_pfb = lw.project_for_buf
-        local orig_gw = lw.get_workspace
-        -- entry_for asks lsp.entry_for_project which calls the module's
-        -- lsp_configs; give the project a module whose impl emits a qmlls
-        -- entry rooted at /work/myapp.
-        local fake_project = {
-            _module = {
-                impl = {
-                    lsp_configs = function()
-                        return { { server = "qmlls", root_dir = "/work/myapp" } }
-                    end,
-                },
-            },
-        }
-        lw.project_for_buf = function() return fake_project end
-        lw.get_workspace = function() return {} end
-
-        local result = nil
-        local root_fn = qmlls.root_dir_factory(function(_, on_dir)
-            on_dir("/should/not/be/used")
-        end)
-        root_fn(1, function(dir) result = dir end)
-        assert.equals("/work/myapp", result)
-
-        lw.project_for_buf = orig_pfb
-        lw.get_workspace = orig_gw
     end)
 
     it("skips excluded buffers before any resolution", function()

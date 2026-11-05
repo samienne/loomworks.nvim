@@ -1,0 +1,1232 @@
+--- loomworks/daemon/editor_ops.lua — the editor's operations as daemon
+--- calls (spec §19.16 "Editor operations", §19.15 "The editor as owner";
+--- step 5k part C1).
+---
+--- While the observer (loomworks.daemon.observer)
+--- is connected to a compatible daemon that carries the method, a build, a
+--- configure or a module clean — of a profile or of configuration units — is
+--- sent as a `loomworks.Build/1` call whose task the editor owns, naming its
+--- scope by the view rows' ids (M.run_ids). The editor holds no model
+--- (step 6b-α), so every entry point names ids: the status
+--- page (ui/model_calls), the facade (loomworks.daemon.facade) and the
+--- session tracker (launch targets as loomworks.daemon.LaunchRef). An
+--- operation is never run in-process (§19.16 "Availability", step 5s): one
+--- the daemon cannot carry is refused. This module keeps no Future of its
+--- own: it ends an operation through its continuation `k` ({ resolve,
+--- reject }).
+---
+--- The availability rule (§19.16):
+---   not carried now (no connection, a feature or method degraded)
+---                     → refused: the observer's Runtime-line note as one
+---                       notification line
+---   `declined`        → fails, the reason as one notification line
+---   degraded on call  → refused; the observer notes the method
+---   `refused`         → the operation fails with the refusal's message
+---   accepted          → one owned task; the operation ends with it: exit 0
+---                       resolves, anything else rejects; the connection lost
+---                       → fails ("the workspace daemon disconnected"), never
+---                       re-run in-process
+---   an internal error → fails, never re-run
+---
+--- A confirmation the in-process operation asks — the artifact-conflict
+--- question of a build (§5.9) — is asked before the call when its answer
+--- can be known then (configured units), and travels as `force`.
+---
+--- Step 5k part C2: the preparation of a run or debug launch of a non-device
+--- target is a `loomworks.Launch/1` call (`prepare_run` / `prepare_debug`,
+--- `build_scope = "target"`, M.prepare) under the same rule; the session
+--- tracker then starts the returned program itself. The debug adapters
+--- section reads and writes `loomworks.DebugConfig/1` (M.debug_adapters,
+--- M.set_debug_adapter); while that is not carried the section is
+--- unavailable and its writes fail.
+---
+--- Step 5t part C: the build of a non-device launch target is one
+--- `Launch/1.build` the editor owns (M.build_target) — no dependency build
+--- or deploy in the editor; it and the preparations ask the
+--- artifact-conflict question before the call, its Yes sent as `force`.
+---
+--- Step 5n part C2 (§19.16 "Devices"): the editor neither lists nor probes
+--- devices, nor installs or launches on them. A device target's build is
+--- the same `Launch/1.build` (its post-build deploy included); its install
+--- and launch are `Devices/1.install` / `launch` tasks the editor owns
+--- (M.device_step), a stop `Devices/1.stop { task }` (M.device_stop); a
+--- scan is a `Devices/1.scan` task (M.scan_devices), the list the
+--- observer's cache of `Devices/1.list` (M.devices), and a profile's device
+--- `Profiles/1.set_device` (ui/model_calls, by ids). All under the
+--- same availability rule: refused when not carried, never in-process.
+---
+--- Step 5o C2d-1: the status page's Profiles section sends its builds,
+--- configures and cleans by its view rows' ids (M.run_ids, through
+--- ui/model_calls.lua's routed `Build/1` methods) — the profile row's `id`,
+--- a unit row's `unit_id` — never by key; the owned call records the unit
+--- ids, a build's artifact-conflict question comes from the rows'
+--- `artifact_block`, a clean pre-empts the editor's own calls by those ids.
+---
+--- Step 5n part C3 (API.md §9.5): a device run's log is a
+--- `Launch/1.device_log { task }` task the editor owns (M.device_log), its
+--- records the `/launch` `log` signal of a subscription naming that task.
+
+local M = {}
+
+local VERB = { build = "build", configure = "configure", clean = "clean",
+    prepare_run = "launch", prepare_debug = "debug launch", launch_build = "build", discover = "test discovery",
+    run_cases = "test run", prepare_test_debug = "test debug preparation",
+    device_list = "devices", device_scan = "device scan", device_install = "install", device_launch = "launch",
+    device_stop = "device stop", ["Profiles/1.set_device"] = "device choice",
+    ["Profiles/1.clear_device"] = "device choice",
+    device_log = "device log" }
+
+--- The calls whose task-runner restart is not sent again (§19.16 "Tasks in
+--- the task runner", step 5k C2): a launch's preparation ends in a program
+--- the editor starts after the call, which a restart of the task alone
+--- would never start. A device launch (step 5n C2) likewise: its program
+--- is the session tracker's to stop, which a restart alone would not tell.
+--- A device log (step 5n C3) likewise: its records go to the view that
+--- started it, which a restart alone would not feed.
+M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true, device_launch = true,
+    device_log = true, ["Maintenance/1.execute_deletion"] = true, ["Maintenance/1.nuke"] = true }
+
+--- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil, not_run: string[]|nil) }
+--- (`not_run`: a clean's task result's lines, core §5.4, M.run_ids.)
+
+--- The editor's observer for an operation: the current one (the editor
+--- holds no model, spec §19.16 "End state", step 6b-α).
+--- @return loomworks.daemon.Observer|nil
+local function observer_of()
+    return require("loomworks.daemon.observer").current()
+end
+
+--- The observer for an operation (`observer_of`) when it carries `method`
+--- now, or nil.
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"launch_build"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @return loomworks.daemon.Observer|nil
+function M.carrier(method, ws)
+    local obs = observer_of()
+    if obs and obs.state ~= "stopped" and obs:can_call(method) then return obs end
+    return nil
+end
+
+--- Whether the editor has a workspace root attached (its operations go to
+--- the workspace daemon and never run in-process, §19.16 "Availability"),
+--- and its observer. With no observer (stopped) `obs` is nil and an
+--- operation is refused; with no root attached nothing is loaded.
+--- @return boolean attached, loomworks.daemon.Observer|nil obs
+function M.daemon_of()
+    local observer = require("loomworks.daemon.observer")
+    local obs = observer.current()
+    if obs then return true, obs end
+    return observer.attached_root() ~= nil, nil
+end
+
+--- Refuse an operation the daemon cannot carry now (§19.16 "Availability"):
+--- the observer's Runtime-line note as one notification line, then
+--- `k.reject(message, true)`. Nothing runs in-process.
+--- @param method string
+--- @param obs loomworks.daemon.Observer|nil
+--- @param k { reject: fun(err: any, notified: boolean|nil) }
+function M.refuse(method, obs, k)
+    local why = obs and obs.state ~= "stopped" and obs:refusal(method) or "the workspace is no longer loaded"
+    local msg = (VERB[method] or method) .. ": " .. why
+    vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+    k.reject(msg, true)
+end
+
+
+--- The artifact-conflict question (§5.9) of one block `{ profile, path? }`
+--- — a view unit row's `artifact_block` (step 5o C2d) or the editor's
+--- model's — as `cb(force|nil, err)`: no block answers `false` at once.
+--- @param block { profile?: string, path?: string }|nil
+--- @param cb fun(force: boolean|nil, err: string|nil)
+function M.ask_artifact_block(block, cb)
+    if not block then return cb(false) end
+    vim.ui.select({ "Yes", "No" }, {
+        prompt = string.format(
+            "loomworks: build would overwrite an artifact owned by built "
+                .. "profile '%s':\n  %s\nOverwrite it (that profile will be "
+                .. "marked stale)?",
+            block.profile or "?", block.path or "?"),
+    }, function(choice)
+        if choice == "Yes" then return cb(true) end
+        cb(nil, "build cancelled — would overwrite profile '" .. (block.profile or "?") .. "'")
+    end)
+end
+
+--- The reply of an owned call, under the availability rule (see the
+--- header): accepted → its `on_done` follows; declined → fails with the
+--- reason as one notification; degraded → refused with the observer's note
+--- of the method; refused → fails with its message — except a clean's
+--- refusal on stdout (`stream = "out"`, API.md §4.1: nothing to clean), the
+--- command's ordinary line: notified as INFO and resolved, so a rebuild goes
+--- on to its build (only the clean's: another method's refusal on stdout is
+--- still a failure); anything else fails (all notified here:
+--- `k.reject(message, true)`).
+--- @param method string
+--- @param obs loomworks.daemon.Observer
+--- @param k loomworks.daemon.OpContinuation
+--- @return fun(r: table)
+local function on_reply(method, obs, k)
+    local verb = VERB[method] or method
+    return function(r)
+        if r.outcome == "accepted" then return end
+        if r.outcome == "declined" then
+            local msg = string.format("the workspace daemon declined the %s (%s)", verb, tostring(r.reason))
+            vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+            return k.reject(msg, true)
+        elseif r.outcome == "degraded" then
+            return M.refuse(method, obs, k)
+        elseif r.outcome == "refused" and r.stream == "out" and method == "clean" then
+            vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.INFO)
+            return k.resolve(true)
+        elseif r.outcome == "refused" then
+            vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.ERROR)
+            return k.reject(r.message, true)
+        end
+        vim.notify(string.format("loomworks: the %s failed: %s", verb, tostring(r.reason)),
+            vim.log.levels.ERROR)
+        k.reject(r.reason, true)
+    end
+end
+
+--- Why an owned task failed (nil: it ended with exit 0).
+--- @param verb string
+--- @param task loomworks.RemoteTask|table|nil its task (or its `done`)
+--- @param reason string|nil it ended without `done`
+--- @return string|nil
+local function failure(verb, task, reason)
+    if reason then return reason end
+    if task and task.exit_code == 0 then return nil end
+    return task and (task.error or (verb .. " failed (exit " .. tostring(task.exit_code) .. ")"))
+        or (verb .. " failed")
+end
+
+--- The arguments of a launch's preparation (§19.15 "Run", "Debug", "Build
+--- scope of a launch"): the launch target as its `Launch/1.targets` record
+--- addresses it (LaunchRef:args — by the profile's, the project's ids), built
+--- as the editor's in-process launch builds it (`build_scope = "target"`).
+--- @param ref loomworks.daemon.LaunchRef
+--- @return table
+function M.launch_args(ref)
+    local a = ref:args()
+    a.build_scope = "target"
+    return a
+end
+
+--- The calls of a device target's launch (§19.16 "Devices"), in order: its
+--- build, its install and launch.
+local DEVICE_RUN = { "launch_build", "device_install", "device_launch" }
+--- The calls it adds when the profile has no device: a scan, then the choice.
+local DEVICE_CHOICE = { "device_scan", "Profiles/1.set_device" }
+
+--- Refuse a device target's launch at once when the daemon cannot carry one
+--- of its calls now (§19.16 "Availability": refused like any operation,
+--- nothing of it run — a chain that cannot finish is refused before its
+--- build): the refusal notified as `launch: <the first missing call's
+--- note>`, then true. A profile without a device (its view row's `device`)
+--- also needs the scan and the choice. False when carried.
+--- @param has_device boolean the profile's view row names a device
+--- @return boolean refused
+function M.device_run_refused(has_device)
+    local _, obs = M.daemon_of()
+    local calls = DEVICE_RUN
+    if not has_device then
+        calls = vim.list_extend(vim.list_extend({}, DEVICE_RUN), DEVICE_CHOICE)
+    end
+    for _, method in ipairs(calls) do
+        if not M.carrier(method, nil) then
+            local why = obs and obs.state ~= "stopped" and obs:refusal(method) or "the workspace is no longer loaded"
+            vim.notify("loomworks: launch: " .. why, vim.log.levels.WARN)
+            return true
+        end
+    end
+    return false
+end
+
+--- A `Launch/1` call the editor owns on a non-device launch target (§19.16
+--- "Editor operations"): the preparation of a run or debug launch
+--- (`prepare_run` / `prepare_debug`) or, step 5t, the target's build
+--- (`launch_build`, sent as `build`), under the availability rule of the
+--- header; the artifact-conflict question asked first (over the target's
+--- `artifact_block`, LaunchRef), its Yes sent as `force` (step 5t). The
+--- owned call records the profile's id (and its unit's), so a clean of the
+--- profile row pre-empts it (editor_ops.call_names_ids). Always routed
+--- (the `daemon`-mode editor's only; its targets are LaunchRefs), and it
+--- ends through `k`: `k.resolve(done)` with
+--- the task result (`launch`, or `device = true` for a foreign artifact —
+--- refused by the session tracker, spec §18.11; `debug`) once the preparation ended with exit 0 — the caller then starts
+--- the program — or `k.reject(message, notified)` (refused when the daemon
+--- cannot carry it now; no program is started).
+--- The second return value cancels the preparation (a stop, or a second
+--- launch replacing it, while it runs): nothing more reaches `k`, so no
+--- program is started — a call not yet sent is never sent, one not yet
+--- answered is cancelled once accepted, an accepted one at once
+--- (`Tasks/1.cancel` of the owned task, Observer:cancel_owned_id).
+--- Step 5n C2: a device target's install and launch (`device_install`,
+--- `device_launch`) go the same way, addressed by the profile alone (the
+--- device target is its default target, API.md §15), without the question
+--- (they build nothing).
+--- @param method "prepare_run"|"prepare_debug"|"launch_build"|"device_install"|"device_launch"
+--- @param target loomworks.daemon.LaunchRef
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil preparation (routed, not refused at once)
+local function launch_call(method, target, k)
+    local _, mode_obs = M.daemon_of()
+    local obs = M.carrier(method, nil)
+    if not obs then
+        M.refuse(method, mode_obs, k)
+        return true
+    end
+    local verb = VERB[method]
+    --- @class loomworks.daemon.Preparation
+    --- @field cancelled boolean|nil cancelled: nothing more reaches its continuation
+    --- @field task_id any|nil its owned task, once accepted
+    --- @field conn loomworks.daemon.Conn|nil the connection it was sent on (a device launch is forgotten with it, API.md §15)
+    --- @field cancel fun(self: loomworks.daemon.Preparation)
+    local p = {}
+    function p.cancel(self)
+        if self.cancelled then return end
+        self.cancelled = true
+        if self.task_id ~= nil then obs:cancel_owned_id(self.task_id) end
+    end
+    -- Every outcome is dropped once cancelled (a refusal or failure is not
+    -- notified either: the user stopped it).
+    local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
+    local kk = { resolve = live(k.resolve), reject = live(k.reject) }
+    local reply = on_reply(method, obs, kk)
+    local function send(force)
+        if p.cancelled then return end
+        if not obs:can_call(method) then return M.refuse(method, obs, kk) end
+        local args
+        if method == "launch_build" then
+            args = M.target_build_args(target)
+        elseif method == "device_install" or method == "device_launch" then
+            args = M.device_args(target)
+        else
+            args = M.launch_args(target)
+        end
+        if force then args.force = true end
+        p.conn = obs.conn
+        obs:start_owned(method, args, {
+            profile_id = target.profile_id, unit_ids = target.unit_id and { target.unit_id } or nil,
+            on_reply = function(r)
+                if r.outcome == "accepted" then
+                    p.task_id = r.task_id
+                    if p.cancelled then obs:cancel_owned_id(r.task_id) end
+                end
+                if p.cancelled then return end
+                reply(r)
+            end,
+            on_done = function(task, reason, done)
+                -- Its id also from its task (a `done` handled before the
+                -- reply's scheduled `on_reply`): a device launch's stop names it.
+                if p.task_id == nil and type(task) == "table" and task.id ~= nil then p.task_id = task.id end
+                local err = failure(verb, task, reason)
+                if err then return kk.reject(err) end
+                kk.resolve(type(done) == "table" and done or {})
+            end,
+        })
+    end
+    -- The artifact-conflict question (§5.9) over the units the launch's
+    -- build builds, before the call; its Yes travels as `force` (step 5t).
+    local function go()
+        if p.cancelled then return end
+        if method == "device_install" or method == "device_launch" then return send(false) end
+        M.ask_artifact_block(target.artifact_block, function(force, err)
+            if err then
+                if p.cancelled then return end
+                vim.notify("loomworks: " .. err, vim.log.levels.WARN)
+                return kk.reject(err, true)
+            end
+            send(force)
+        end)
+    end
+    go()
+    return true, p
+end
+
+--- Prepare a run (`mode` "launch") or debug launch of a non-device launch
+--- target through the daemon (see launch_call).
+--- @param mode "launch"|"debug"
+--- @param target loomworks.daemon.LaunchRef
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil preparation (routed, not refused at once)
+function M.prepare(mode, target, k)
+    return launch_call(mode == "debug" and "prepare_debug" or "prepare_run", target, k)
+end
+
+--- The arguments of a launch target's build (`Launch/1.build`, §19.15
+--- "Build of a launch target"): the launch target addressed as a
+--- preparation addresses it — no `build_scope`, `cwd`, `extra` or
+--- `no_build`, which the build does not take.
+--- @param target loomworks.daemon.LaunchRef
+--- @return table
+function M.target_build_args(target)
+    return target:args()
+end
+
+--- Build a non-device launch target through the daemon (step 5t, §19.16
+--- "Editor operations"): ONE `Launch/1.build` the editor owns — the
+--- daemon builds its dependencies, runs its pre-build deploy and builds its
+--- own unit, reporting each as a step; nothing of it runs in the editor.
+--- The artifact-conflict question is asked before the call, its Yes sent as
+--- `force`. It ends through `k` as M.prepare does:
+--- `k.resolve(done)` once the task ended with exit 0, else
+--- `k.reject(message, notified)` (refused when the daemon cannot carry it
+--- now — never built in the editor).
+--- @param target loomworks.daemon.LaunchRef
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
+function M.build_target(target, k)
+    return launch_call("launch_build", target, k)
+end
+
+--- The arguments of a device target's install or launch (API.md §15
+--- `TargetParams`): its profile only — a device target is reached only as
+--- its profile's default target, so `target` (and `project`, which only
+--- scopes a name) is omitted.
+--- @param target loomworks.daemon.LaunchRef
+--- @return table
+function M.device_args(target)
+    return { profile = { id = target.profile_id } }
+end
+
+--- Install (`"install"`) or launch (`"launch"`) a built device target on
+--- its profile's device through the daemon (step 5n C2, §19.16 "Devices"):
+--- one `Devices/1.install` / `launch` task the editor owns, under the
+--- availability rule; it ends through `k` as M.prepare does —
+--- `k.resolve(done)` (a launch's `{ pid?, bundle? }`, `task_id`, the id a
+--- stop names, and `connection`, the one it was sent on: the daemon forgets
+--- the launch with it, M.launch_forgotten) once the task ended with exit 0,
+--- else `k.reject(message, notified)`.
+--- @param step "install"|"launch"
+--- @param target loomworks.daemon.LaunchRef
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
+function M.device_step(step, target, k)
+    local handle
+    local routed
+    routed, handle = launch_call("device_" .. step, target, {
+        resolve = function(done)
+            local out = vim.tbl_extend("force", {}, done)
+            out.task_id = handle and handle.task_id
+            out.connection = handle and handle.conn
+            k.resolve(out)
+        end,
+        reject = k.reject,
+    })
+    return routed, handle
+end
+
+--- Has the daemon forgotten a device launch sent on `conn` (a launch's
+--- `done.connection`, M.device_step)? It forgets one when its owner's
+--- connection closes (API.md §15) — a disconnect, a daemon restart — so the
+--- program is no longer the editor's to stop.
+--- @param conn loomworks.daemon.Conn|nil
+--- @return boolean
+function M.launch_forgotten(conn)
+    return conn == nil or conn.closed == true
+end
+
+--- Stop the program a device launch task of the editor launched
+--- (`Devices/1.stop { task }`, API.md §15), sent on `conn`. A launch the
+--- daemon has forgotten (M.launch_forgotten: its connection closed, also
+--- while the stop is in flight) is already stopped: `cb(true)`, nothing
+--- sent or notified. Else `cb(ok, err)` once, on the main loop; `err` was
+--- notified (a refusal, a stop the daemon cannot carry now, a failure).
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param task_id any the launch's task id
+--- @param conn loomworks.daemon.Conn|nil the connection the launch was sent on
+--- @param cb? fun(ok: boolean, err: string|nil)
+function M.device_stop(ws, task_id, conn, cb)
+    cb = cb or function() end
+    local function gone() return M.launch_forgotten(conn) end
+    if gone() then return cb(true) end
+    M.plain("device_stop", ws, { task = task_id }, cb, gone)
+end
+
+--- Stream the log of the program a device launch task of the editor
+--- launched (`Launch/1.device_log { task }`, API.md §9.5; step 5n C3): one
+--- task the editor owns, sent on the launch's connection `conn`, under the
+--- availability rule. Accepted, its records arrive through a subscription
+--- to the `/launch` `log` signal naming the task (Observer:subscribe_log)
+--- and go to `sink.records(records, dropped)`; its `start` meta `level` to
+--- `sink.level`, its lines to `sink.line`. `sink.ended(err)` once: the task
+--- ended (`err` nil for exit 0), was refused or failed (notified), the
+--- launch was forgotten (its connection closed, M.launch_forgotten), or the
+--- connection was lost. The handle's `cancel()` (the view closed, the run
+--- stopped) cancels the task and drops the subscription; nothing more
+--- reaches the sink then. nil handle: ended at once.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param launch_task any the launch's task id
+--- @param conn loomworks.daemon.Conn|nil the connection the launch was sent on
+--- @param sink loomworks.DeviceLogSink
+--- @return { cancel: fun(self: table), task_id: any }|nil handle
+function M.device_log(ws, launch_task, conn, sink)
+    local _, mode_obs = M.daemon_of()
+    local obs = M.carrier("device_log", ws)
+    if not obs then
+        M.refuse("device_log", mode_obs, { reject = function(msg) sink.ended(msg) end })
+        return nil
+    end
+    -- The daemon forgets a launch with its owner's connection (API.md §15):
+    -- a log of it from another connection is another client's — never sent.
+    if M.launch_forgotten(conn) or obs.conn ~= conn then
+        sink.ended("the program's launch was forgotten (the workspace daemon disconnected)")
+        return nil
+    end
+    local h = {}
+    local ended = false
+    local function finish(err)
+        if ended or h.cancelled then return end
+        ended = true
+        if h.task_id ~= nil then obs:unsubscribe_log(h.task_id) end
+        sink.ended(err)
+    end
+    function h.cancel(self)
+        if self.cancelled or ended then return end
+        self.cancelled = true
+        if self.task_id ~= nil then
+            obs:unsubscribe_log(self.task_id)
+            obs:cancel_owned_id(self.task_id)
+        end
+    end
+    local reply = on_reply("device_log", obs, { resolve = function() end, reject = function(err) finish(err) end })
+    obs:start_owned("device_log", { task = launch_task }, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then
+                h.task_id = r.task_id
+                if h.cancelled then return obs:cancel_owned_id(r.task_id) end
+                return obs:subscribe_log(conn, r.task_id, function(args)
+                    if not (h.cancelled or ended) then sink.records(args.records, args.dropped) end
+                end, function(msg)
+                    if h.cancelled or ended then return end
+                    -- No records can arrive: the task is of no use (gone
+                    -- already with a connection no longer the observer's).
+                    -- The message is the view's end line only.
+                    if obs.conn == conn and not conn.closed then obs:cancel_owned_id(r.task_id) end
+                    finish(msg)
+                end)
+            end
+            if h.cancelled then return end
+            reply(r)
+        end,
+        on_start = function(meta)
+            if not (h.cancelled or ended) then sink.level(meta.level) end
+        end,
+        on_line = function(text)
+            if not (h.cancelled or ended) then sink.line(text) end
+        end,
+        on_done = function(task, reason)
+            if h.task_id == nil and type(task) == "table" and task.id ~= nil then h.task_id = task.id end
+            finish(failure("device log", task, reason))
+        end,
+    })
+    return h
+end
+
+--- A plain Devices/1 or Profiles/1 write the editor sends (`device_stop`,
+--- `Profiles/1.set_device`, `Profiles/1.clear_device`): refused at once
+--- when not carried; its
+--- `refused` / `declined` result, a degraded method or a failure end it
+--- with that message (notified); `ok` ends it with `cb(true)`. With `moot`,
+--- an answer that arrives once `moot()` holds ends it with `cb(true)`,
+--- unnotified (a device stop whose launch the daemon forgot meanwhile).
+--- @param method "device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param args table
+--- @param cb fun(ok: boolean, err: string|nil)
+--- @param moot? fun(): boolean
+function M.plain(method, ws, args, cb, moot)
+    local _, mode_obs = M.daemon_of()
+    local obs = M.carrier(method, ws)
+    if not obs then
+        return M.refuse(method, mode_obs, { reject = function(msg) cb(false, msg) end })
+    end
+    local verb = VERB[method] or method
+    obs:request(method, args, function(r)
+        if moot and moot() then return cb(true) end
+        local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
+        if res and res.outcome == "ok" then return cb(true) end
+        if r.outcome == "degraded" then
+            return M.refuse(method, obs, { reject = function(msg) cb(false, msg) end })
+        end
+        local msg
+        if res and res.outcome == "refused" then
+            msg = verb .. ": " .. tostring(res.message)
+        elseif res and res.outcome == "declined" then
+            msg = string.format("the workspace daemon declined the %s (%s)", verb, tostring(res.reason))
+        else
+            msg = string.format("the %s failed: %s", verb, tostring(r.reason or (res and res.outcome) or "?"))
+        end
+        vim.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        cb(false, msg)
+    end)
+end
+
+--- The device registry of `ws` as the daemon last reported it
+--- (`Devices/1.list`, the observer's cache), or nil while not carried or
+--- not read yet (a read is started then; its end emits `daemon_devices`).
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @return loomworks.DeviceRecord[]|nil
+function M.devices(ws)
+    local obs = M.carrier("device_list", ws)
+    return obs and obs:devices() or nil
+end
+
+--- `cb(list)` with the registry of `ws` once read (see Observer:with_devices,
+--- `fresh` as there); `cb(nil, err)` when not carried (refused) or the read
+--- failed — never an empty list for a failed read — with `err` notified.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param cb fun(list: loomworks.DeviceRecord[]|nil, err: string|nil)
+--- @param fresh? boolean
+function M.with_devices(ws, cb, fresh)
+    local _, mode_obs = M.daemon_of()
+    local obs = M.carrier("device_list", ws)
+    if not obs then
+        return M.refuse("device_list", mode_obs, { reject = function(msg) cb(nil, msg) end })
+    end
+    obs:with_devices(function(list, reason)
+        if list then return cb(list) end
+        local msg = VERB.device_list .. ": " .. tostring(reason or "the device list could not be read")
+        vim.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        cb(nil, msg)
+    end, fresh)
+end
+
+--- Scan for devices through the daemon (step 5n C2): one `Devices/1.scan`
+--- task the editor owns, carrying its environment; then the registry read
+--- again. Ends through `k`: `k.resolve(list)` (the registry after the scan),
+--- else `k.reject(message, notified)` — refused at once when not carried, a
+--- failed read of the registry its error (notified), never an empty list.
+--- The handle cancels it (its task
+--- once accepted, `Tasks/1.cancel`); nothing more reaches `k` then.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param k { resolve: fun(list: loomworks.DeviceRecord[]), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
+function M.scan_devices(ws, k)
+    local _, mode_obs = M.daemon_of()
+    local obs = M.carrier("device_scan", ws)
+    if not obs then
+        M.refuse("device_scan", mode_obs, k)
+        return true
+    end
+    --- @type loomworks.daemon.Preparation
+    local p = {}
+    function p.cancel(self)
+        if self.cancelled then return end
+        self.cancelled = true
+        if self.task_id ~= nil then obs:cancel_owned_id(self.task_id) end
+    end
+    local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
+    local kk = { resolve = live(k.resolve), reject = live(k.reject) }
+    local reply = on_reply("device_scan", obs, kk)
+    p.conn = obs.conn
+    obs:start_owned("device_scan", {}, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then
+                p.task_id = r.task_id
+                if p.cancelled then obs:cancel_owned_id(r.task_id) end
+            end
+            if p.cancelled then return end
+            reply(r)
+        end,
+        on_done = function(task, reason)
+            local err = failure(VERB.device_scan, task, reason)
+            if err then return kk.reject(err) end
+            M.with_devices(ws, function(list, lerr)
+                if list then return kk.resolve(list) end
+                kk.reject(lerr, true)
+            end, true)
+        end,
+    })
+    return true, p
+end
+
+--- The discovery of the active profile's tests through the daemon (step 5m
+--- C1, §19.16 "Tests" Discovery): one `Tests/1.discover` the editor owns
+--- (one overseer row, cancellable), carrying its environment. False when it
+--- cannot be carried now — the caller shows the tests' status; there is
+--- **no** in-process fallback, so a `declined`, a degraded method, a refusal
+--- and a failure all end through `k.reject` with one notification line. The
+--- tree itself arrives as the view's `update` (it precedes `done`).
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param opts? { force?: boolean }
+--- @param k { resolve: fun(done: table), reject: fun(err: any) }
+--- @return boolean routed
+function M.discover_tests(ws, opts, k)
+    local obs = M.carrier("discover", ws)
+    if not obs then return false end
+    local args = {}
+    if opts and opts.force then args.force = true end
+    obs:start_owned("discover", args, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then return end
+            local why
+            if r.outcome == "refused" then
+                why = tostring(r.message)
+            elseif r.outcome == "declined" then
+                why = "the workspace daemon declined the test discovery (" .. tostring(r.reason) .. ")"
+            else
+                why = "the test discovery failed: " .. tostring(r.reason)
+            end
+            vim.notify("loomworks: " .. why, vim.log.levels.WARN)
+            k.reject(why)
+        end,
+        on_done = function(task, reason, done)
+            local err = failure(VERB.discover, task, reason)
+            if err then return k.reject(err) end
+            k.resolve(type(done) == "table" and done or {})
+        end,
+    })
+    return true
+end
+
+--- Why an owned test call did not run (step 5m C2): its reply's outcome as
+--- one line — never a fallback, the tests are not run in-process.
+--- @param verb string
+--- @param r table the reply (`refused`, `declined`, `degraded`, `failed`)
+--- @return string
+local function test_refusal(verb, r)
+    if r.outcome == "refused" then return tostring(r.message) end
+    if r.outcome == "declined" then
+        return "the workspace daemon declined the " .. verb .. " (" .. tostring(r.reason) .. ")"
+    elseif r.outcome == "degraded" then
+        return "the workspace daemon cannot carry the " .. verb .. " (" .. tostring(r.reason) .. ")"
+    end
+    return "the " .. verb .. " failed: " .. tostring(r.reason)
+end
+
+--- An owned `Tests/1` task (`run_cases`, `prepare_test_debug`) of the
+--- workspace `ws`'s daemon (step 5m C2, §19.16 "Tests" Runs, Debug): one
+--- overseer row the editor owns. False when it cannot be carried now — the
+--- caller refuses with the tests' status; nothing runs in-process. Otherwise
+--- true and a handle whose `cancel` stops it (`Tasks/1.cancel` once
+--- accepted; nothing more reaches `k` then), and it ends through `k`:
+--- `k.resolve(done, err)` with the task result once it ended with a
+--- `done` frame — `err` nil after exit 0, else why it failed; the caller
+--- reads its result either way — or
+--- `k.reject(message)` (not accepted: refused, declined, degraded, failed;
+--- or the task ended without `done`: the connection lost). Nothing is
+--- notified here.
+--- @param method "run_cases"|"prepare_test_debug"
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param args table
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) } (`accepted` once the reply accepted it)
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed only)
+local function owned_test_call(method, ws, args, k)
+    local obs = M.carrier(method, ws)
+    if not obs then return false end
+    local verb = VERB[method]
+    local p = {}
+    function p.cancel(self)
+        if self.cancelled then return end
+        self.cancelled = true
+        if self.task_id ~= nil then obs:cancel_owned_id(self.task_id) end
+    end
+    local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
+    local resolve, reject = live(k.resolve), live(k.reject)
+    obs:start_owned(method, args, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then
+                p.task_id = r.task_id
+                if p.cancelled then return obs:cancel_owned_id(r.task_id) end
+                if k.accepted then k.accepted(r.task_id) end
+                return
+            end
+            reject(test_refusal(verb, r))
+        end,
+        on_done = function(task, reason, done)
+            if reason or type(done) ~= "table" then return reject(failure(verb, task, reason)) end
+            resolve(done, failure(verb, task, nil))
+        end,
+    })
+    return true, p
+end
+
+--- Run test nodes through the daemon (step 5m C2, §19.16 "Tests" Runs): one
+--- `Tests/1.run_cases` the editor owns (`select` the nodes' view ids, none
+--- for run-all; `no_build`). Ends through `k` as owned_test_call: a run
+--- that ran (its result carries `cases`, failed tests included) resolves.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param select string[]|nil
+--- @param opts { no_build?: boolean }|nil
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle
+function M.run_tests(ws, select, opts, k)
+    local args = {}
+    if select and #select > 0 then
+        args.select = {}
+        for i, id in ipairs(select) do args.select[i] = { id = id } end
+    end
+    if opts and opts.no_build then args.no_build = true end
+    return owned_test_call("run_cases", ws, args, k)
+end
+
+--- Prepare debugging one test node through the daemon (step 5m C2, §19.16
+--- "Tests" Debug): one `Tests/1.prepare_debug` the editor owns (`select` one
+--- node, an object), resolving with its result (`debug`, `prepared`) or the
+--- failure's `error` as owned_test_call ends.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param id string the node's view id
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle
+function M.prepare_test_debug(ws, id, k)
+    return owned_test_call("prepare_test_debug", ws, { select = { id = id } }, k)
+end
+
+--- A plain `Tests/1` call (`collect`, `result`) of `ws`'s daemon: `cb(result,
+--- err)` once on the main loop — the reply (a `refused` / `declined` one as
+--- the daemon sent it, `err` its message), or nil and why. False when not
+--- carried now (`cb` is not called).
+--- @param method "collect"|"result"
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param args table
+--- @param cb fun(result: table|nil, err: string|nil)
+--- @return boolean sent
+local function test_request(method, ws, args, cb)
+    local obs = M.carrier(method, ws)
+    if not obs then return false end
+    obs:request(method, args, function(r)
+        if r.outcome ~= "ok" then return cb(nil, tostring(r.reason)) end
+        local res = type(r.result) == "table" and r.result or {}
+        if res.outcome == "refused" then return cb(nil, tostring(res.message)) end
+        if res.outcome == "declined" then return cb(nil, tostring(res.reason)) end
+        cb(res, nil)
+    end)
+    return true
+end
+
+--- After a prepared test debug session (or instead of one: the adapter was
+--- not installed): `Tests/1.collect { prepared }` — the daemon reads the
+--- results the program wrote, records them and drops the token
+--- (§19.16 "Tests" Debug). `cb(cases|nil, err)`.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param prepared string
+--- @param cb fun(cases: table[]|nil, err: string|nil)
+--- @return boolean sent
+function M.collect_tests(ws, prepared, cb)
+    return test_request("collect", ws, { prepared = prepared }, function(res, err)
+        if not res then return cb(nil, err) end
+        cb(type(res.cases) == "table" and res.cases or {}, nil)
+    end)
+end
+
+--- A node's last result with its output and error locations
+--- (`Tests/1.result { id }`, §19.16 "Tests" Output). `cb(result|nil, err)`.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param id string
+--- @param cb fun(result: table|nil, err: string|nil)
+--- @return boolean sent
+function M.test_result(ws, id, cb)
+    return test_request("result", ws, { id = id }, cb)
+end
+
+--- Cancel the running calls the editor owns that `match` selects and call
+--- `done()` once each has ended (step 5o C2c-2: before a confirmed deletion
+--- or nuke, so the daemon does not refuse it on the editor's own build's
+--- lock — as M.clean pre-empts the units' tasks). `match(task, call)` gets
+--- the call's RemoteTask, or nil while its `start` has not arrived, and the
+--- call (an Observer:owned_calls entry: the ids it was sent with). No observer
+--- (or nothing selected): `done()` at once. Another client's task is never
+--- cancelled; the daemon refuses on its lock, naming it.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param match fun(task: loomworks.RemoteTask|nil, call: table): boolean
+--- @param done fun()
+function M.cancel_owned_matching(ws, match, done)
+    local obs = observer_of()
+    local ids = {}
+    for _, call in ipairs(obs and obs:owned_calls() or {}) do
+        if match(call.task, call) then ids[#ids + 1] = call.id end
+    end
+    local left = #ids
+    if left == 0 then return done() end
+    for _, id in ipairs(ids) do
+        obs:cancel_owned_id(id, function()
+            left = left - 1
+            if left == 0 then done() end
+        end)
+    end
+end
+
+--- The arguments of a call naming its scope by view row ids (step 5o C2d):
+--- the profile `{ id }`, else the units `{ { id } }`.
+--- @param scope { profile_id?: string, unit_ids: string[] }
+--- @param opts { jobs?: integer, force?: boolean }
+--- @return table
+function M.ids_args(scope, opts)
+    local a = { interactive = false }
+    if scope.profile_id ~= nil then
+        a.profile = { id = scope.profile_id }
+    else
+        a.units = {}
+        for i, id in ipairs(scope.unit_ids or {}) do a.units[i] = { id = id } end
+    end
+    if opts.jobs then a.jobs = tonumber(opts.jobs) end
+    if opts.force then a.force = true end
+    return a
+end
+
+--- Whether the owned call `call` (an Observer:owned_calls entry) runs the
+--- profile `profile_id` or one of the units `unit_ids`: by its task's meta
+--- ids once its `start` arrived (RemoteTask:names_ids), else by the ids it
+--- was sent with (a call by row ids). A call by objects whose task has not
+--- started names no id: it matches nothing here.
+--- @param call { task: loomworks.RemoteTask|nil, unit_ids: string[]|nil, profile_id: string|nil }
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @return boolean
+function M.call_names_ids(call, profile_id, unit_ids)
+    if call.task then return call.task:names_ids(profile_id, unit_ids) end
+    if profile_id ~= nil and call.profile_id == profile_id then return true end
+    local want = {}
+    for _, id in ipairs(unit_ids or {}) do want[id] = true end
+    for _, id in ipairs(call.unit_ids or {}) do
+        if want[id] then return true end
+    end
+    return false
+end
+
+--- The running calls the editor owns that run the profile `profile_id` or
+--- one of the units `unit_ids` (M.call_names_ids): what a clean of those
+--- rows stops first.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @return { id: any, task: loomworks.RemoteTask|nil }[]
+function M.owned_on_ids(ws, profile_id, unit_ids)
+    local obs = observer_of()
+    local out = {}
+    for _, call in ipairs(obs and obs:owned_calls() or {}) do
+        if M.call_names_ids(call, profile_id, unit_ids) then out[#out + 1] = call end
+    end
+    return out
+end
+
+--- The tasks observed through `Tasks/1` — the editor's own and other
+--- clients' — whose `start` meta names the profile `profile_id` or one of the
+--- units `unit_ids` (RemoteTask:names_ids; view row ids, step 5o C2d-2 —
+--- never by key): the running ones in start order and, with `ended`, then
+--- the observer's last ended ones (Observer:ended_tasks, oldest first).
+--- None without an observer.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @param ended? boolean
+--- @return loomworks.RemoteTask[]
+function M.tasks_on_ids(ws, profile_id, unit_ids, ended)
+    local obs = observer_of()
+    local out = {}
+    if not obs then return out end
+    for _, t in ipairs(obs:tasks()) do
+        if not t.finished and t:names_ids(profile_id, unit_ids) then out[#out + 1] = t end
+    end
+    if ended then
+        for _, t in ipairs(obs:ended_tasks()) do
+            if t:names_ids(profile_id, unit_ids) then out[#out + 1] = t end
+        end
+    end
+    return out
+end
+
+--- The status page's cancel of a profile or unit row (step 5o C2d-2; spec
+--- §19.16 "Editor operations"): each running task naming the row's ids
+--- (M.tasks_on_ids) that the editor owns is cancelled (`Tasks/1.cancel`,
+--- Observer:cancel_owned) — the whole task, even when it runs more than the
+--- row (a unit's cancel stops its profile's build, as the in-process chain
+--- aborts); another client's task is never cancelled: its read-only line
+--- (`started by … — cancel it there`) is notified. Returns the tasks asked
+--- to stop.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @return loomworks.RemoteTask[]
+function M.cancel_on_ids(ws, profile_id, unit_ids)
+    local obs = observer_of()
+    local stopped = {}
+    for _, t in ipairs(M.tasks_on_ids(ws, profile_id, unit_ids)) do
+        if t.owned then
+            obs:cancel_owned(t)
+            stopped[#stopped + 1] = t
+        else
+            vim.notify(require("loomworks.daemon.task_runner").read_only_message(t), vim.log.levels.WARN)
+        end
+    end
+    return stopped
+end
+
+--- Run a status-page operation on its rows by id (step 5o C2d; spec §19.16
+--- "Editor operations"): `method` a `Build/1` call naming the profile row's
+--- id (`scope.profile_id`; `scope.unit_ids` its unit rows' ids, recorded on
+--- the owned call) or the unit rows' ids (`scope.unit_ids`), as one task the
+--- editor owns — under the availability rule of M.run (refused when not
+--- carried now, never run in-process; the outcomes notified as M.run's)
+--- (ui/model_calls' routed `Build/1` methods).
+---   * a build asks the artifact-conflict question first from the rows'
+---     `opts.artifact_block` (never the editor's model), its Yes sent as
+---     `force`;
+---   * a clean first cancels the editor's own calls running the profile or
+---     any of the units (M.owned_on_ids) and waits for each to end, as M.clean
+---     does by objects; another client's task is never cancelled — the clean
+---     meets its build-directory locks.
+--- The editor waits on no in-process deletion: it runs none (step 5o
+--- C2c-2).
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param method "build"|"configure"|"clean"
+--- @param scope { profile_id?: string, unit_ids: string[] }
+--- @param opts? { jobs?: integer, force?: boolean, artifact_block?: { profile?: string, path?: string } }
+--- @param k loomworks.daemon.OpContinuation
+function M.run_ids(ws, method, scope, opts, k)
+    local _, mode_obs = M.daemon_of()
+    local obs = M.carrier(method, ws)
+    if not obs then return M.refuse(method, mode_obs, k) end
+    opts = opts or {}
+    local verb = VERB[method] or method
+
+    local function send(force)
+        -- Still carried? (A question asked, or a cancel waited for, may have
+        -- outlived the connection: nothing ran yet — refused.)
+        if not obs:can_call(method) then return M.refuse(method, obs, k) end
+        obs:start_owned(method, M.ids_args(scope, { jobs = opts.jobs, force = opts.force or force }), {
+            unit_ids = scope.unit_ids, profile_id = scope.profile_id,
+            on_reply = on_reply(method, obs, k),
+            on_done = function(task, reason, done)
+                local err = failure(verb, task, reason)
+                if err then
+                    -- A clean whose only failure is the profile's invalid
+                    -- ProfileProjects (core §5.4): the daemon's task result
+                    -- names them as `not_run` (a rebuild goes on to build).
+                    local result = (not reason and done) and require("loomworks.daemon.observer").done_result(done)
+                    local not_run = method == "clean" and type(result) == "table"
+                        and type(result.not_run) == "table" and result.not_run or nil
+                    return k.reject(err, nil, not_run)
+                end
+                k.resolve(true)
+            end,
+        })
+    end
+
+    if method == "clean" then
+        return M.cancel_owned_matching(ws, function(_, call)
+            return M.call_names_ids(call, scope.profile_id, scope.unit_ids)
+        end, function() send(false) end)
+    end
+    if method ~= "build" or opts.force then return send(false) end
+    M.ask_artifact_block(opts.artifact_block, function(force, err)
+        if err then
+            vim.notify("loomworks: " .. err, vim.log.levels.WARN)
+            return k.reject(err, true)
+        end
+        send(force)
+    end)
+end
+
+--- Send an owned task's call again (its task-runner restart, §19.16 "Tasks in
+--- the task runner"; loomworks.daemon.task_runner): the same method and
+--- arguments — a build's `force` as answered the first time.
+--- `h.accepted(task_id)` once the daemon accepted it
+--- (its `start` then binds to `h.runner`); `h.failed(why)` when it does not
+--- run: not carried now, declined, refused, or failed. A restart never falls
+--- back to in-process: the task-runner task fails with the reason. A
+--- launch's preparation (M.NO_RESTART) is never sent again: its restart
+--- fails with the reason at once (step 5k C2).
+--- @param obs loomworks.daemon.Observer
+--- @param call { method: string, args: table, units: loomworks.ConfigUnit[]|nil, unit_ids: string[]|nil, profile_id: string|nil }
+--- @param h { runner: loomworks.daemon.RunnerStrategy, accepted: fun(id: any), failed: fun(why: string) }
+function M.rerun(obs, call, h)
+    if M.NO_RESTART[call.method] then
+        return h.failed("a launch is not restarted here — start it again from the editor")
+    end
+    local function go()
+        if not (obs and obs.state ~= "stopped" and obs:can_call(call.method)) then
+            return h.failed("the workspace daemon cannot run it now")
+        end
+        obs:start_owned(call.method, call.args, {
+            units = call.units, unit_ids = call.unit_ids, profile_id = call.profile_id,
+            runner = h.runner,
+            on_reply = function(r)
+                if r.outcome == "accepted" then return h.accepted(r.task_id) end
+                h.failed(tostring(r.message or r.reason or r.outcome))
+            end,
+            on_done = function() end,
+        })
+    end
+    go()
+end
+
+--- Cancel a running task the editor owns (the status page's Cancel):
+--- `Tasks/1.cancel`. False when it is not the editor's (another client's
+--- task is cancelled there, §19.15).
+--- @param task loomworks.RemoteTask
+--- @return boolean
+function M.cancel(task)
+    local obs = require("loomworks.daemon.observer").current()
+    if not (obs and task and task.owned) then return false end
+    obs:cancel_owned(task)
+    return true
+end
+
+--- The debug adapters section's records (§19.16 "Editor operations"):
+--- `DebugConfig/1.adapters` as read on this connection — nil and why while
+--- it is not carried (the section is unavailable), and while its first read
+--- is in flight or after it failed; never the in-process mapping.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @return { language: string, adapter?: string, default?: string, known: string[], overridden: boolean }[]|nil records
+--- @return string|nil why
+function M.debug_adapters(ws)
+    local _, obs = M.daemon_of()
+    if not (obs and obs.state ~= "stopped") then return nil, "the workspace is no longer loaded" end
+    if not obs:can_call("adapters") then return nil, obs:refusal("adapters") end
+    local records = obs:debug_adapters()
+    if records then return records end
+    if obs._debug_fetch then return nil, "reading them from the workspace daemon" end
+    return nil, "the workspace daemon did not answer DebugConfig/1.adapters"
+end
+
+--- Every language a debug launch may name (§8.9.6 "Language-based adapter
+--- resolution"; the launch editor's "Add debug language"): **only**
+--- `DebugConfig/1.known_languages` — not carried, degraded, `declined` or
+--- failed, `cb(nil, why)`; never the in-process list. `cb(languages, why)`
+--- on the main loop.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param cb fun(languages: string[]|nil, why: string|nil)
+function M.debug_languages(ws, cb)
+    local _, obs = M.daemon_of()
+    if not (obs and obs.state ~= "stopped") then return cb(nil, "the workspace is no longer loaded") end
+    if not obs:can_call("known_languages") then return cb(nil, obs:refusal("known_languages")) end
+    obs:request("known_languages", {}, function(r)
+        if r.outcome == "degraded" then return cb(nil, obs:refusal("known_languages")) end
+        local res = type(r.result) == "table" and r.result or {}
+        if r.outcome ~= "ok" then return cb(nil, tostring(r.reason)) end
+        if res.outcome == "declined" then
+            return cb(nil, "the workspace daemon declined it (" .. tostring(res.reason) .. ")")
+        end
+        if res.outcome ~= "ok" or type(res.languages) ~= "table" then
+            return cb(nil, tostring(res.message or "the workspace daemon did not answer DebugConfig/1.known_languages"))
+        end
+        local langs = {}
+        for _, l in ipairs(res.languages) do
+            if type(l) == "string" then langs[#langs + 1] = l end
+        end
+        cb(langs)
+    end)
+end
+
+--- The language → adapter mapping a debug launch the daemon prepares is
+--- checked against before the call (§8.9.6, §19.16 "Editor operations"):
+--- the daemon's own (`DebugConfig/1.adapters`, the cached read, else a read
+--- now) while it is carried. `cb(resolve)` on the
+--- main loop, `resolve(language)` → adapter|nil, named (the records name
+--- the language); `cb(nil)` when DebugConfig/1 is not carried, or its read
+--- failed or was declined: no check before the call (debug.run checks the
+--- prepared adapter). Never the editor's in-process mapping — a language the
+--- daemon's records do not name resolves to nil, not named (unchecked too).
+--- @param cb fun(resolve: (fun(language: string): string|nil, boolean)|nil)
+function M.debug_adapter_resolver(cb)
+    local obs = observer_of()
+    if not (obs and obs.state ~= "stopped" and obs:can_call("adapters")) then return cb(nil) end
+    obs:with_debug_adapters(function(records)
+        if not records then return cb(nil) end
+        local by = {}
+        for _, r in ipairs(records) do
+            if type(r) == "table" and type(r.language) == "string" then by[r.language] = r end
+        end
+        cb(function(language)
+            local r = by[language]
+            if not r then return nil, false end
+            return type(r.adapter) == "string" and r.adapter or nil, true
+        end)
+    end)
+end
+
+--- Set a language's debug adapter (`adapter` nil: back to the default) in
+--- the working copy: **only** `DebugConfig/1.set_adapter` — not carried,
+--- degraded, `declined`, `refused` or failed, the write fails with why as
+--- one notification line and nothing is written (§19.16 "Availability").
+--- `cb(ok, err)` on the main loop.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param language string
+--- @param adapter string|nil
+--- @param cb? fun(ok: boolean, err: string|nil)
+function M.set_debug_adapter(ws, language, adapter, cb)
+    cb = cb or function() end
+    local function fail(err)
+        vim.notify("loomworks: debug adapter not saved: " .. tostring(err), vim.log.levels.ERROR)
+        cb(false, err)
+    end
+    local _, obs = M.daemon_of()
+    if not (obs and obs.state ~= "stopped") then return fail("the workspace is no longer loaded") end
+    if not obs:can_call("set_adapter") then return fail(obs:refusal("set_adapter")) end
+    obs:request("set_adapter", { language = language, adapter = adapter }, function(r)
+        if r.outcome == "degraded" then return fail(obs:refusal("set_adapter")) end
+        local res = type(r.result) == "table" and r.result or {}
+        if r.outcome == "ok" and res.outcome == "declined" then
+            return fail("the workspace daemon declined it (" .. tostring(res.reason) .. ")")
+        end
+        local err = r.outcome ~= "ok" and r.reason or (res.outcome ~= "ok" and (res.message or res.outcome)) or nil
+        if err then return fail(err) end
+        obs:_refetch_debug_adapters()
+        cb(true)
+    end)
+end
+
+--- Set a language server's option (`value` nil: removes the key) in the
+--- working copy (§19.16 "LSP configuration" Options):
+--- **only** through `LspConfig/1.set_option` — the editor never writes
+--- user.json `lsp` itself, and applies the option only from the state it
+--- reads back, not from its own write. Every other outcome is an error,
+--- notified with what happened, and nothing is written: the interface not
+--- carried, a `refused` result (the daemon's message), an `invalid_args`
+--- (an unknown server or key, a value its schema rejects), a `declined`
+--- one, or a call that failed or got no answer (a timeout, the connection
+--- lost). `cb(ok, err)` on the main loop.
+--- @param ws any unused (the editor holds no model, step 6b-α)
+--- @param server string
+--- @param key string
+--- @param value any
+--- @param cb? fun(ok: boolean, err: string|nil)
+--- @return boolean sent false when it failed at once (notified, `cb` called)
+--- @return string|nil err
+function M.set_lsp_option(ws, server, key, value, cb)
+    cb = cb or function() end
+    local function fail(err)
+        vim.notify("loomworks: LSP option not saved — " .. err, vim.log.levels.ERROR)
+        cb(false, err)
+        return false, err
+    end
+    local obs = observer_of()
+    if not (obs and obs.state ~= "stopped" and obs:can_call("set_option")) then
+        local note = obs and obs:lsp_note() or nil
+        return fail("the workspace daemon does not carry the LSP configuration"
+            .. (note and (" (" .. note .. ")") or ""))
+    end
+    obs:request("set_option", { server = server, key = key, value = value }, function(r)
+        if r.outcome == "invalid" then return fail("invalid: " .. tostring(r.reason)) end
+        if r.outcome ~= "ok" then
+            return fail("the call to the workspace daemon failed: " .. tostring(r.reason or r.outcome))
+        end
+        local res = type(r.result) == "table" and r.result or {}
+        if res.outcome == "refused" then
+            return fail("the workspace daemon refused it: " .. tostring(res.message or "refused"))
+        end
+        if res.outcome == "declined" then
+            return fail("the workspace daemon declined it" .. (res.reason and (" (" .. tostring(res.reason) .. ")") or ""))
+        end
+        if res.outcome ~= nil and res.outcome ~= "ok" then
+            return fail("the workspace daemon answered " .. tostring(res.message or res.outcome))
+        end
+        -- Applied from the read back (its `model_change` reads it too).
+        obs:_fetch_lsp()
+        cb(true)
+    end)
+    return true
+end
+
+return M

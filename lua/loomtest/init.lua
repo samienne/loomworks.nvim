@@ -21,6 +21,10 @@ local _nodes = {}
 --- @type loomtest.TestNode[]
 local _node_list = {}
 
+--- In-flight `result` reads, by node id.
+--- @type table<string, fun(node: loomtest.TestNode|nil)[]>
+local _loading = {}
+
 --- Default configuration.
 local DEFAULT_CONFIG = {
     position = "right",
@@ -146,22 +150,59 @@ function M.set_nodes(nodes)
     end
 end
 
+--- Whether the adapter supplied suite nodes itself (LOOMTEST.md §3.1): then
+--- suites are not inferred and results apply by exact id only.
+--- @return boolean
+function M.has_given_suites()
+    for _, node in ipairs(_node_list) do
+        if node.type == "suite" then return true end
+    end
+    return false
+end
+
+--- The ids of the `test` nodes below `id` (children, and theirs).
+--- @param id string
+--- @return string[]
+function M.descendant_tests(id)
+    local out, below = {}, { [id] = true }
+    local changed = true
+    -- Repeat until no new descendant: the list order is not relied on.
+    while changed do
+        changed = false
+        for _, n in ipairs(_node_list) do
+            if n.parent and below[n.parent] and not below[n.id] then
+                below[n.id] = true
+                changed = true
+            end
+        end
+    end
+    for _, n in ipairs(_node_list) do
+        if n.type == "test" and n.id ~= id and below[n.id] then out[#out + 1] = n.id end
+    end
+    return out
+end
+
 --- Apply test results to the current tree.
 --- @param results loomtest.TestResult[]
 function M.apply_results(results)
+    -- Adapter-supplied suites: exact ids only, never name matching (§3.1).
+    local exact = M.has_given_suites()
+
     -- Build a name-based lookup for fuzzy matching
     -- (XML test IDs may differ slightly from tree IDs)
     local by_name = {}
-    for _, node in ipairs(_node_list) do
-        if node.type == "test" then
-            local short = node.id:match("^test:(.+)$") or node.id
-            by_name[short] = by_name[short] or node
+    if not exact then
+        for _, node in ipairs(_node_list) do
+            if node.type == "test" then
+                local short = node.id:match("^test:(.+)$") or node.id
+                by_name[short] = by_name[short] or node
+            end
         end
     end
 
     for _, r in ipairs(results) do
         local node = _nodes[r.test_id]
-        if not node then
+        if not node and not exact then
             local short = r.test_id:match("^test:(.+)$") or r.test_id
             node = by_name[short]
         end
@@ -173,8 +214,13 @@ function M.apply_results(results)
             node._errors = r.errors
         end
     end
-    -- Propagate status to parents: failed if any child failed
-    for _, node in ipairs(_node_list) do
+    -- Propagate status to parents: failed if any child failed. With
+    -- adapter-supplied suites the tree is deeper (target → suite → test):
+    -- children are visited before their parents (the list is parents first).
+    local first, last, step = 1, #_node_list, 1
+    if exact then first, last, step = #_node_list, 1, -1 end
+    for i = first, last, step do
+        local node = _node_list[i]
         if node.parent then
             local parent = _nodes[node.parent]
             if parent and node.status then
@@ -199,11 +245,45 @@ end
 function M.clear()
     _node_list = {}
     _nodes = {}
+    _loading = {}
 end
 
 -- ---------------------------------------------------------------------------
 -- Actions
 -- ---------------------------------------------------------------------------
+
+--- The adapters' header status (LOOMTEST.md §3, §4.2): the first adapter
+--- reporting one, as `{ text, level, blocked }`, or nil.
+--- @return loomtest.AdapterStatus|nil
+function M.status()
+    for _, adapter in ipairs(_adapters) do
+        if adapter.status then
+            local ok, st = pcall(adapter.status)
+            if ok and type(st) == "table" and type(st.text) == "string" then return st end
+        end
+    end
+    return nil
+end
+
+--- The text a `blocked` adapter status refuses actions with (§4.2), or nil.
+--- @return string|nil text, string|nil level
+function M.blocked()
+    local st = M.status()
+    if st and st.blocked then return st.text, st.level end
+    return nil, nil
+end
+
+local LEVELS = { info = vim.log.levels.INFO, warn = vim.log.levels.WARN, error = vim.log.levels.ERROR }
+
+--- While an adapter's status is `blocked` (§4.2), say so as one
+--- notification line and return true: run, debug and refresh do nothing.
+--- @return boolean refused
+local function refused()
+    local text, level = M.blocked()
+    if not text then return false end
+    vim.notify(text, LEVELS[level] or vim.log.levels.WARN)
+    return true
+end
 
 --- Discover tests from all adapters.
 --- @param callback? fun() called when discovery completes
@@ -240,6 +320,7 @@ end
 --- Refresh: invalidate all adapters and re-discover.
 --- Resets all state including run timestamps.
 function M.refresh()
+    if refused() then return end
     for _, adapter in ipairs(_adapters) do
         adapter.invalidate()
     end
@@ -265,6 +346,7 @@ end
 --- @param opts? table { skip_build?: boolean }
 function M.run(test_id, node_type, opts)
     opts = opts or {}
+    if refused() then return end
     local adapter = M.find_adapter(test_id)
     if not adapter then return end
 
@@ -280,25 +362,37 @@ function M.run(test_id, node_type, opts)
     local ids = {}
 
     if ntype == "suite" then
-        local suite_name = test_id:match("::(.+)$")
-        if suite_name then
-            for _, n in ipairs(_node_list) do
-                if n.type == "test" and n.name:match("^" .. vim.pesc(suite_name) .. "%.") then
-                    ids[#ids + 1] = n.id
+        if node then
+            -- An adapter-supplied suite (§3.1): its own children.
+            ids = M.descendant_tests(test_id)
+        else
+            local suite_name = test_id:match("::(.+)$")
+            if suite_name then
+                for _, n in ipairs(_node_list) do
+                    if n.type == "test" and n.name:match("^" .. vim.pesc(suite_name) .. "%.") then
+                        ids[#ids + 1] = n.id
+                    end
                 end
             end
         end
+        if adapter.start then
+            if #ids == 0 then ids[1] = test_id end
+            return require("loomtest.runner").start(adapter, { test_id }, ids, opts)
+        end
         spec = adapter.run_suite(test_id)
     elseif ntype == "target" then
-        for _, n in ipairs(_node_list) do
-            if n.parent == test_id and n.type == "test" then
-                ids[#ids + 1] = n.id
-            end
+        ids = M.descendant_tests(test_id)
+        if adapter.start then
+            if #ids == 0 then ids[1] = test_id end
+            return require("loomtest.runner").start(adapter, { test_id }, ids, opts)
         end
         -- A target runs through the adapter unit that owns it, not run-all.
         spec = adapter.run(test_id)
     else
         ids[#ids + 1] = test_id
+        if adapter.start then
+            return require("loomtest.runner").start(adapter, { test_id }, ids, opts)
+        end
         spec = adapter.run(test_id)
     end
     if not spec then return end
@@ -314,6 +408,7 @@ end
 --- @param opts? table
 function M.debug(test_id, node_type, opts)
     opts = opts or {}
+    if refused() then return end
     local adapter = M.find_adapter(test_id)
     if not adapter then return end
 
@@ -322,6 +417,14 @@ function M.debug(test_id, node_type, opts)
 
     if not node and test_id:match("::") then
         ntype = "suite"
+    end
+
+    -- An adapter's own debug form (§3, §13.1): one node, prepared,
+    -- debugged and collected by the adapter.
+    if adapter.debug_start then
+        local ids = ntype == "test" and { test_id } or M.descendant_tests(test_id)
+        if #ids == 0 then ids[1] = test_id end
+        return require("loomtest.runner").start_debug(adapter, test_id, ids)
     end
 
     local spec
@@ -358,11 +461,9 @@ end
 --- Run all tests.
 --- @param opts? table { skip_build?: boolean }
 function M.run_all(opts)
+    if refused() then return end
     local adapter = _adapters[1]
     if not adapter then return end
-
-    local spec = adapter.run_all()
-    if not spec then return end
 
     local ids = {}
     for _, node in ipairs(_node_list) do
@@ -370,6 +471,14 @@ function M.run_all(opts)
             ids[#ids + 1] = node.id
         end
     end
+
+    -- An adapter-executed run (§3): run-all selects nothing.
+    if adapter.start then
+        return require("loomtest.runner").start(adapter, nil, ids, opts)
+    end
+
+    local spec = adapter.run_all()
+    if not spec then return end
 
     require("loomtest.runner").execute(adapter, spec, ids, opts)
 end
@@ -415,6 +524,7 @@ end
 
 --- Debug all tests in the current file.
 function M.debug_file()
+    if refused() then return end
     local bufnr = vim.api.nvim_get_current_buf()
     local buf_path = vim.api.nvim_buf_get_name(bufnr)
     if buf_path == "" then return end
@@ -435,6 +545,17 @@ function M.debug_file()
 
     local adapter = _adapters[1]
     if not adapter then return end
+
+    -- An adapter's own debug form debugs one node (§13.1): a file's single
+    -- test, never several at once.
+    if adapter.debug_start then
+        if #file_ids > 1 then
+            vim.notify("loomtest: this adapter debugs one test at a time — debug the test at the cursor",
+                vim.log.levels.INFO)
+            return
+        end
+        return require("loomtest.runner").start_debug(adapter, file_ids[1], file_ids)
+    end
 
     local spec = adapter.run_all({ file = buf_path })
     if not spec then return end
@@ -444,6 +565,7 @@ end
 
 --- Run all tests in the current file.
 function M.run_file()
+    if refused() then return end
     local bufnr = vim.api.nvim_get_current_buf()
     local buf_path = vim.api.nvim_buf_get_name(bufnr)
     if buf_path == "" then return end
@@ -465,10 +587,49 @@ function M.run_file()
     local adapter = _adapters[1]
     if not adapter then return end
 
+    -- An adapter-executed run (§3): the file's tests are the selection.
+    if adapter.start then
+        return require("loomtest.runner").start(adapter, file_ids, file_ids)
+    end
+
     local spec = adapter.run_all({ file = buf_path })
     if not spec then return end
 
     require("loomtest.runner").execute(adapter, spec, file_ids)
+end
+
+--- A node's output and error locations (§8), then `cb(node)` (nil: no such
+--- node). An adapter with `result` (§3) keeps them: they are read from it
+--- when shown, once per node until its status changes or the tree is
+--- replaced (a failed read counts, so a redraw never asks again); other
+--- adapters' nodes carry them already and `cb` runs at once.
+--- @param id string
+--- @param cb fun(node: loomtest.TestNode|nil)
+function M.load_result(id, cb)
+    local node = _nodes[id]
+    if not node then return cb(nil) end
+    local adapter = M.find_adapter(id)
+    if not (adapter and adapter.result) or node._result_loaded then return cb(node) end
+    if _loading[id] then
+        table.insert(_loading[id], cb)
+        return
+    end
+    _loading[id] = { cb }
+    adapter.result(id, function(r)
+        local waiters = _loading[id] or {}
+        _loading[id] = nil
+        -- The tree may have been replaced meanwhile: the node by its id now.
+        local cur = _nodes[id]
+        if cur then
+            cur._result_loaded = true
+            if type(r) == "table" then
+                cur._output = r.output
+                cur._errors = r.errors
+                if r.message and not cur.message then cur.message = r.message end
+            end
+        end
+        for _, w in ipairs(waiters) do w(cur) end
+    end)
 end
 
 --- Toggle explorer panel.
@@ -494,21 +655,21 @@ function M.show_output()
         if test_id then break end
     end
 
-    if test_id then
-        local node = _nodes[test_id]
-        if node and (node._output or node.message) then
-            local output = node._output or node.message or ""
-            if node.message and node._output and node.message ~= node._output then
-                output = node.message .. "\n\n--- stdout/stderr ---\n" .. node._output
+    if test_id and _nodes[test_id] then
+        M.load_result(test_id, function(node)
+            if not node then return end
+            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
+            if node._output or node.message then
+                local output = node._output or node.message or ""
+                if node.message and node._output and node.message ~= node._output then
+                    output = node.message .. "\n\n--- stdout/stderr ---\n" .. node._output
+                end
+                explorer._show_output_float(title, output, node._errors or {})
+            else
+                explorer._show_output_float(title, "No output captured.", {})
             end
-            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
-            explorer._show_output_float(title, output, node._errors or {})
-            return
-        elseif node then
-            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
-            explorer._show_output_float(title, "No output captured.", {})
-            return
-        end
+        end)
+        return
     end
 
     vim.notify("loomtest: no test found on this line", vim.log.levels.INFO)

@@ -3,10 +3,14 @@
 --- Builds a path from segments: variables (${workspace_root}, ${variant}, etc.)
 --- or literal text. Shows resolved preview. Used by deploy editor, launch
 --- editor working_dir, and anywhere a variable-expanded path is needed.
+---
+--- The project's variables and the preview come from the caller (the status
+--- page: `Projects/1.declaration` / the workspace view, and
+--- `Projects/1.expand_preview`, step 5o C2b2-2); the preview arrives
+--- asynchronously and is shown once it does (M.preview_cache).
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
-local expand = require("loomworks.expand")
 
 local M = {}
 
@@ -49,6 +53,31 @@ function M.build_variable_list(project, opts)
         end
     end
     return vars
+end
+
+--- A dialog's preview of templates: `get(template)` → the expanded value
+--- once known, else nil — the first `get` of a template asks
+--- `fetch(template, cb)` once; an answer arriving later calls `refresh()`
+--- (an answer given during `fetch` is returned at once). A value still
+--- holding an unresolved `${…}` (or no answer) is no preview.
+--- @param fetch fun(template: string, cb: fun(value: string|nil))|nil nil: never a preview
+--- @param refresh fun()
+--- @return fun(template: string): string|nil get
+function M.preview_cache(fetch, refresh)
+    local known, asked = {}, {}
+    return function(template)
+        if not fetch or template == nil or template == "" then return nil end
+        if known[template] ~= nil then return known[template] or nil end
+        if asked[template] then return nil end
+        asked[template] = true
+        local sync = true
+        fetch(template, function(value)
+            known[template] = type(value) == "string" and not value:find("%${") and value or false
+            if not sync then refresh() end
+        end)
+        sync = false
+        return known[template] or nil
+    end
 end
 
 --- Find variable definition by name.
@@ -146,22 +175,22 @@ end
 --- @param opts table
 ---   title?: string — dialog title
 ---   path: string — initial path template
----   project?: loomworks.Project — for user-defined variables
----   workspace?: loomworks.Workspace — for preview resolution
----   profile?: loomworks.Profile — for preview resolution
+---   variables?: table<string, { type: string }> — the project's variables
+---     (offered as segments; a `path` one only first)
+---   preview?: fun(template: string, cb: fun(value: string|nil)) — the
+---     template expanded for the project (none: no preview)
 ---   target_context?: boolean — the edited context resolves a build target,
 ---     so `${target_dir}` is offered (spec §8.7)
 ---   on_accept: fun(path: string) — called with composed path
 ---   on_cancel: fun()
 function M.open(opts)
     local segments = M.parse_segments(opts.path or "")
-    local all_variables = M.build_variable_list(opts.project, { target_context = opts.target_context })
-    local ws = opts.workspace
-    local profile = opts.profile
-    local project = opts.project
+    local all_variables = M.build_variable_list({ variables = opts.variables },
+        { target_context = opts.target_context })
 
     local accepted = false
     local tree, view
+    local preview = M.preview_cache(opts.preview, function() if view then view:refresh() end end)
 
     local function edit_string(prompt, current, on_done)
         vim.ui.input({ prompt = prompt, default = current }, function(value)
@@ -252,15 +281,9 @@ function M.open(opts)
             end,
         })
 
-        if ws and profile and project then
-            local template = M.compose_segments(segments)
-            if template ~= "" then
-                local ctx = expand.launch_context(ws, profile, project)
-                local resolved = expand.expand_string(template, ctx)
-                if not resolved:find("%${") then
-                    t:leaf("  → " .. resolved, "NonText")
-                end
-            end
+        local resolved = preview(M.compose_segments(segments))
+        if resolved then
+            t:leaf("  → " .. resolved, "NonText")
         end
 
         t:blank()

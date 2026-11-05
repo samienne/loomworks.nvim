@@ -1,4 +1,4 @@
---- loomworks/description.lua — descriptions (spec §1.10, §17.11).
+--- loomworks/description.lua — descriptions.
 ---
 --- A pure module with no workspace access and no I/O. A description is free
 --- display text stored normalised (LF line endings, no trailing whitespace, no
@@ -29,7 +29,7 @@ local function split_lines(s)
     return lines
 end
 
---- Normalise a description value (spec §1.10). A non-string is nil (absent).
+--- Normalise a description value. A non-string is nil (absent).
 --- CRLF and lone CR become LF, trailing whitespace is removed from every
 --- line, leading and trailing blank lines are removed, and an empty result
 --- is nil.
@@ -204,7 +204,7 @@ local function bidi_cp(s, i)
     return nil
 end
 
---- Render text inert for display (spec §17.11): C0 controls as caret
+--- Render text inert for display: C0 controls as caret
 --- notation (`^[`), DEL as `^?`, C1 controls and bidi controls as `\uXXXX`
 --- text, TAB as a space. LF is kept (one buffer line per description line) —
 --- unless `keep_lf` is false, when it becomes a space too.
@@ -296,7 +296,7 @@ function M.strip_comments(lines)
     return table.concat(kept, "\n")
 end
 
---- Read a description value from a file (spec §1.10). Returns the normalised
+--- Read a description value from a file. Returns the normalised
 --- text, plus the raw value when it is present but not a string (JSON null
 --- counts as absent). Such a value is ignored (the item has no description)
 --- but written back unchanged unless the description is set or cleared, so

@@ -1,0 +1,258 @@
+{
+  "interface": "loomworks.Common",
+  "version": 1,
+  "status": "draft",
+  "types_only": true,
+  "description": "Types shared by every core interface (API.md §4): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta, the task line role, the reply notes and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
+  "methods": {},
+  "$defs": {
+    "Id": {
+      "description": "An opaque entity id (PROTOCOL.md §12.1); stale when its session generation is not the daemon's.",
+      "type": "string"
+    },
+    "TaskId": {
+      "description": "An opaque task id (PROTOCOL.md §12.1, §14), scoped to the session generation like an entity id: a client only compares it and sends it back.",
+      "type": "string"
+    },
+    "Ref": {
+      "description": "A reference to an entity: its id (the editor, from results and views) or its key (the CLI, as the user typed it).",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": { "id": { "$ref": "#/$defs/Id" } }
+        },
+        {
+          "type": "object",
+          "required": ["key"],
+          "additionalProperties": false,
+          "properties": { "key": { "type": "string" } }
+        }
+      ]
+    },
+    "ItemRef": {
+      "description": "An item reference (API.md §1.2): a profile, configuration set, project, configuration or launch configuration, named by its id alone (ids are unique across kinds). In step 5o it has no key form.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/Id" } }
+    },
+    "Entity": {
+      "description": "An entity a command created or kept (API.md §19): its id, and its key (a configuration's or launch configuration's name).",
+      "type": "object",
+      "required": ["id", "key"],
+      "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/Id" }, "key": { "type": "string" } }
+    },
+    "Environment": {
+      "description": "The client's environment (API.md §5), sent as the envelope's env.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "Accepted": {
+      "type": "object",
+      "required": ["outcome"],
+      "properties": {
+        "outcome": { "const": "accepted" },
+        "task_id": { "description": "The task the call runs as, for a task-streamed method.", "$ref": "#/$defs/TaskId" },
+        "profile_key": { "description": "The profile the operation resolved to.", "type": "string" },
+        "pid": { "description": "The daemon's process id.", "type": "integer" },
+        "notes": { "$ref": "#/$defs/Notes" },
+        "note_roles": { "$ref": "#/$defs/NoteRoles" }
+      }
+    },
+    "Refused": {
+      "type": "object",
+      "required": ["outcome", "message", "exit_code"],
+      "properties": {
+        "outcome": { "const": "refused" },
+        "message": { "type": "string" },
+        "exit_code": { "type": "integer" },
+        "stream": { "description": "out: the message is the command's ordinary stdout line (exit_code 0), not an error. Clients treat an unknown stream as an error.", "enum": ["out"] },
+        "notes": { "$ref": "#/$defs/Notes" },
+        "note_roles": { "$ref": "#/$defs/NoteRoles" }
+      }
+    },
+    "Declined": {
+      "description": "The daemon will not run the call; the CLI runs it in-process instead.",
+      "type": "object",
+      "required": ["outcome", "reason"],
+      "properties": {
+        "outcome": { "const": "declined" },
+        "reason": { "type": "string" }
+      }
+    },
+    "Confirm": {
+      "description": "The call needs the user's confirmation of a plan first.",
+      "type": "object",
+      "required": ["outcome", "lines", "plan"],
+      "properties": {
+        "outcome": { "const": "confirm" },
+        "lines": { "type": "array", "items": { "type": "string" } },
+        "plan": { "description": "An opaque token of the plan shown; sent back with the confirmation, which a changed plan refuses.", "type": "string" },
+        "profile_key": { "type": "string" },
+        "unit_ids": { "description": "Maintenance/1.execute_deletion: the ids of the configuration units whose build state the plan removes (API.md §22), for the client's stop of its own tasks first.", "type": "array", "items": { "$ref": "#/$defs/Id" } },
+        "notes": { "$ref": "#/$defs/Notes" },
+        "note_roles": { "$ref": "#/$defs/NoteRoles" }
+      }
+    },
+    "Outcome": {
+      "description": "The domain result every operation shares (API.md §4.1; PROTOCOL.md §11.1). Clients tolerate an unknown outcome.",
+      "oneOf": [
+        { "$ref": "#/$defs/Accepted" },
+        { "$ref": "#/$defs/Refused" },
+        { "$ref": "#/$defs/Declined" },
+        { "$ref": "#/$defs/Confirm" }
+      ]
+    },
+    "LaunchSpec": {
+      "description": "A resolved launch (API.md §4.4): the program the client runs.",
+      "type": "object",
+      "required": ["cmd", "args", "cwd"],
+      "properties": {
+        "name": { "type": "string" },
+        "cmd": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env": {
+          "description": "The launch's own contribution over the client's environment, never a whole environment.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "DebugSpec": {
+      "description": "A resolved debug launch (API.md §4.4): the program the client's debugger starts, resolved exactly as the run's launch of the same target and arguments, with the debug languages and their adapters.",
+      "type": "object",
+      "required": ["program", "args", "cwd", "language", "adapters"],
+      "properties": {
+        "name": { "type": "string" },
+        "program": { "description": "The run's cmd.", "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env": {
+          "description": "The launch's own contribution over the client's environment (the 17.9 denylist applied), never a whole environment.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "language": { "description": "The primary language: a launch configuration's first debug entry, otherwise the primary language of the target's module.", "type": "string" },
+        "adapters": {
+          "description": "One per debug language, in order: the first launches the program, the others attach to its process. adapter is absent when the language has neither an override nor a default.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["language"],
+            "properties": {
+              "language": { "type": "string" },
+              "adapter": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "TaskEnd": {
+      "description": "The task result every task-streamed method's result extends (API.md §4.2): the exit code the client ends with and the failure it prints as lw: <error>.",
+      "type": "object",
+      "required": ["exit_code"],
+      "properties": {
+        "exit_code": { "type": "integer" },
+        "error": { "type": "string" }
+      }
+    },
+    "TaskMeta": {
+      "description": "The start meta of a task frame (API.md §4.2).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "type": "string" },
+        "profile": { "type": "string" },
+        "profile_id": {
+          "description": "The profile's id (API.md §4.2, §1.1): present exactly when profile is.",
+          "$ref": "#/$defs/Id"
+        },
+        "units": {
+          "description": "One entry per project of the profile or of the task's scope (API.md §4.2): the project key, its configuration unit's key and the unit's id (absent when the unit does not exist yet or was removed). A client matches a task to its records by the ids; the keys are for display.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "project": { "type": "string" },
+              "configuration": { "type": "string" },
+              "id": { "$ref": "#/$defs/Id" }
+            }
+          }
+        },
+        "origin": { "enum": ["cli", "editor"] },
+        "object": { "type": "string" },
+        "iface": { "type": "string" },
+        "v": { "type": "integer" },
+        "method": { "type": "string" },
+        "level": {
+          "description": "A Launch/1.device_log task's module default log level (API.md §9.5; step 5n part B3), when it has one: where a client starts its level filter. A level of its records (verbose, debug, info, warn, error or fatal); a client takes an unknown one as info.",
+          "type": "string"
+        },
+        "steps": {
+          "description": "The step plan of a target-scoped task (API.md §4.3; step 5t), each pending; absent for other tasks and for a preparation with no_build.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/TaskStep" }
+        }
+      }
+    },
+    "TaskStep": {
+      "description": "One step of a target-scoped task (API.md §4.3; step 5t): a dependency's or the launch target's own unit build, a deploy phase or the artifact probe, in run order.",
+      "type": "object",
+      "required": ["id", "kind", "label", "state"],
+      "properties": {
+        "id": { "description": "Opaque, stable within the task.", "type": "string" },
+        "kind": { "description": "Clients show an unknown kind as neutral.", "enum": ["build", "deploy", "probe"] },
+        "label": { "type": "string" },
+        "project": { "type": "string" },
+        "configuration": { "type": "string" },
+        "target": { "type": "string" },
+        "phase": { "description": "A deploy step's phase.", "enum": ["pre_build", "post_build"] },
+        "state": { "$ref": "#/$defs/TaskStepState" }
+      }
+    },
+    "LineRole": {
+      "description": "A task line's or a reply note's presentation role (API.md §4.1, §4.2; spec §16.7 Highlighting): lead, phase (a step header), reason (a configure reason), command (a verbose command line), ok, fail, warn or plain. Absent = plain. Open: clients tolerate unknown values (PROTOCOL.md §17.2) and show them as plain.",
+      "enum": ["lead", "phase", "reason", "command", "ok", "fail", "warn", "plain"]
+    },
+    "Notes": {
+      "description": "Lines the server wrote for the call before any task of it started (a warning or error the workspace raised while loading, a test plan's pre-build notes; API.md §4.1), in order: the client writes each to standard error before anything else of the call.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "NoteRoles": {
+      "description": "The role of each entry of notes, by index (API.md §4.1): note_roles[i] is the LineRole of notes[i]. An absent array, a missing entry or an unknown value is plain. Present only with notes, and then as long as notes.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/LineRole" }
+    },
+    "TaskStepState": {
+      "description": "A step's state (API.md §4.3): pending until it runs; skipped when a failure, a cancel or a device = true outcome left it unrun. A preparation with no_build has no steps (steps absent). Clients show an unknown state as neutral.",
+      "enum": ["pending", "running", "ok", "failed", "cancelled", "skipped"]
+    },
+    "TestNodeRef": {
+      "description": "A test node of loomworks.view.Tests/1, by its view id (API.md §14.3): opaque, scoped to its unit; stale once a re-discovery dropped the node, the active profile changed or the session generation is another.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/Id" } }
+    },
+    "TestStatus": {
+      "description": "A test node's status (API.md §4.5, §10.2): queued or running while a run that selected it is in progress, else its last result. Clients show an unknown status as neutral.",
+      "enum": ["queued", "running", "passed", "failed", "skipped", "errored"]
+    },
+    "TestCaseResult": {
+      "description": "One case's status in a run, a collect or the results signal (API.md §4.5).",
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": { "description": "The node's view id.", "$ref": "#/$defs/Id" },
+        "status": { "$ref": "#/$defs/TestStatus" },
+        "duration": { "description": "Milliseconds (a finished case).", "type": "integer", "minimum": 0 },
+        "message": { "description": "The first failure line (failed, errored).", "type": "string" }
+      }
+    }
+  }
+}

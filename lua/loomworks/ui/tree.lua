@@ -8,7 +8,7 @@
 ---   tree:render()              → lines, highlights, line_meta, needs_frame
 ---   tree:on_key(action, line)  → { refresh?, restore_fold? }
 
---- Hover content for a description (spec/ui.md §1.16): the full text, one
+--- Hover content for a description (spec/plugin.md UI §1.16): the full text, one
 --- entry per line, rendered inert; a module default says where it came from.
 --- @param desc string
 --- @param from_module boolean|nil
@@ -53,7 +53,7 @@ local RENDER_KEYS = {
     description = true,
 }
 
---- Summary fit on a node line (spec/ui.md §1.16): at most this many display
+--- Summary fit on a node line (spec/plugin.md UI §1.16): at most this many display
 --- columns, omitted when fewer than MIN remain.
 local SUMMARY_MAX, SUMMARY_MIN = 60, 12
 --- Description lines shown under an expanded node before the "more" leaf.
@@ -232,8 +232,20 @@ function Tree:on_key(action, line)
 
     elseif action == "load" then
         local lw = require("loomworks")
-        if lw.get_workspace() then
-            lw.rescan_tools()
+        -- (The editor holds no model, step 6b-α: a loaded workspace is the
+        -- root it observes the daemon of.)
+        if lw.loaded_root() then
+            -- The daemon's rescan (it waits for detection, up to 45 s:
+            -- announced at once); a refusal, or a detection that outran the
+            -- wait (a warn note), is notified.
+            vim.notify("loomworks: Rescanning toolchains…", vim.log.levels.INFO)
+            local model = require("loomworks.ui.model_calls")
+            model.call(nil, "Toolchains/1.rescan", {}, function(r)
+                local ok, err = model.result(r)
+                if ok then return end
+                vim.notify("loomworks: " .. tostring(err),
+                    r.outcome == "ok" and vim.log.levels.WARN or vim.log.levels.ERROR)
+            end)
         else
             lw.setup({ root = vim.fn.getcwd() })
         end
@@ -248,7 +260,7 @@ function Tree:on_key(action, line)
         return {}
 
     elseif action == "trust" then
-        require("loomworks").trust_user_prefs()
+        self:_trust()
         return { refresh = true }
 
     elseif action == "help" then
@@ -272,20 +284,10 @@ end
 -- Create workspace
 -- -----------------------------------------------------------------------
 
+--- `N` (spec §19.16 "Model writes", step 6b-α): refused, loaded or not,
+--- nothing written; the notification names `lw init`.
 function Tree:_create_workspace()
-    local lw = require("loomworks")
-    if lw.get_workspace() then
-        vim.notify("loomworks: workspace already exists", vim.log.levels.INFO)
-        return
-    end
-
-    local root = vim.fn.getcwd()
-    local ok, err = require("loomworks.workspace").init_workspace(root)
-    if ok then
-        lw.setup({ root = root })
-    else
-        vim.notify("loomworks: " .. (err or "failed to initialize workspace"), vim.log.levels.ERROR)
-    end
+    vim.notify("loomworks: " .. require("loomworks.daemon.facade").CREATE_REFUSAL, vim.log.levels.ERROR)
 end
 
 -- -----------------------------------------------------------------------
@@ -347,89 +349,32 @@ end
 -- Cache nuke confirmation dialog
 -- -----------------------------------------------------------------------
 
+--- `<C-n>`: `Maintenance/1.nuke` through ui/model_calls (step 5o C2c-2):
+--- its confirmation lists what it removes (or is refused — a lock another
+--- process holds, a task of the daemon running); `y` sends
+--- the plan back. The workspace is the loaded one, also while its load is
+--- refused; no root is ever sent.
 function Tree:_confirm_nuke()
-    local dialog = require("loomworks.ui.dialog")
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    local err = lw.get_setup_error()
-    local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
-
-    local lines = {
-        "  Reset workspace cache",
-        "",
-        "  This will permanently delete:",
-        "    " .. root .. "/.nvim/build/",
-        "    " .. root .. "/.nvim/loomworks.cache.json",
-    }
-    -- Module-owned LSP database areas present on disk (spec ui §1.11). A
-    -- failed area check is shown here; the nuke itself then aborts.
-    local core = lw._core and lw._core()
-    if core and core._nuke_lsp_db_areas then
-        local areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root))
-        for _, a in ipairs(areas or {}) do lines[#lines + 1] = "    " .. a .. "/" end
-        if not areas then lines[#lines + 1] = "    (refused: " .. tostring(area_err) .. ")" end
-    end
-    local last_path = #lines
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "  Press y to confirm, q to cancel"
-
-    local highlights = { { line = 1, hl_group = "DiagnosticError" } }
-    for i = 3, last_path do highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn" } end
-
-    dialog.show({
-        title = "Confirm Reset",
-        lines = lines,
-        highlights = highlights,
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                lw.nuke_cache(root)
-            end,
-        },
-    })
+    require("loomworks.ui.actions").nuke()
 end
 
 -- -----------------------------------------------------------------------
 -- User preferences deletion confirmation
 -- -----------------------------------------------------------------------
 
+--- `U`: delete the working copy (loomworks.ui.actions.confirm_delete_user_prefs).
 function Tree:_confirm_delete_user_prefs()
-    local dialog = require("loomworks.ui.dialog")
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    local err = lw.get_setup_error()
-    local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
-    local user_path = require("loomworks.user").filepath(root)
+    require("loomworks.ui.actions").confirm_delete_user_prefs()
+end
 
-    local lines = {
-        "  Delete user preferences",
-        "",
-        "  This will delete:",
-        "    " .. user_path,
-        "",
-        "  Active profile and default targets will be reset.",
-        "",
-        "  Press y to confirm, q to cancel",
-    }
+-- -----------------------------------------------------------------------
+-- Working copy trust (spec §17.4)
+-- -----------------------------------------------------------------------
 
-    dialog.show({
-        title = "Confirm Delete",
-        lines = lines,
-        highlights = {
-            { line = 1, hl_group = "DiagnosticWarn" },
-            { line = 3, hl_group = "DiagnosticWarn" },
-            { line = 4, hl_group = "DiagnosticWarn" },
-            { line = 6, hl_group = "Comment" },
-        },
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                lw.delete_user_prefs(root)
-            end,
-        },
-    })
+--- `T`: review & trust the working copy (loomworks.ui.actions.trust).
+--- @param confirm? fun(msg: string, choices: string, default: integer): integer (tests; default vim.fn.confirm)
+function Tree:_trust(confirm)
+    require("loomworks.ui.actions").trust(confirm)
 end
 
 -- -----------------------------------------------------------------------
@@ -613,7 +558,7 @@ function Tree:_set_hover(hover)
         or function() return hover end
 end
 
---- Append a description's summary to the line just added (spec/ui.md §1.16):
+--- Append a description's summary to the line just added (spec/plugin.md UI §1.16):
 --- two spaces, then the summary fitted to the window's remaining width (at
 --- most 60 display columns), highlighted `LoomworksDescription`. Omitted when
 --- fewer than 12 columns remain or there is no description. The text is
@@ -637,7 +582,7 @@ function Tree:_append_summary(desc)
 end
 
 --- Render a description in full as leaves at the current indentation (the
---- first child of an expanded describable node, spec/ui.md §1.16): one
+--- first child of an expanded describable node, spec/plugin.md UI §1.16): one
 --- `LoomworksDescription` leaf per line (the blank line between summary and
 --- body kept), each cut to the window width, at most 8 lines, then a
 --- "… N more lines — [K] full description" leaf. `K` on any of these leaves

@@ -1,13 +1,16 @@
 --- loomworks/ui/deploy_editor.lua — Editor for a single deploy step.
 ---
 --- Tree+View dialog for editing a deploy step's destination and source.
---- Operates on domain objects: projects, configurations, targets are
---- offered as pickers when available. Destination is built from segments
---- (variables or literal text) composed into a path.
+--- Projects, configurations and targets are offered as pickers from the
+--- workspace view's rows (`loomworks.view.Workspace/1`: the projects, and
+--- the profiles' units for the targets and the source preview); the
+--- destination is built from segments (variables or literal text) composed
+--- into a path, its preview the caller's (`Projects/1.expand_preview`, step
+--- 5o C2b2-2), shown once it arrives (path_editor.preview_cache).
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
-local expand = require("loomworks.expand")
+local path_editor = require("loomworks.ui.path_editor")
 
 local M = {}
 
@@ -155,42 +158,43 @@ local function segment_hl(seg)
     return "LoomworksActionable"
 end
 
---- Resolve the config unit for a (project, configuration) pair in a profile.
-local function resolve_config_unit(profile, project, config_name)
-    local pp = profile:project(project.key)
-    if not pp or not pp._config_unit then return nil end
-    if not config_name or config_name == "" then
-        return pp._config_unit
-    end
-    if pp._config_unit._variant == config_name then
-        return pp._config_unit
+--- The active profile's unit row (view `profiles[].units[]`) of the
+--- project `project_key` — of the configuration `config_name` when one is
+--- named (the profile maps the project to it).
+--- @param profiles table[]|nil the view's profile rows
+--- @param project_key string
+--- @param config_name string "" for the profile's own
+--- @return table|nil
+local function active_unit(profiles, project_key, config_name)
+    for _, prow in ipairs(profiles or {}) do
+        if prow.active then
+            for _, u in ipairs(prow.units or {}) do
+                if u.project == project_key and (config_name == "" or u.configuration == config_name) then
+                    return u
+                end
+            end
+            return nil
+        end
     end
     return nil
 end
 
---- Build a resolved destination preview string.
-local function resolve_dest_preview(segments, ws, prof, launch_project)
-    if not ws or not prof or not launch_project then return nil end
-    local template = M.compose_segments(segments)
-    if template == "" then return nil end
-    local ctx = expand.launch_context(ws, prof, launch_project)
-    local resolved = expand.expand_string(template, ctx)
-    if resolved:find("%${") then return nil end
-    return resolved
-end
-
---- Build a resolved source preview string.
-local function resolve_source_preview(prof, project, config_name, source_type, source_target, source_path)
-    if not prof or not project then return nil end
-    local unit = resolve_config_unit(prof, project, config_name)
+--- Build a resolved source preview string (from the active profile's unit
+--- row: its build directory and its targets' artifacts).
+local function resolve_source_preview(profiles, project_key, config_name, source_type, source_target, source_path)
+    if project_key == "" then return nil end
+    local unit = active_unit(profiles, project_key, config_name)
     if not unit then return nil end
-    local build_dir = unit.build_dir_value
+    local build_dir = unit.build_dir
     if not build_dir then return nil end
     if source_type == "target" and source_target ~= "" then
         if unit.targets and unit.targets[source_target] then
             local artifact = unit.targets[source_target].artifact
             if artifact then
-                return require("loomworks.paths").artifact_path(build_dir, artifact)
+                -- The view's artifact is relative to the build dir, or absolute
+                -- (an output directory elsewhere): never prefix an absolute one.
+                if vim.fn.isabsolutepath(artifact) == 1 then return artifact end
+                return build_dir .. "/" .. artifact
             end
         end
         return build_dir .. "/" .. source_target .. " (?)"
@@ -204,10 +208,16 @@ end
 --- @param opts table
 ---   destination: string — destination path template
 ---   source: table|nil — { project: string, target?: string, path?: string, configuration?: string, pre_build?: boolean }
----   projects: loomworks.Project[] — available projects (domain objects)
----   profile: loomworks.Profile|nil — active profile for resolving config units
----   workspace: loomworks.Workspace|nil — for destination preview resolution
----   launch_project: loomworks.Project|nil — the project owning this launch config
+---   projects: table[] — the workspace view's project rows (`key`,
+---     `configurations[].key`, `variables`, `targets`: the targets offered)
+---   profiles: table[]|nil — the workspace view's profile rows (the active
+---     one's `units[]`: the source preview)
+---   variables: table<string, { type: string }>|nil — the variables of the
+---     project owning the step (destination segments)
+---   preview: fun(template: string, cb: fun(value: string|nil))|nil — a
+---     destination expanded for that project (none: no preview)
+---   preview_for: (fun(project_row: table): fun(template: string, cb: fun(value: string|nil)))|nil
+---     — the source project's preview (its source path editor)
 ---   existing_destinations: string[]|nil — destinations already in use (for duplicate detection)
 ---   current_destination: string|nil — the destination being edited (excluded from duplicate check)
 ---   target_context: boolean|nil — the launch context may resolve a build
@@ -222,10 +232,8 @@ function M.open(opts)
     local source_pre_build = opts.source and opts.source.pre_build == true
     local source_type = source_target ~= "" and "target" or "path"
     local projects = opts.projects or {}
-    local profile = opts.profile
-    local ws = opts.workspace
-    local launch_project = opts.launch_project
-    local all_variables = M.build_variable_list(launch_project, { target_context = opts.target_context })
+    local all_variables = M.build_variable_list({ variables = opts.variables },
+        { target_context = opts.target_context })
 
     local dest_segments = M.parse_segments(opts.destination or "")
     local dest_error = nil
@@ -256,6 +264,7 @@ function M.open(opts)
 
     local accepted = false
     local tree, view
+    local dest_preview_of = path_editor.preview_cache(opts.preview, function() if view then view:refresh() end end)
 
     local function find_project(key)
         for _, p in pairs(projects) do
@@ -265,33 +274,23 @@ function M.open(opts)
     end
 
     local function get_config_names(project)
-        if not project or not project._configurations then return {} end
         local names = {}
-        for _, cfg in ipairs(project._configurations) do
-            if not cfg._removed then
-                names[#names + 1] = cfg.name
-            end
+        for _, cfg in ipairs(project and project.configurations or {}) do
+            names[#names + 1] = cfg.key
         end
         table.sort(names)
         return names
     end
 
+    --- The build targets of `project` (a view row): its own `targets`,
+    --- the union over every unit of it, in a profile or not.
     local function get_targets(project)
-        local seen = {}
         local result = {}
-        local ws_units = ws and ws._config_units or {}
-        for _, unit in pairs(ws_units) do
-            if unit._project == project and unit.targets then
-                for id, target in pairs(unit.targets) do
-                    if not seen[id] then
-                        seen[id] = true
-                        result[#result + 1] = {
-                            id = id,
-                            display = id .. "  (" .. (target.type or "?") .. ")",
-                        }
-                    end
-                end
-            end
+        for id, target in pairs(project.targets or {}) do
+            result[#result + 1] = {
+                id = id,
+                display = id .. "  (" .. (target.type or "?") .. ")",
+            }
         end
         table.sort(result, function(a, b) return a.id < b.id end)
         return result
@@ -403,8 +402,7 @@ function M.open(opts)
         })
 
         validate_destination()
-        local dest_preview = resolve_dest_preview(
-            dest_segments, ws, profile, launch_project)
+        local dest_preview = dest_preview_of(M.compose_segments(dest_segments))
         if dest_preview then
             t:leaf("  → " .. dest_preview, "NonText")
         end
@@ -538,12 +536,11 @@ function M.open(opts)
                 direct = true,
                 on_enter = function()
                     local src_project = find_project(source_project_key)
-                    require("loomworks.ui.path_editor").open({
+                    path_editor.open({
                         title = "Source Path (relative to build dir)",
                         path = source_path,
-                        project = src_project,
-                        workspace = ws,
-                        profile = profile,
+                        variables = src_project and src_project.variables or nil,
+                        preview = src_project and opts.preview_for and opts.preview_for(src_project) or nil,
                         on_accept = function(path)
                             -- Strip build_dir prefix if user picked it
                             path = path:gsub("^%${build_dir}/", "")
@@ -557,9 +554,8 @@ function M.open(opts)
             t:leaf("  (relative to source build directory)", "NonText")
         end
 
-        local src_project = find_project(source_project_key)
         local src_preview = resolve_source_preview(
-            profile, src_project, source_configuration,
+            opts.profiles, source_project_key, source_configuration,
             source_type, source_target, source_path)
         if src_preview then
             t:leaf("  → " .. src_preview, "NonText")

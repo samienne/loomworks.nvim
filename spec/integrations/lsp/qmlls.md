@@ -1,7 +1,7 @@
 # qmlls LSP integration
 
 How the qmlls (QML language server) integration implements the core LSP
-integration contract (`specification.md` §9). Lives at
+integration contract (`spec/plugin.md` §9). Lives at
 `lua/loomworks/integrations/lsp/qmlls.lua`. Section numbers in this file
 are local.
 
@@ -15,11 +15,11 @@ step-down, nvim LSP log rotation, and unexpected-exit restart policy.
 `server = "qmlls"`. Modules emit `lsp_configs` entries with this server
 name to route their projects through this integration. The cmake module
 emits one unconditionally alongside its clangd entry (see
-`spec/modules/cmake.md`).
+`spec/plugin.md`, cmake module).
 
 ## 2. Per-server entry fields
 
-Beyond the core-defined `server` and `root_dir` fields (core §8.4
+Beyond the core-defined `server` and `root_dir` fields ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md)
 `lsp_configs`), this integration recognises:
 
 | Field | Purpose |
@@ -34,8 +34,8 @@ directory — the same directory clangd receives as
 `compile_commands_dir`. By the time the entry reaches this integration all
 paths are fully resolved.
 
-**Trust (core §17).** The `binary` override and the import-path arguments a
-module forwards come only from the signed working copy (core §17.6); in
+**Trust ([loomworks core §17](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)).** The `binary` override and the import-path arguments a
+module forwards come only from the signed working copy ([loomworks core §17.6](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)); in
 `loomworks.json` they are ignored with a diagnostic.
 
 ## 3. Per-buffer cmd resolution
@@ -150,10 +150,10 @@ README): a whole-server `{ lsp = { qmlls = false } }`, or replacing the
 
 ## 10. Environment inventory (`health_inventory`)
 
-Declares `lsp:qmlls` (category *language servers*) in its inventory companion
-(`integrations/inventory/qmlls.lua`, re-exported as the integration's
-`health_inventory`): a search-path lookup (version from `qmlls --version`) and
+Declares `lsp:qmlls` (category *language servers*) in its inventory companion,
+loomworks' `lua/loomworks/integrations/inventory/qmlls.lua` (the editor
+integration does not carry it): a search-path lookup (version from `qmlls --version`) and
 Mason's `bin` directory (the clangd §14 `<data>` rule; no version — there is
 no receipt to read and nothing is spawned). Qt
 installations are not searched (qmlls ships inside a Qt kit's `bin`; finding
-Qt installs is out of scope). Never a workspace requirement (core §16.33).
+Qt installs is out of scope). Never a workspace requirement ([loomworks core §16.33](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)).

@@ -1,27 +1,20 @@
---- loomworks/ui/sections/tasks.lua — Tasks & build-dir locks section.
+--- loomworks/ui/sections/tasks.lua — Tasks section.
 ---
---- Surfaces the runtime state of long-running operations: every
---- active loomworks-managed task and every held build-dir lock. The
---- section is the diagnostic surface for "why is my build stuck in
---- PENDING?" — when a previous task crashed without firing the
---- lifecycle event that releases its lock, the next task queues
---- behind it indefinitely. The lock list makes that visible; the
---- per-row force-release action makes it recoverable without
---- restarting nvim.
+--- Surfaces the runtime state of long-running operations: every task
+--- observed through `Tasks/1` (spec/plugin.md §19.16) — the editor's own and other
+--- clients'. The section is the diagnostic surface for "why is my build
+--- still running?".
 ---
 --- Per-row Enter opens a `vim.ui.select` menu rather than firing
---- directly: even though both actions are recoverable, a misclicked
---- cancel costs a full rebuild on a large project. The menu acts as a
---- one-keystroke confirmation; Esc dismisses without action. The
---- top-level "reset everything" action uses the heavier confirmation
---- dialog because it touches many items at once.
+--- directly: a misclicked cancel costs a full rebuild on a large project.
+--- The menu acts as a one-keystroke confirmation; Esc dismisses without
+--- action.
 ---
---- The section renders nothing when no tasks are active and no locks
---- are held — keeps the status page quiet during normal idle state.
---- Slotted near the bottom of the status page (after Profiles /
---- Projects / LSP / Debug / SDKs) because it's only interesting when
---- something is wrong; the day-to-day reader sees the workspace state
---- first, not the recovery surface.
+--- The section renders nothing when no task runs — keeps the status page
+--- quiet during normal idle state. Slotted near the bottom of the status
+--- page (after Profiles / Projects / LSP / Debug / SDKs) because it's only
+--- interesting when something is wrong; the day-to-day reader sees the
+--- workspace state first.
 
 --- Format a duration in seconds into a compact label.
 --- @param seconds number|nil
@@ -36,181 +29,104 @@ local function format_elapsed(seconds)
     return string.format("%dm%ds", m, s)
 end
 
---- Compose the trailing detail string for a task row:
----   "[12/50] / 1m4s" or just "1m4s" when no progress data.
---- @param task loomworks.ActiveTaskInfo
---- @param now_clock number current vim.uv.hrtime() / 1e9
---- @return string
-local function task_detail(task, now_clock)
-    local parts = {}
-    if task.progress and task.progress.current and task.progress.total then
-        parts[#parts + 1] = string.format("[%d/%d]",
-            task.progress.current, task.progress.total)
+--- Rows of a remote task (one per unit; one for the profile when it has
+--- none): `▸ <project> : <configuration> — <kind>`, then `{pct}%`, the
+--- elapsed time and the dimmed origin marker as the last token (spec/plugin.md UI
+--- §1.9).
+--- @param task loomworks.RemoteTask
+--- @param now number
+--- @return {[1]: string, [2]: string}[][] chunk lists
+local function remote_rows(task, now)
+    local detail = {}
+    if task.pct then detail[#detail + 1] = task.pct .. "%" end
+    local s = format_elapsed(task:elapsed(now))
+    if s ~= "" then detail[#detail + 1] = s end
+    local tail = #detail > 0 and ("  " .. table.concat(detail, "  ")) or ""
+    local origin = task:origin_label()
+    local function row(text)
+        local chunks = { { text .. tail, "DiagnosticInfo" } }
+        if origin then chunks[#chunks + 1] = { "  " .. origin, "Comment" } end
+        return chunks
     end
-    if task.start_time then
-        local elapsed = now_clock - task.start_time
-        local s = format_elapsed(elapsed)
-        if s ~= "" then parts[#parts + 1] = s end
+    -- A task carrying steps (a launch target's build or preparation, step
+    -- 5t) keeps one row, which follows its current step (spec/plugin.md UI §1.9).
+    if task.steps then
+        local step = task:step_text()
+        return { row(string.format("▸ %s — %s%s", task.profile_name or task.name, task.kind,
+            step and (": " .. step) or "")) }
     end
-    return table.concat(parts, "  ")
+    local rows = {}
+    for _, u in ipairs(task.units) do
+        rows[#rows + 1] = row(string.format("▸ %s : %s — %s", u.project, u.configuration or "?", task.kind))
+    end
+    if #rows == 0 then
+        rows[1] = row(string.format("▸ %s — %s", task.profile_name or task.name, task.kind))
+    end
+    return rows
 end
 
---- Compose the trailing detail string for a lock row.
---- @param lock loomworks.BuildDirLockInfo
---- @return string
-local function lock_detail(lock)
-    local parts = {}
-    if lock.exclusive then parts[#parts + 1] = "exclusive" end
-    if lock.shared_count > 0 then
-        parts[#parts + 1] = string.format("shared(%d)", lock.shared_count)
-    end
-    if lock.queue_depth > 0 then
-        parts[#parts + 1] = string.format("queued(%d)", lock.queue_depth)
-    end
-    if #parts == 0 then parts[#parts + 1] = "idle" end
-    return table.concat(parts, " · ")
-end
-
---- Confirm + execute the nuclear reset.
---- @param lw table loomworks public API
-local function reset_all(lw)
-    local dialog = require("loomworks.ui.dialog")
-    local tasks = lw.get_active_tasks()
-    local locks = lw.get_build_dir_locks_info()
-
-    local lines = {
-        "Force-reset all task & lock state?",
-        "",
-        string.format("  active tasks: %d", #tasks),
-        string.format("  held locks:   %d", #locks),
-        "",
-        "This will:",
-        "  • Stop every running loomworks-managed task.",
-        "  • Drop every build-dir lock (exclusive + shared + queue).",
-        "",
-        "Use this only when something is stuck. The build itself",
-        "is not damaged; restart the build manually after reset.",
-        "",
-        "  [y] confirm    [n] cancel",
-    }
-
-    dialog.show({
-        title = "Reset task state",
-        lines = lines,
-        max_height = 20,
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                for _, t in ipairs(tasks) do
-                    lw.cancel_task(t.task_id)
-                end
-                for _, l in ipairs(locks) do
-                    lw.force_release_build_dir_lock(l.dir)
-                end
+--- A remote task's rows (spec/plugin.md §19.16): Enter offers `Show output`, `Open
+--- overseer` while overseer lists it (step 5k C1b, loomworks.daemon.task_runner)
+--- and, for a task the editor itself started through a call (step 5k,
+--- `task.owned`), `Cancel task` (`Tasks/1.cancel`); another client's task
+--- belongs to it (never cancelled from here, §19.15).
+--- @param tree loomworks.Tree
+--- @param task loomworks.RemoteTask
+--- @param now number
+local function render_remote(tree, task, now)
+    for _, chunks in ipairs(remote_rows(task, now)) do
+        tree:item(chunks, {
+            hl = "DiagnosticInfo",
+            spinning = true,
+            direct = true,
+            on_enter = function()
+                local runner = require("loomworks.daemon.task_runner")
+                local choices = { "Show output" }
+                if task.owned then choices[#choices + 1] = "Cancel task" end
+                -- Its single overseer task (spec/plugin.md §19.16 "Tasks in the task
+                -- runner"), unless overseer cannot host it.
+                if runner.overseer_task(task) then choices[#choices + 1] = "Open overseer" end
+                vim.ui.select(choices, {
+                    prompt = "Task " .. task.name .. ":",
+                    format_item = function(s) return s end,
+                }, function(choice)
+                    if choice == "Show output" then require("loomworks.ui.remote_output").show(task) end
+                    if choice == "Cancel task" then require("loomworks.daemon.editor_ops").cancel(task) end
+                    if choice == "Open overseer" then runner.open(task) end
+                end)
             end,
-        },
-    })
+        })
+    end
 end
 
 --- @param tree loomworks.Tree
 --- @param ctx { lw: table }
 return function(tree, ctx)
-    local lw = ctx.lw
-    local tasks = lw.get_active_tasks and lw.get_active_tasks() or {}
-    local locks = lw.get_build_dir_locks_info
-        and lw.get_build_dir_locks_info() or {}
+    local remote = ctx.lw.get_daemon_tasks()
 
     -- Quiet section: render nothing when there's no state worth
     -- showing. Avoid adding noise to the steady-state status page.
-    if #tasks == 0 and #locks == 0 then return end
+    if #remote == 0 then return end
 
     local now = (vim.uv or vim.loop).hrtime() / 1e9
 
     tree:leaf({
         { "Tasks  ", "Title" },
-        { string.format("[%d active]", #tasks), "Comment" },
-    })
-    tree:item("⟲ Reset all task & lock state", {
-        hl = "DiagnosticWarn",
-        direct = true,
-        on_enter = function() reset_all(lw) end,
+        { string.format("[%d active]", #remote), "Comment" },
     })
     tree:blank()
 
-    for _, task in ipairs(tasks) do
-        local label = string.format("▸ %s : %s — %s",
-            task.project_key or "?",
-            task.config_key or "?",
-            task.action or "?")
-        local detail = task_detail(task, now)
-        if detail ~= "" then label = label .. "  " .. detail end
-        local task_id = task.task_id
-        local task_label = string.format("%s:%s (%s)",
-            task.project_key or "?",
-            task.config_key or "?",
-            task.action or "?")
-        tree:item(label, {
-            hl = "DiagnosticInfo",
-            spinning = true,
-            direct = true,
-            on_enter = function()
-                vim.ui.select(
-                    { "Cancel task", "Open overseer" },
-                    {
-                        prompt = "Task " .. task_label .. ":",
-                        format_item = function(s) return s end,
-                    },
-                    function(choice)
-                        if not choice then return end
-                        if choice == "Cancel task" then
-                            lw.cancel_task(task_id)
-                        elseif choice == "Open overseer" then
-                            -- Best-effort: open the overseer task list
-                            -- so the user can inspect output. We don't
-                            -- focus a specific task because there's no
-                            -- stable overseer API for that yet.
-                            local ok, ov = pcall(require, "overseer")
-                            if ok and ov.open then
-                                ov.open({ enter = true })
-                            end
-                        end
-                    end
-                )
-            end,
-        })
+    -- Ordered by start.
+    local entries = {}
+    for i, task in ipairs(remote) do
+        entries[#entries + 1] = { task = task, start = task.start_time or now, seq = i }
     end
-
-    if #locks > 0 then
-        if #tasks > 0 then tree:blank() end
-        tree:leaf("Build directory locks", "Title")
-        for _, lock in ipairs(locks) do
-            local detail = lock_detail(lock)
-            local label = string.format("▸ %s  %s", lock.dir, detail)
-            local hl = (lock.queue_depth > 0 and not lock.exclusive
-                    and lock.shared_count == 0)
-                and "DiagnosticWarn"
-                or "DiagnosticInfo"
-            local dir = lock.dir
-            tree:item(label, {
-                hl = hl,
-                direct = true,
-                on_enter = function()
-                    vim.ui.select(
-                        { "Force-release lock" },
-                        {
-                            prompt = "Lock " .. dir .. ":",
-                            format_item = function(s) return s end,
-                        },
-                        function(choice)
-                            if choice == "Force-release lock" then
-                                lw.force_release_build_dir_lock(dir)
-                            end
-                        end
-                    )
-                end,
-            })
-        end
+    table.sort(entries, function(a, b)
+        if a.start ~= b.start then return a.start < b.start end
+        return a.seq < b.seq
+    end)
+    for _, entry in ipairs(entries) do
+        render_remote(tree, entry.task, now)
     end
 
     tree:blank()

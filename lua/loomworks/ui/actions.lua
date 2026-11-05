@@ -6,327 +6,415 @@
 
 local M = {}
 
---- Get display-friendly project_key and config_key from a ConfigUnit.
---- @param unit loomworks.ConfigUnit
---- @return string project_key, string config_key
-local function unit_display_keys(unit)
-    local pkey = unit._project and unit._project.key or unit._init_project_key or "?"
-    local ckey = unit:config_key() or unit.id
-    return pkey, ckey
-end
-
 -- ---------------------------------------------------------------------------
--- Profile action factories (take Profile objects)
+-- Profile action factories (take the profile's view row)
 -- ---------------------------------------------------------------------------
 
 --- Activate an existing profile.
---- @param profile loomworks.Profile
-function M.activate(profile)
-    return function() profile:activate() end
-end
-
---- Activate a profile that may not exist yet (config_sets UI).
---- @param config_set loomworks.ConfigurationSet
---- @param tool_entry? table
-function M.activate_new(config_set, tool_entry)
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.activate(row, ws)
     return function()
-        config_set:activate(tool_entry)
-    end
-end
-
---- Build an existing profile.
---- @param profile loomworks.Profile
-function M.build(profile)
-    return function()
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_action("Building " .. profile.key)
-        fidget.report(handle, "building...")
-        profile:build()
-            :next(function() fidget.finish(handle, "built") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-end
-
---- @param profile loomworks.Profile
-function M.build_serial(profile)
-    return function()
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_action("Building (serial) " .. profile.key)
-        fidget.report(handle, "building (-j1)...")
-        profile:build({ parallel_jobs = 1 })
-            :next(function() fidget.finish(handle, "built") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-end
-
---- Materialize a new profile then build it.
---- @param config_set loomworks.ConfigurationSet
---- @param tool_entry? table
-function M.build_new(config_set, tool_entry)
-    return function()
-        local profile = config_set:ensure_profile(tool_entry)
-        if not profile then return end
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_action("Building " .. profile.key)
-        fidget.report(handle, "building...")
-        profile:build()
-            :next(function() fidget.finish(handle, "built") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-end
-
---- Configure an existing profile.
---- @param profile loomworks.Profile
-function M.configure(profile)
-    return function()
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_action("Configuring " .. profile.key)
-        fidget.report(handle, "configuring...")
-        profile:configure()
-            :next(function() fidget.finish(handle, "configured") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-end
-
---- Materialize a new profile then configure it.
---- @param config_set loomworks.ConfigurationSet
---- @param tool_entry? table
-function M.configure_new(config_set, tool_entry)
-    return function()
-        local profile = config_set:ensure_profile(tool_entry)
-        if not profile then return end
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_action("Configuring " .. profile.key)
-        fidget.report(handle, "configuring...")
-        profile:configure()
-            :next(function() fidget.finish(handle, "configured") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-end
-
---- @param profile loomworks.Profile
-function M.rebuild(profile)
-    return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items(profile)
-        local ctx = wv.compute_clean_confirmation_context(ws, "Rebuild profile: " .. profile.key, items, { rebuild = true })
-        M._show_confirmation(ctx, function()
-            local fidget = require("loomworks.fidget")
-            local handle = fidget.start_action("Rebuilding " .. profile.key)
-            fidget.report(handle, "cleaning...")
-            profile:clean()
-                :next(function()
-                    fidget.report(handle, "building...")
-                    return profile:build()
-                end)
-                :next(function() fidget.finish(handle, "rebuilt") end)
-                :catch(function(err) fidget.fail(handle, err) end)
-        end)
-    end
-end
-
---- @param profile loomworks.Profile
-function M.clean(profile)
-    return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items(profile)
-        local ctx = wv.compute_clean_confirmation_context(ws, "Clean profile: " .. profile.key, items)
-        M._show_confirmation(ctx, function()
-            local fidget = require("loomworks.fidget")
-            local handle = fidget.start_action("Cleaning " .. profile.key)
-            fidget.report(handle, "cleaning...")
-            profile:clean()
-                :next(function() fidget.finish(handle, "cleaned") end)
-                :catch(function(err) fidget.fail(handle, err) end)
-        end)
-    end
-end
-
---- @param profile loomworks.Profile
-function M.delete_profile(profile)
-    return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local plan = profile:plan_deletion()
-        local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: " .. profile.key, plan,
-            profile.description)
-        M._show_confirmation(ctx, function()
-            -- A failed removal (`false`) was already reported as an error.
-            ws:execute_deletion(plan, { deactivate_profile = profile }):next(function(ok)
-                if ok then
-                    vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
-                end
-            end):catch(function(err)
-                vim.notify("loomworks: deletion failed: " .. tostring(err), vim.log.levels.ERROR)
-            end)
-        end)
-    end
-end
-
--- ---------------------------------------------------------------------------
--- Configuration action factories (take ConfigUnit objects)
--- ---------------------------------------------------------------------------
-
---- @param unit loomworks.ConfigUnit
-function M.build_configuration(unit)
-    return function()
-        require("loomworks.overseer").run_configuration_action(unit, "build")
-    end
-end
-
---- @param unit loomworks.ConfigUnit
-function M.build_serial_configuration(unit)
-    return function()
-        require("loomworks.overseer").run_configuration_action(unit, "build", nil, { parallel_jobs = 1 })
-    end
-end
-
---- @param unit loomworks.ConfigUnit
-function M.configure_configuration(unit)
-    return function()
-        require("loomworks.overseer").run_configuration_action(unit, "configure")
-    end
-end
-
---- @param unit loomworks.ConfigUnit
-function M.rebuild_configuration(unit)
-    return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items_for_unit(unit)
-        local pkey, ckey = unit_display_keys(unit)
-        local ctx = wv.compute_clean_confirmation_context(ws,
-            "Rebuild: " .. pkey .. " / " .. ckey, items, { rebuild = true })
-        M._show_confirmation(ctx, function()
-            -- Chain on the clean Future: the legacy on_done callback fires on
-            -- failure too, which would build over a tree that wasn't cleaned.
-            unit:clean()
-                :next(function()
-                    return require("loomworks.overseer").run_configuration_action(unit, "build")
-                end, function(err)
-                    vim.notify("loomworks: rebuild of " .. pkey .. " / " .. ckey
-                        .. " stopped: clean failed (" .. tostring(err) .. ")", vim.log.levels.ERROR)
-                end)
-        end)
-    end
-end
-
---- @param unit loomworks.ConfigUnit
-function M.clean_configuration(unit)
-    return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items_for_unit(unit)
-        local pkey, ckey = unit_display_keys(unit)
-        local ctx = wv.compute_clean_confirmation_context(ws,
-            "Clean: " .. pkey .. " / " .. ckey, items)
-        M._show_confirmation(ctx, function() unit:clean() end)
-    end
-end
-
---- @param unit loomworks.ConfigUnit
-function M.delete_config(unit)
-    return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local plan = unit:plan_deletion()
-        local pkey, ckey = unit_display_keys(unit)
-        local cfg = unit.configuration and unit:configuration() or nil
-        local ctx = wv.compute_delete_confirmation_context(ws,
-            "Delete: " .. pkey .. " / " .. ckey, plan, cfg and cfg.description)
-        M._show_confirmation(ctx, function()
-            -- A failed removal (`false`) was already reported as an error.
-            unit:delete():next(function(ok)
-                if ok then
-                    vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-                end
-            end):catch(function(err)
-                vim.notify("loomworks: deletion failed: " .. tostring(err), vim.log.levels.ERROR)
-            end)
-        end)
-    end
-end
-
---- @param orphan { project_key: string, config_key: string, build_dir_key: string }
-function M.delete_orphaned_config(orphan)
-    return function()
-        local ws = require("loomworks").get_workspace()
-        if not ws then return end
-        local pkey = orphan.project_key or "?"
-        local ckey = orphan.config_key or "?"
-        local build_dir_key = orphan.build_dir_key
-        vim.ui.select({ "Yes", "No" }, {
-            prompt = "Delete orphaned build dir: " .. pkey .. "/" .. ckey .. "?",
-        }, function(choice)
-            if choice ~= "Yes" then return end
-            if build_dir_key then
-                -- Report the real outcome: a failed removal was already
-                -- reported (error) and keeps the entry.
-                ws:delete_orphaned_build_dir(build_dir_key):next(function(outcome)
-                    if outcome == "removed" then
-                        vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
-                    elseif outcome == "kept" then
-                        vim.notify("loomworks: orphaned entry dropped; its directory was kept"
-                            .. " (it holds a live build dir)", vim.log.levels.INFO)
-                    elseif outcome == "dropped" then
-                        vim.notify("loomworks: orphaned entry dropped (no directory to remove)",
-                            vim.log.levels.INFO)
-                    else
-                        vim.notify("loomworks: orphaned build dir NOT removed — the entry is kept",
-                            vim.log.levels.WARN)
-                    end
-                end)
+        require("loomworks.ui.model_calls").call(ws, "Profiles/1.set_active", { profile = row }, function(r)
+            local ok, err = require("loomworks.ui.model_calls").result(r)
+            if not ok then
+                vim.notify("loomworks: " .. tostring(err or "the profile was not activated"), vim.log.levels.ERROR)
             end
         end)
     end
 end
 
---- Delete a stray build directory (not in cache).
---- @param dir string absolute normalized path
---- @return fun() closure
-function M.delete_stray_dir(dir)
-    return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        if not ws then return end
+--- The page's operation `method` (a `Build/1` call through
+--- ui/model_calls.lua) on the profile row, followed by a progress handle:
+--- `title` while it runs, `done` once it ended successfully, its error
+--- otherwise.
+--- @param ws loomworks.Workspace|nil
+--- @param method string
+--- @param params table
+--- @param title string
+--- @param doing string
+--- @param done string
+local function profile_op(ws, method, params, title, doing, done)
+    local model = require("loomworks.ui.model_calls")
+    local fidget = require("loomworks.fidget")
+    local handle = fidget.start_op_action(title)
+    fidget.report(handle, doing)
+    model.call(ws, method, params, function(r)
+        local ok, err = model.result(r)
+        if ok then return fidget.finish(handle, done) end
+        fidget.fail(handle, err or (title .. " failed"))
+    end)
+end
 
-        local ctx = wv.compute_delete_stray_dir_context(ws, dir)
+--- Build a profile (`b`): `Build/1.build { profile }` — step 5o C2d: named
+--- by its row (its id).
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.build(row, ws)
+    return function()
+        profile_op(ws, "Build/1.build", { profile = row }, "Building " .. tostring(row.key),
+            "building...", "built")
+    end
+end
+
+--- Serial build of a profile (`<C-b>`): `jobs = 1`.
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.build_serial(row, ws)
+    return function()
+        profile_op(ws, "Build/1.build", { profile = row, jobs = 1 }, "Building (serial) " .. tostring(row.key),
+            "building (-j1)...", "built")
+    end
+end
+
+--- Configure a profile (`c`).
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.configure(row, ws)
+    return function()
+        profile_op(ws, "Build/1.configure", { profile = row }, "Configuring " .. tostring(row.key),
+            "configuring...", "configured")
+    end
+end
+
+--- The unit rows a clean of `rows` is shown to clean in its confirmation: a
+--- configured build directory (the row lists one, and a state other than
+--- `unconfigured`). Display only: whether there is anything to clean is
+--- decided where the clean runs (the daemon refuses on stdout), never
+--- here.
+--- @param rows table[] view unit rows
+--- @return table[]
+local function cleanable(rows)
+    local out = {}
+    for _, u in ipairs(rows or {}) do
+        if u.build_dir and u.state ~= "unconfigured" then out[#out + 1] = u end
+    end
+    return out
+end
+
+--- The confirmation of a clean or rebuild (step 5o C2d, spec/plugin.md UI §1.10),
+--- built from the view rows, never the editor's model: the running tasks
+--- the clean stops first — the editor's own calls on the profile or its
+--- units (another client's are never stopped: the clean meets their
+--- locks) — and the units it cleans (`cleanable`).
+--- @param ws loomworks.Workspace|nil
+--- @param title string
+--- @param profile_id string|nil the profile row's id (a profile's clean)
+--- @param rows table[] the unit rows in scope
+--- @param rebuild boolean|nil
+--- @return { lines: string[], highlights: table[] }
+function M.clean_confirmation(ws, title, profile_id, rows, rebuild)
+    local lines, highlights = {}, {}
+    local function add(text, hl)
+        lines[#lines + 1] = text
+        if hl then highlights[#highlights + 1] = { line = #lines, hl_group = hl } end
+    end
+    add("  " .. title, "DiagnosticWarn")
+    add("")
+    local running = {}
+    local ids = {}
+    for _, u in ipairs(rows) do if u.unit_id ~= nil then ids[#ids + 1] = u.unit_id end end
+    for _, call in ipairs(require("loomworks.daemon.editor_ops").owned_on_ids(ws, profile_id, ids)) do
+        running[#running + 1] = call.task and call.task.name or ("task " .. tostring(call.id))
+    end
+    if #running > 0 then
+        table.sort(running)
+        add("  Will stop running tasks:", "DiagnosticWarn")
+        for _, name in ipairs(running) do add("    " .. name, "DiagnosticWarn") end
+        add("")
+    end
+    add(rebuild and "  Will clean build artifacts then rebuild:"
+        or "  Will clean build artifacts and reset to configured:", "DiagnosticWarn")
+    for _, u in ipairs(cleanable(rows)) do
+        add("    " .. tostring(u.project or "?") .. " / " .. tostring(u.configuration or "?"), "DiagnosticWarn")
+    end
+    add("")
+    add("  Press y to confirm, q to cancel", "Comment")
+    return { lines = lines, highlights = highlights }
+end
+
+--- Rebuild a profile (`R`): confirmed, its clean (`Build/1.clean`), then —
+--- only once the clean ended successfully — its build (spec §19.16 "Editor
+--- operations"). Nothing to clean is the clean's own answer, never decided
+--- from the rows (the daemon's refusal on stdout, INFO and ok): the build
+--- follows. So does a clean whose only failure is the profile's invalid
+--- ProfileProjects (core §5.4), as its refusal's `not_run` says (the
+--- daemon's clean task result): the others are built and the rebuild fails naming
+--- them.
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.rebuild(row, ws)
+    return function()
+        local key = tostring(row.key)
+        local ctx = M.clean_confirmation(ws, "Rebuild profile: " .. key, row.id, row.units or {}, true)
         M._show_confirmation(ctx, function()
-            wv.execute_delete_stray_dir(ws, dir, function(ok, err)
-                if ok then
-                    vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
-                else
-                    vim.notify("loomworks: failed to delete: " .. (err or "unknown"), vim.log.levels.ERROR)
-                end
+            local model = require("loomworks.ui.model_calls")
+            local fidget = require("loomworks.fidget")
+            local handle = fidget.start_op_action("Rebuilding " .. key)
+            -- `not_run`: the clean's own answer that its only failure is the
+            -- profile's invalid ProfileProjects (core §5.4): the others are
+            -- built, then the rebuild fails naming them.
+            local function build(not_run)
+                fidget.report(handle, "building...")
+                model.call(ws, "Build/1.build", { profile = row }, function(r)
+                    local ok, err = model.result(r)
+                    if ok and not not_run then return fidget.finish(handle, "rebuilt") end
+                    fidget.fail(handle, err or not_run or "the build failed")
+                end)
+            end
+            fidget.report(handle, "cleaning...")
+            model.call(ws, "Build/1.clean", { profile = row }, function(r)
+                local ok, err = model.result(r)
+                if ok then return build() end
+                if type(r.not_run) == "table" then return build(err) end
+                fidget.fail(handle, err or "the clean failed")
             end)
         end)
     end
 end
 
---- Open the overseer task output for a ConfigUnit.
---- Closes the status page first (terminal buffers can't layer in floats),
---- reopens it with cursor restored when the task output is dismissed.
---- @param unit loomworks.ConfigUnit
-function M.open_task(unit)
+--- Clean a profile (`C`): confirmed, `Build/1.clean { profile }`. Nothing to
+--- clean is the clean's own answer (the daemon's stdout line, notified as
+--- INFO), never decided from the rows.
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.clean(row, ws)
     return function()
-        if not unit:last_task_id() then
+        local key = tostring(row.key)
+        local ctx = M.clean_confirmation(ws, "Clean profile: " .. key, row.id, row.units or {})
+        M._show_confirmation(ctx, function()
+            profile_op(ws, "Build/1.clean", { profile = row }, "Cleaning " .. key, "cleaning...", "cleaned")
+        end)
+    end
+end
+
+--- `D` on a profile row: delete the profile and the build directories only
+--- it uses (`Maintenance/1.execute_deletion { profile }`, M.confirm_deletion).
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.delete_profile(row, ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Delete profile: " .. tostring(row.key), target = { profile = row },
+            description = row.description, done = "profile '" .. tostring(row.key) .. "' removed" })
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Configuration action factories (take a profile's unit row)
+-- ---------------------------------------------------------------------------
+
+--- A unit row's operation `method` (`Build/1` through ui/model_calls.lua,
+--- the row as `units`; step 5o C2d — by its `unit_id`). Its
+--- failure was reported where it ran (the task, or the call's notification).
+--- @param ws loomworks.Workspace|nil
+--- @param method string
+--- @param params table
+--- @param cb? fun(r: table)
+local function unit_op(ws, method, params, cb)
+    require("loomworks.ui.model_calls").call(ws, method, params, cb or function() end)
+end
+
+--- The name a unit row is shown by in a confirmation.
+local function unit_label(u)
+    return tostring(u.project or "?") .. " / " .. tostring(u.configuration or "?")
+end
+
+--- Build a profile's unit (`b` on its row).
+--- @param u table the unit's row (one of a profile row's `units`)
+--- @param ws? loomworks.Workspace
+function M.build_configuration(u, ws)
+    return function() unit_op(ws, "Build/1.build", { units = { u } }) end
+end
+
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.build_serial_configuration(u, ws)
+    return function() unit_op(ws, "Build/1.build", { units = { u }, jobs = 1 }) end
+end
+
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.configure_configuration(u, ws)
+    return function() unit_op(ws, "Build/1.configure", { units = { u } }) end
+end
+
+--- Rebuild a unit (`R`): confirmed, its clean, then — only once the clean
+--- ended successfully — its build; a failed clean is reported (once: not
+--- again when the routed call already notified it) and nothing is built.
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.rebuild_configuration(u, ws)
+    return function()
+        local ctx = M.clean_confirmation(ws, "Rebuild: " .. unit_label(u), nil, { u }, true)
+        M._show_confirmation(ctx, function()
+            local function build() unit_op(ws, "Build/1.build", { units = { u } }) end
+            unit_op(ws, "Build/1.clean", { units = { u } }, function(r)
+                local ok, err = require("loomworks.ui.model_calls").result(r)
+                if ok then return build() end
+                if r.notified then return end
+                vim.notify("loomworks: rebuild of " .. unit_label(u) .. " stopped: clean failed ("
+                    .. tostring(err) .. ")", vim.log.levels.ERROR)
+            end)
+        end)
+    end
+end
+
+--- Clean a unit (`C`): confirmed, `Build/1.clean { units }`; nothing to
+--- clean is the clean's own answer (as M.clean).
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.clean_configuration(u, ws)
+    return function()
+        local ctx = M.clean_confirmation(ws, "Clean: " .. unit_label(u), nil, { u })
+        M._show_confirmation(ctx, function()
+            unit_op(ws, "Build/1.clean", { units = { u } })
+        end)
+    end
+end
+
+--- `D` on a profile's unit row: delete the unit's build directory and cached
+--- state (`Maintenance/1.execute_deletion { unit }`).
+--- @param u table the unit's row (one of a profile row's `units`)
+--- @param ws? loomworks.Workspace
+function M.delete_config(u, ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Delete: " .. tostring(u.project or "?") .. " / "
+            .. tostring(u.configuration or "?"), target = { unit = u }, done = "configuration cleaned" })
+    end
+end
+
+--- `D` on an orphaned entry's row: delete its build directory and cache
+--- entry (`{ build_dir }`; a directory still shared or holding a live build
+--- dir is kept, only the entry dropped).
+--- @param row table the `orphaned.configurations[]` row
+--- @param ws? loomworks.Workspace
+function M.delete_orphaned_config(row, ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Delete orphaned build dir: " .. tostring(row.key),
+            target = { build_dir = row },
+            -- (A tree another configuration shares, or one holding a live build
+            -- dir, is kept: only its entry goes. The outcome cannot say which.)
+            done = "orphaned entry deleted (its directory too, unless still in use)" })
+    end
+end
+
+--- `D` on a stray build directory (on disk, in no cache entry): `{ stray_dir }`,
+--- the path exactly as the view lists it (the daemon matches it against its
+--- current stray set).
+--- @param dir string the path as listed
+--- @param ws? loomworks.Workspace
+--- @return fun() closure
+function M.delete_stray_dir(dir, ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Delete stray directory", target = { stray_dir = dir },
+            done = "stray directory removed" })
+    end
+end
+
+--- "Clean all" of the orphaned section: every orphaned and stray build
+--- directory (`{ orphans = true }`).
+--- @param ws? loomworks.Workspace
+function M.delete_orphans(ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Clean Orphaned Build Dirs", target = { orphans = true },
+            done = "orphaned build dirs cleaned" })
+    end
+end
+
+--- `D` on a project row (and the project browser's `d`): delete the
+--- project's build state, then its declaration, then its profiles'
+--- toolchain downgrade (`{ project }`).
+--- @param prow table the project's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace
+function M.delete_project(prow, ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Remove project: " .. tostring(prow.key), target = { project = prow },
+            description = prow.description, done = "project '" .. tostring(prow.key) .. "' removed" })
+    end
+end
+
+--- `<C-n>`: nuke the workspace's build state (`Maintenance/1.nuke`); its
+--- workspace is the loaded one (nil to model_calls — also while its load is
+--- refused).
+function M.nuke()
+    M.confirm_deletion(nil, { title = "Reset workspace cache", method = "Maintenance/1.nuke",
+        done = "workspace cache reset" })
+end
+
+--- The unit ids of a profile row's unit rows (those that carry one).
+--- @param row table
+--- @return string[]
+local function unit_ids_of(row)
+    local ids = {}
+    for _, u in ipairs(row.units or {}) do ids[#ids + 1] = u.unit_id end
+    return ids
+end
+
+--- The cancel of a profile row, or nil when there is nothing to cancel
+--- (spec §19.16 "Editor operations"; step 5o C2d-2). While the row runs: the
+--- running tasks whose `start` meta names the row's profile id or one of
+--- its units' ids (editor_ops.cancel_on_ids) — the editor's own cancelled,
+--- another client's left to it (`started by … — cancel it there`).
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace
+--- @return fun()|nil
+function M.cancel_profile(row, ws)
+    if not row.running then return nil end
+    local eo = require("loomworks.daemon.editor_ops")
+    local ids = unit_ids_of(row)
+    if #eo.tasks_on_ids(ws, row.id, ids) == 0 then return nil end
+    return function()
+        local n = #eo.cancel_on_ids(ws, row.id, ids)
+        if n > 0 then
+            vim.notify(string.format("loomworks: cancelled %d task(s) for profile '%s'", n, tostring(row.key)))
+        end
+    end
+end
+
+--- The cancel of a profile's unit row `u` (of profile row `row`), or nil
+--- when no task runs it (step 5o C2d-2): the running tasks whose `start`
+--- meta lists the unit's id — the whole task that runs it, even the
+--- profile's build (editor_ops.cancel_on_ids; another client's is left to
+--- it). A task that names only the row's profile id (a device log, install
+--- or launch, a test discovery) does not run the unit.
+--- @param row table the profile's view row
+--- @param u table the unit's view row
+--- @param ws? loomworks.Workspace
+--- @return fun()|nil
+function M.cancel_unit(row, u, ws)
+    if u.unit_id == nil then return nil end
+    local eo = require("loomworks.daemon.editor_ops")
+    if #eo.tasks_on_ids(ws, nil, { u.unit_id }) == 0 then return nil end
+    return function()
+        local names = {}
+        for _, t in ipairs(eo.cancel_on_ids(ws, nil, { u.unit_id })) do names[#names + 1] = t.name end
+        if #names > 0 then vim.notify("loomworks: cancelled task " .. table.concat(names, ", ")) end
+    end
+end
+
+--- The task output of a profile's unit row `u` (of profile row `row`):
+--- `<CR>` / `t` (step 5o C2d-2): the latest task observed through `Tasks/1`
+--- whose `start` meta lists the unit's id (never one that names only the
+--- row's profile id) — the running one, else the last that ended
+--- (editor_ops.tasks_on_ids) — its kept output (ui/remote_output).
+--- @param row table the profile's view row
+--- @param u table the unit's view row
+--- @param ws? loomworks.Workspace
+--- @return fun()
+function M.open_unit_task(row, u, ws)
+    return function()
+        local tasks = u.unit_id ~= nil
+            and require("loomworks.daemon.editor_ops").tasks_on_ids(ws, nil, { u.unit_id }, true) or {}
+        local pick
+        for _, t in ipairs(tasks) do
+            if not t.finished then pick = t end
+        end
+        pick = pick or tasks[#tasks]
+        if not pick then
             vim.notify("loomworks: no task output available", vim.log.levels.INFO)
             return
         end
-        local lw = require("loomworks")
-        local status = require("loomworks.ui.status")
-        local win_opts = lw.get_task_output_win()
-        status.close()
-        vim.schedule(function()
-            if not unit:open_task_output(win_opts, function()
-                status.open()
-            end) then
-                vim.notify("loomworks: task output buffer no longer available", vim.log.levels.INFO)
-                status.open()
-            end
-        end)
+        return require("loomworks.ui.remote_output").show(pick)
     end
 end
 
@@ -334,99 +422,90 @@ end
 -- Profile creation flow
 -- ---------------------------------------------------------------------------
 
---- Build the multi-step profile creation picker.
---- @param ctx table { config_sets, lw }
+--- Build the multi-step profile creation picker: a configuration set (a
+--- declared one or an automatic candidate, `ConfigSets/1.candidates`), a
+--- toolchain (`Profiles/1.tool_choices`), then `Profiles/1.create` — which
+--- adds an automatic set itself (step 5o C2a: one call per user action).
+--- @param ctx table { view, ws }
 --- @return fun() closure
 function M.create_profile(ctx)
     return function()
-        local lw = ctx.lw
-        local config_sets = ctx.config_sets or {}
-        local ws = lw.get_workspace()
-        if not ws then return end
-
-        local wv = require("loomworks.workspace_view")
-        local items = wv.compute_config_set_candidates(ws, config_sets)
-
-        if #items == 0 then
-            vim.notify("loomworks: no configuration sets available (add projects first)", vim.log.levels.INFO)
-            return
-        end
-
-        vim.ui.select(items, {
-            prompt = "Select configuration set:",
-            format_item = function(item)
-                if item.auto then
-                    return item.name .. "  (" .. item.desc .. ")"
-                end
-                return item.name .. require("loomworks.ui.helpers").picker_summary(
-                    item.cs and item.cs.description)
-            end,
-        }, function(choice)
-            if not choice then return end
-
-            local cs, err = wv.resolve_config_set_choice(ws, choice)
-            if not cs then
-                vim.notify("loomworks: " .. (err or "failed"), vim.log.levels.ERROR)
+        -- (The editor holds no model, step 6b-alpha: the calls go to the
+        -- daemon with none.)
+        local ws = ctx.ws
+        if not require("loomworks.daemon.editor_ops").daemon_of() then return end
+        local model = require("loomworks.ui.model_calls")
+        model.call(ws, "ConfigSets/1.candidates", {}, function(r)
+            if r.outcome ~= "ok" then
+                local _, err = model.result(r)
+                vim.notify("loomworks: " .. tostring(err or "the configuration sets were not listed"),
+                    vim.log.levels.ERROR)
                 return
             end
-            local is_first = not next(lw.get_profiles())
-            M._create_profile_step2(cs, choice.name or choice.real_name, is_first)
+            local items = r.sets
+            if #items == 0 then
+                vim.notify("loomworks: no configuration sets available (add projects first)", vim.log.levels.INFO)
+                return
+            end
+            vim.ui.select(items, {
+                prompt = "Select configuration set:",
+                format_item = function(item)
+                    if item.auto then
+                        return item.name .. " (auto-detected)" .. (item.desc and ("  (" .. item.desc .. ")") or "")
+                    end
+                    return item.name .. require("loomworks.ui.helpers").picker_summary(item.description)
+                end,
+            }, function(choice)
+                if not choice then return end
+                M._create_profile_step2(ws, choice, #((ctx.view or {}).profiles or {}) == 0)
+            end)
         end)
     end
 end
 
---- Step 2: Pick tool, then materialize (+ activate if first profile).
---- Re-fetches tool entries at call time (not render time) to avoid stale
---- data from before tool detection completed. Waits for tool detection
---- if still scanning.
---- @param cs loomworks.ConfigurationSet
---- @param set_name string
+--- Step 2: pick a toolchain of the set (`Profiles/1.tool_choices`, read when
+--- picked, not at render time: a tool scan may have ended since), then
+--- create the profile (+ activate it when it is the first).
+--- @param ws loomworks.Workspace|nil
+--- @param set table the set's row (a `view.Workspace/1` configuration set, or a candidates entry)
 --- @param activate boolean
-function M._create_profile_step2(cs, set_name, activate)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
-
-    if ws._tool_state == "scanning" then
-        vim.notify("loomworks: waiting for tool detection...", vim.log.levels.INFO)
-        ws._tool_waiters[#ws._tool_waiters + 1] = function()
-            M._create_profile_step2(cs, set_name, activate)
+function M._create_profile_step2(ws, set, activate)
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "Profiles/1.tool_choices", { config_set = set }, function(r)
+        if r.outcome ~= "ok" then
+            local _, err = model.result(r)
+            vim.notify("loomworks: " .. tostring(err or "the toolchains were not listed"), vim.log.levels.ERROR)
+            return
         end
-        return
-    end
-
-    local wv = require("loomworks.workspace_view")
-
-    -- Re-fetch tool entries at call time; the render-time snapshot may
-    -- predate tool detection completing.
-    local tool_entries = lw.get_tool_entries()
-    local entries = tool_entries[set_name] or {}
-
-    -- Always offer an explicit "no tool" pick so the user can deliberately
-    -- create a tool-less profile (e.g. to share the workspace with
-    -- collaborators on a host without the SDK installed). The build path
-    -- refuses to start an incomplete profile, so this entry is the explicit
-    -- opt-in. The synthetic entry carries _none = true so
-    -- execute_create_profile passes nil for the tool argument.
-    local picker_items = {}
-    for _, e in ipairs(entries) do picker_items[#picker_items + 1] = e end
-    picker_items[#picker_items + 1] = {
-        _none = true,
-        tool_label = "(no tool — incomplete profile)",
-    }
-
-    vim.ui.select(picker_items, {
-        prompt = "Select tool:",
-        format_item = function(entry)
-            return entry.tool_label or entry.tool_key or "(default)"
-        end,
-    }, function(choice)
-        if not choice then return end
-        local tool = choice._none and nil or choice
-        local profile = wv.execute_create_profile(cs, tool, activate)
-        if profile and not activate then
-            vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
+        -- Always offer an explicit "no tool" pick so the user can deliberately
+        -- create a tool-less profile (e.g. to share the workspace with
+        -- collaborators on a host without the SDK installed). The build path
+        -- refuses to start an incomplete profile, so this entry is the
+        -- explicit opt-in: Profiles/1.create gets no tool.
+        -- An SDK's kit toolchains (`sdk_key`) are offered as the SDK's own
+        -- entry here; "+ Add tool" offers them one by one.
+        local picker_items = {}
+        for _, e in ipairs(r.tools or {}) do
+            if e.sdk_key == nil then picker_items[#picker_items + 1] = e end
         end
+        picker_items[#picker_items + 1] = { _none = true, label = "(no tool — incomplete profile)" }
+
+        vim.ui.select(picker_items, {
+            prompt = "Select tool:",
+            format_item = function(entry) return entry.label or entry.key or "(default)" end,
+        }, function(choice)
+            if not choice then return end
+            local tool = not choice._none and choice or nil
+            model.call(ws, "Profiles/1.create", { config_set = set, tool = tool, activate = activate }, function(c)
+                local profile = c.profile
+                if not profile then
+                    local _, err = model.result(c)
+                    vim.notify("loomworks: " .. tostring(err or "the profile was not created"), vim.log.levels.ERROR)
+                elseif not activate then
+                    vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
+                end
+            end)
+        end)
     end)
 end
 
@@ -434,16 +513,40 @@ end
 -- Options float
 -- ---------------------------------------------------------------------------
 
---- @param unit loomworks.ConfigUnit
-function M.show_options(unit)
+--- The options float of a profile's unit row `u` (`o`; step 5o C2d-2): its
+--- build options as `Projects/1.unit_options` answers them through
+--- ui/model_calls.lua — by the row's `unit_id`, never the editor's model.
+--- @param u table the unit's view row
+--- @param ws? loomworks.Workspace
+--- @return fun()
+function M.show_options(u, ws)
     return function()
+        local model = require("loomworks.ui.model_calls")
+        model.call(ws, "Projects/1.unit_options", { unit = u }, function(r)
+            if r.outcome ~= "ok" then
+                if not r.notified then
+                    vim.notify("loomworks: " .. tostring(r.message or "no build options available"),
+                        vim.log.levels.INFO)
+                end
+                return
+            end
+            M._options_float(r.options, u.project)
+        end)
+    end
+end
+
+--- Open the options float on `option_tree` (`OptionGroup` / `Option` nodes)
+--- titled with the project key.
+--- @param option_tree table[]
+--- @param project string|nil
+function M._options_float(option_tree, project)
+    if not option_tree or #option_tree == 0 then
+        vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
+        return
+    end
+    do
         local Tree = require("loomworks.ui.tree")
         local View = require("loomworks.ui.view")
-        local option_tree = unit:options()
-        if not option_tree or #option_tree == 0 then
-            vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
-            return
-        end
 
         local function render_options(tree)
             tree._level = 1
@@ -514,7 +617,7 @@ function M.show_options(unit)
                 height = 0.8,
                 zindex = 60,
                 backdrop = 60,
-                title = " " .. (unit._project and unit._project.key or unit._init_project_key or "?") .. " — Options ",
+                title = " " .. tostring(project or "?") .. " — Options ",
                 title_pos = "center",
             },
             keymaps = {
@@ -529,6 +632,66 @@ end
 -- ---------------------------------------------------------------------------
 -- Confirmation dialog (thin UI wrapper)
 -- ---------------------------------------------------------------------------
+
+--- The one confirmation flow of a deletion or nuke, in both modes (step 5o
+--- C2c-2; ui/model_calls): call `o.method` (default
+--- `Maintenance/1.execute_deletion`) without a plan; its `confirm` shows the
+--- listing it answered (`lines`), `y` calls again with exactly the `plan`
+--- that confirmation returned and `yes`, so a deletion never removes what
+--- the listing did not show (a changed plan is refused). The outcome is
+--- reported once the deletion ended — never when it was only accepted:
+--- `o.done` on success, the refusal otherwise ("nothing to delete" as INFO).
+--- @param ws loomworks.Workspace|nil the page's workspace (nil: the loaded one)
+--- @param o { title: string, target?: table, description?: string, done: string, method?: string }
+function M.confirm_deletion(ws, o)
+    local model = require("loomworks.ui.model_calls")
+    local method = o.method or "Maintenance/1.execute_deletion"
+    local function failed(r, fallback)
+        local _, err = model.result(r)
+        vim.notify("loomworks: " .. tostring(err or fallback),
+            r.stream == "out" and vim.log.levels.INFO or vim.log.levels.ERROR)
+    end
+    model.call(ws, method, { target = o.target }, function(r)
+        if r.outcome ~= "confirm" then return failed(r, "nothing was deleted") end
+        local lines = { "  " .. o.title, "" }
+        local highlights = { { line = 1, hl_group = "DiagnosticError" } }
+        for _, l in ipairs(r.lines or {}) do
+            lines[#lines + 1] = "  " .. l
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        if type(o.description) == "string" and o.description ~= "" then
+            lines[#lines + 1] = ""
+            for _, l in ipairs(vim.split(o.description, "\n", { plain = true })) do
+                lines[#lines + 1] = "  " .. l
+                highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+            end
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+        require("loomworks.ui.dialog").show({
+            title = "Confirm",
+            lines = lines,
+            highlights = highlights,
+            max_height = 30,
+            keys = {
+                n = "close",
+                y = function(self)
+                    self:close()
+                    -- `unit_ids`: the confirm's, for the editor's own tasks
+                    -- stopped first (daemon mode; never sent on the wire).
+                    local params = { target = o.target, plan = r.plan, unit_ids = r.unit_ids, yes = true }
+                    model.call(ws, method, params, function(d)
+                        if d.outcome ~= "ok" then return failed(d, "the deletion failed") end
+                        for _, note in ipairs(d.notes or {}) do
+                            vim.notify("loomworks: " .. note, vim.log.levels.WARN)
+                        end
+                        vim.notify("loomworks: " .. o.done, vim.log.levels.INFO)
+                    end)
+                end,
+            },
+        })
+    end)
+end
 
 --- Show a confirmation dialog from pre-computed context.
 --- @param ctx { lines: string[], highlights: table[] }
@@ -548,6 +711,96 @@ function M._show_confirmation(ctx, on_confirm)
             end,
         },
     })
+end
+
+-- ---------------------------------------------------------------------------
+-- The working copy (spec §17.4)
+-- ---------------------------------------------------------------------------
+
+--- `U` / Discard: delete the working copy (`Workspace/1.delete_user_prefs`)
+--- of the loaded workspace, after its confirmation dialog.
+function M.confirm_delete_user_prefs()
+    local dialog = require("loomworks.ui.dialog")
+    local model = require("loomworks.ui.model_calls")
+    local ws = nil -- (the loaded workspace's, model_calls)
+    -- `Workspace/1.delete_user_prefs` (step 5o C2a): its `confirm` shows what
+    -- would be deleted; `y` sends its plan back, so a working copy changed
+    -- since is refused, not deleted.
+    model.call(ws, "Workspace/1.delete_user_prefs", {}, function(r)
+        if r.outcome ~= "confirm" then
+            local _, err = model.result(r)
+            vim.notify("loomworks: " .. tostring(err or "the working copy was not deleted"), vim.log.levels.ERROR)
+            return
+        end
+        local lines = { "  Delete user preferences", "" }
+        local highlights = { { line = 1, hl_group = "DiagnosticWarn" } }
+        for _, l in ipairs(r.lines or {}) do
+            lines[#lines + 1] = "  " .. l
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Active profile and default targets will be reset."
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+        dialog.show({
+            title = "Confirm Delete",
+            lines = lines,
+            highlights = highlights,
+            keys = {
+                n = "close",
+                y = function(self)
+                    self:close()
+                    model.call(ws, "Workspace/1.delete_user_prefs", { plan = r.plan }, function(d)
+                        local ok, err = model.result(d)
+                        if not ok then
+                            vim.notify("loomworks: " .. tostring(err or "the working copy was not deleted"),
+                                vim.log.levels.ERROR)
+                        end
+                    end)
+                end,
+            },
+        })
+    end)
+end
+
+--- `T` / `:LoomworksTrust`: review & trust the working copy (`Workspace/1.trust_accept`): the
+--- daemon's `confirm` (step 5o C2a) is asked here — Trust sends its plan back (a working copy
+--- changed since is refused), Discard goes to the working copy's deletion
+--- (its own confirmation), Cancel does nothing.
+--- @param confirm? fun(msg: string, choices: string, default: integer): integer (tests; default vim.fn.confirm)
+function M.trust(confirm)
+    local model = require("loomworks.ui.model_calls")
+    local ws = nil -- (the loaded workspace's, model_calls)
+    model.call(ws, "Workspace/1.trust_accept", {}, function(r)
+        if r.outcome == "confirm" then
+            local lines = vim.list_extend({}, r.lines or {})
+            lines[#lines + 1] = ""
+            lines[#lines + 1] = "Trust this working copy?"
+            local choice = (confirm or vim.fn.confirm)(table.concat(lines, "\n"), "&Trust\n&Discard\n&Cancel", 3)
+            if choice == 1 then
+                model.call(ws, "Workspace/1.trust_accept", { plan = r.plan }, function(a)
+                    local ok, err = model.result(a)
+                    if ok then
+                        vim.notify("loomworks: working copy trusted (signed for this machine)", vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: " .. tostring(err or "the working copy was not trusted"),
+                            vim.log.levels.ERROR)
+                    end
+                end)
+            elseif choice == 2 then
+                M.confirm_delete_user_prefs()
+            end
+            return
+        end
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "the working copy was not trusted"), vim.log.levels.ERROR)
+            return
+        end
+        -- (An already trusted working copy: its note.)
+        for _, note in ipairs(r.notes or {}) do vim.notify("loomworks: " .. note, vim.log.levels.INFO) end
+    end)
 end
 
 return M

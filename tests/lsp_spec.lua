@@ -1,92 +1,24 @@
 local lsp = require("loomworks.lsp")
 
--- We test lsp.lua by creating a real Core with cmake projects and
--- overriding init.lua facade functions to delegate to the test core.
--- This is necessary because init.lua captures a module-level singleton
--- that cannot be replaced via _core().
+-- The LSP layer reads projects and entries only through loomworks.lsp_source,
+-- i.e. the daemon's `LspConfig/1` state the observer holds (spec §19.16 "LSP
+-- configuration"); the tests stand a fake observer in for it.
 
-local h = require("tests.helpers")
-local Core = require("loomworks.core")
+local observer_mod = require("loomworks.daemon.observer")
 
---- Create a Core with cmake projects and return lsp-testable state.
---- @param opts table { projects, config_sets, cache, user, root }
---- @return loomworks.Core core
---- A directory holding an (empty) compile_commands.json, shared by the tests.
-local DB_DIR = vim.fs.normalize(vim.fn.tempname())
-vim.fn.mkdir(DB_DIR, "p")
-do
-    local f = assert(io.open(DB_DIR .. "/compile_commands.json", "w"))
-    f:write("[]"); f:close()
-end
-
-local function setup_core(opts)
-    opts = opts or {}
-    if opts.db_dir == nil then opts.db_dir = DB_DIR end
-    local root = opts.root or "/workspace"
-
-    local config_projects = {}
-    for key, proj in pairs(opts.projects or {}) do
-        config_projects[key] = { cmake = proj.type_config or {} }
-    end
-
-    local config_json = h.make_config_json({
-        projects = config_projects,
-        configuration_sets = opts.config_sets,
-    })
-
-    local cache_data = opts.cache or {}
-    local cache_json = h.make_cache_json(cache_data)
-    local user_json = opts.user and h.make_user_json(opts.user) or nil
-
-    -- Mock module that returns the cmake info we want.
-    -- The mock also provides lsp_configs() emitting a clangd entry rooted
-    -- at the project source path — this is what the clangd integration
-    -- and lsp.get_status() consume in the new architecture.
-    local mock_modules = {
-        get = function(mod_type)
-            if mod_type ~= "cmake" then return nil end
-            return {
-                validate = function()
-                    return { valid = true, warnings = {} }
-                end,
-                info = function(path, type_config)
-                    return {
-                        configurations = { Debug = {}, Release = {} },
-                        compile_commands_from = type_config and type_config.compile_commands_from or nil,
-                        clangd = type_config and type_config.clangd or nil,
-                    }
-                end,
-                lsp_configs = function(project)
-                    local ws = project._workspace
-                    if not ws then return {} end
-                    local root = ws.root .. "/" .. (project.path or project.key)
-                    -- A usable database (configured here + compile_commands.json
-                    -- on disk), so clangd is not withheld (spec §9.8) unless a
-                    -- test asks for it via `opts.db_state`.
-                    return {
-                        {
-                            server = "clangd",
-                            root_dir = root,
-                            compile_commands_dir = opts.db_dir,
-                            db_state = opts.db_state or "ready",
-                        },
-                    }
-                end,
-            }
-        end,
+--- Observe a daemon whose LSP state is `state` (loaded) at `root`, with
+--- `lw.buf_project` answering `buf_key` for every buffer. Returns a restore.
+local function fake_lsp_state(root, state, buf_key)
+    local lw = require("loomworks")
+    local orig_cur, orig_bp = observer_mod._current, lw.buf_project
+    observer_mod._current = {
+        root = root, state = "connected",
+        lsp_phase = function() return "loaded", state end,
     }
-
-    local deps = h.make_test_deps({
-        ["loomworks.json"] = config_json,
-        ["loomworks.cache.json"] = cache_json,
-        ["loomworks.user.json"] = user_json,
-    }, {
-        modules = mock_modules,
-    })
-
-    local core = Core.new(deps)
-    core:setup({ root = root })
-    return core
+    lw.buf_project = function() return buf_key and { key = buf_key } or nil end
+    return function()
+        observer_mod._current, lw.buf_project = orig_cur, orig_bp
+    end
 end
 
 describe("lsp", function()
@@ -112,48 +44,9 @@ describe("lsp", function()
             end
         end)
 
-        it("returns project path for cmake project buffers", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = { MyLib = {} },
-            })
-
-            core._deps.buf_name = function()
-                return "/workspace/MyLib/src/main.cpp"
-            end
-
-            -- Override init.lua facade to delegate to test core
-            local lw = require("loomworks")
-            local orig_pfb = lw.project_for_buf
-            local orig_gw = lw.get_workspace
-            lw.project_for_buf = function(bufnr) return core:project_for_buf(bufnr) end
-            lw.get_workspace = function() return core:get_workspace() end
-
-            local root_fn = lsp.clangd_root_dir(function(_, on_dir)
-                on_dir("/fallback")
-            end)
-
-            local result = nil
-            root_fn(1, function(dir) result = dir end)
-            assert.equals("/workspace/MyLib", result)
-
-            lw.project_for_buf = orig_pfb
-            lw.get_workspace = orig_gw
-        end)
-
-        it("calls fallback for non-cmake project buffers", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = {},
-            })
-
-            core._deps.buf_name = function() return "/workspace/other/file.ts" end
-
-            local lw = require("loomworks")
-            local orig_pfb = lw.project_for_buf
-            local orig_gw = lw.get_workspace
-            lw.project_for_buf = function(bufnr) return core:project_for_buf(bufnr) end
-            lw.get_workspace = function() return core:get_workspace() end
+        it("calls fallback for a project buffer whose project has no clangd entry", function()
+            local restore = fake_lsp_state("/workspace", { state = "loaded", ready = true, options = {},
+                projects = { { key = "other", path = "other", entries = {} } } }, "other")
 
             local fallback_called = false
             local root_fn = lsp.clangd_root_dir(function(_, on_dir)
@@ -162,42 +55,11 @@ describe("lsp", function()
             end)
 
             local result = nil
-            root_fn(1, function(dir) result = dir end)
+            local ok, err = pcall(root_fn, 1, function(dir) result = dir end)
+            restore()
+            assert.is_true(ok, err)
             assert.is_true(fallback_called)
             assert.equals("/fallback", result)
-
-            lw.project_for_buf = orig_pfb
-            lw.get_workspace = orig_gw
-        end)
-
-        it("picks the innermost cmake project for nested projects", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = {
-                    Root = { type_config = {} },
-                    ["Root/SubLib"] = { type_config = {} },
-                },
-                config_sets = { debug = { Root = "Debug", ["Root/SubLib"] = "Debug" } },
-            })
-
-            core._deps.buf_name = function() return "/workspace/Root/SubLib/src/foo.cpp" end
-
-            local lw = require("loomworks")
-            local orig_pfb = lw.project_for_buf
-            local orig_gw = lw.get_workspace
-            lw.project_for_buf = function(bufnr) return core:project_for_buf(bufnr) end
-            lw.get_workspace = function() return core:get_workspace() end
-
-            local root_fn = lsp.clangd_root_dir(function(_, on_dir)
-                on_dir("/fallback")
-            end)
-
-            local result = nil
-            root_fn(1, function(dir) result = dir end)
-            assert.equals("/workspace/Root/SubLib", result)
-
-            lw.project_for_buf = orig_pfb
-            lw.get_workspace = orig_gw
         end)
     end)
 
@@ -238,112 +100,18 @@ describe("lsp", function()
             lw.get_workspace = orig_gw
         end)
 
-        it("returns project info for cmake projects", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = { MyLib = {} },
-                config_sets = { debug = { MyLib = "Debug" } },
-                user = { active_profile = "debug" },
-                cache = {
-                    profiles = {
-                        debug = { configuration_set = "debug", projects = { MyLib = { config_key = "Debug" } } },
-                    },
-                    projects = {
-                        MyLib = {
-                            type = "cmake",
-                            configurations = {
-                                Debug = { state = "built", build_dir = "/workspace/.nvim/build/MyLib/Debug" },
-                            },
-                        },
-                    },
-                },
-            })
-
-            -- Patch init.lua to use our test core
-            local lw = require("loomworks")
-            local orig_gw = lw.get_workspace
-            local orig_gp = lw.get_projects
-            lw.get_workspace = function() return core:get_workspace() end
-            lw.get_projects = function() return core:get_projects() end
-
+        it("excludes projects whose module emits no LSP entries", function()
+            local restore = fake_lsp_state("/workspace", { state = "loaded", ready = true, options = {},
+                projects = { { key = "Frontend", path = "Frontend", entries = {} } } })
             local orig_get_clients = vim.lsp.get_clients
             vim.lsp.get_clients = function() return {} end
 
-            local status = lsp.get_status()
-            assert.equals(1, #status)
-            assert.equals("MyLib", status[1].project_key)
-            assert.equals("cmake", status[1].project_type)
-            assert.equals("/workspace/MyLib", status[1].root_dir)
-            assert.equals(0, #status[1].clients)
+            local ok, status = pcall(lsp.get_status)
 
             vim.lsp.get_clients = orig_get_clients
-            lw.get_workspace = orig_gw
-            lw.get_projects = orig_gp
-        end)
-
-        it("matches clangd clients by root_dir", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = { MyLib = {} },
-                config_sets = { debug = { MyLib = "Debug" } },
-                user = { active_profile = "debug" },
-            })
-
-            local lw = require("loomworks")
-            local orig_gw = lw.get_workspace
-            local orig_gp = lw.get_projects
-            lw.get_workspace = function() return core:get_workspace() end
-            lw.get_projects = function() return core:get_projects() end
-
-            local orig_get_clients = vim.lsp.get_clients
-            vim.lsp.get_clients = function(opts)
-                if opts and opts.name == "clangd" then
-                    return {
-                        { root_dir = "/workspace/MyLib", name = "clangd", id = 1, config = { cmd = { "clangd" } } },
-                        { root_dir = "/workspace/Other", name = "clangd", id = 2, config = { cmd = { "clangd" } } },
-                    }
-                end
-                return {}
-            end
-
-            local status = lsp.get_status()
-            assert.equals(1, #status)
-            assert.equals(1, #status[1].clients)
-            assert.equals("clangd", status[1].clients[1].name)
-
-            vim.lsp.get_clients = orig_get_clients
-            lw.get_workspace = orig_gw
-            lw.get_projects = orig_gp
-        end)
-
-        it("excludes project types without LSP server mapping", function()
-            -- ets has no LSP_SERVERS entry
-            local config_json = h.make_config_json({
-                projects = { Frontend = { ets = {} } },
-                configuration_sets = { debug = { Frontend = "debug" } },
-            })
-            local deps = h.make_test_deps({
-                ["loomworks.json"] = config_json,
-                ["loomworks.cache.json"] = h.make_cache_json({}),
-            })
-            local core = Core.new(deps)
-            core:setup({ root = "/workspace" })
-
-            local lw = require("loomworks")
-            local orig_gw = lw.get_workspace
-            local orig_gp = lw.get_projects
-            lw.get_workspace = function() return core:get_workspace() end
-            lw.get_projects = function() return core:get_projects() end
-
-            local orig_get_clients = vim.lsp.get_clients
-            vim.lsp.get_clients = function() return {} end
-
-            local status = lsp.get_status()
+            restore()
+            assert.is_true(ok, status)
             assert.equals(0, #status)
-
-            vim.lsp.get_clients = orig_get_clients
-            lw.get_workspace = orig_gw
-            lw.get_projects = orig_gp
         end)
     end)
 
@@ -433,90 +201,6 @@ describe("lsp", function()
         it("register rejects reserved server names", function()
             local ok = pcall(lsp.register, "excludes", {})
             assert.is_false(ok)
-        end)
-    end)
-
-    describe("lsp_configs memoization", function()
-        local events = require("loomworks.events")
-
-        local function build_core()
-            return setup_core({
-                root = "/memows",
-                projects = { MyLib = {} },
-                config_sets = { debug = { MyLib = "Debug" } },
-                user = { active_profile = "debug" },
-                cache = {
-                    profiles = {
-                        debug = {
-                            configuration_set = "debug",
-                            projects = { MyLib = { config_key = "Debug" } },
-                        },
-                    },
-                    projects = {
-                        MyLib = {
-                            type = "cmake",
-                            configurations = {
-                                Debug = {
-                                    state = "built",
-                                    build_dir = "/memows/.nvim/build/MyLib/Debug",
-                                },
-                            },
-                        },
-                    },
-                },
-            })
-        end
-
-        it("hits the cache for an unchanged project and recomputes on change", function()
-            local core = build_core()
-            local lw = require("loomworks")
-            local orig_gw, orig_gp = lw.get_workspace, lw.get_projects
-            lw.get_workspace = function() return core:get_workspace() end
-            lw.get_projects = function() return core:get_projects() end
-
-            local project
-            for _, p in pairs(core:get_projects()) do
-                if p.key == "MyLib" then project = p end
-            end
-            assert.is_not_nil(project)
-
-            -- Spy on the module's lsp_configs so we can count real recomputes.
-            local impl = project._module.impl
-            local calls = 0
-            local orig = impl.lsp_configs
-            impl.lsp_configs = function(p)
-                calls = calls + 1
-                return orig(p)
-            end
-
-            -- First resolve computes; the second (as the second integration on
-            -- a tick would) is a pure cache hit — NO recompute.
-            lsp.entry_for_project(project, "clangd")
-            lsp.entry_for_project(project, "clangd")
-            assert.equals(1, calls)
-
-            -- An lsp-options (type_config) change flips the content key.
-            project.type_config = { clangd = "/opt/clangd" }
-            lsp.entry_for_project(project, "clangd")
-            assert.equals(2, calls)
-            lsp.entry_for_project(project, "clangd")
-            assert.equals(2, calls)  -- stable again
-
-            -- A build_dir change (the resolved compile_commands dir moving)
-            -- must recompute for this project.
-            project.cached = project.cached or {}
-            project.cached.build_dir = "/memows/.nvim/build/MyLib/Other"
-            lsp.entry_for_project(project, "clangd")
-            assert.equals(3, calls)
-
-            -- workspace_changed blows the whole memo → next resolve recomputes.
-            events.emit("workspace_changed")
-            lsp.entry_for_project(project, "clangd")
-            assert.equals(4, calls)
-
-            impl.lsp_configs = orig
-            lw.get_workspace = orig_gw
-            lw.get_projects = orig_gp
         end)
     end)
 end)

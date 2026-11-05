@@ -4,7 +4,7 @@ Native C/C++/Rust/Zig debugger using LLDB under the hood. Default
 adapter for the `c++` language.
 
 > **Note:** Debug adapters are not yet pluggable through a registry
-> (BACKLOG.md "Pluggable debug adapter architecture"). Until that
+> (backlog: "Pluggable debug adapter architecture"). Until that
 > refactor lands, this file documents adapter-specific behavior
 > implemented inside `lua/loomworks/debug.lua`. After the refactor it
 > will move to `lua/loomworks/integrations/debug/codelldb.lua`.
@@ -54,8 +54,8 @@ falls back to non-debug launch.
 
 ## 6. Environment inventory
 
-Declares `dap:codelldb` (category *debug adapters*) in its inventory companion
-(`integrations/inventory/codelldb.lua`, core §9.3). Found when the Mason
+Declares `dap:codelldb` (category *debug adapters*) in its inventory companion,
+loomworks' `lua/loomworks/integrations/inventory/codelldb.lua` (plugin.md §9.3). Found when the Mason
 package's adapter binary exists (`<data>/mason/packages/codelldb/extension/adapter/codelldb[.exe]`,
 `<data>` per clangd §14) or `codelldb` is on the search path. Version: from the
 Mason install receipt when present, otherwise not shown (no spawn). The result

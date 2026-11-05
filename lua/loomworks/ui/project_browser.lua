@@ -2,45 +2,78 @@
 ---
 --- Snacks.win float with Tree widget. Scans workspace directories
 --- asynchronously and shows detected project types. Users can add or
---- remove projects from here.
+--- remove projects from here. A directory's types (each with its marker) are
+--- the daemon's (`Projects/1.candidates`, which detects them); adding is
+--- `Projects/1.candidates` (the key and path the directory gets) then
+--- `Projects/1.add` through
+--- loomworks.ui.model_calls (the daemon's; step 5o C2b); the projects
+--- already added are the workspace view's rows. Removing names the
+--- project's view row (step 5o C2c-2).
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
-local modules = require("loomworks.modules")
-local workspace_view = require("loomworks.workspace_view")
+local model = require("loomworks.ui.model_calls")
 
 local M = {}
+
+--- Directory names the browser does not list (besides dot-directories).
+local SKIP = {
+    node_modules = true, build = true, out = true, __pycache__ = true,
+}
+
+--- The subdirectories of `abs_path`, sorted (none when unreadable).
+--- @param abs_path string
+--- @param cb fun(names: string[])
+local function list_dirs(abs_path, cb)
+    local uv = vim.uv or vim.loop
+    uv.fs_scandir(abs_path, function(err, handle)
+        local dirs = {}
+        if not err and handle then
+            while true do
+                local name, ftype = uv.fs_scandir_next(handle)
+                if not name then break end
+                if ftype == "directory" and not SKIP[name] and name:sub(1, 1) ~= "." then
+                    dirs[#dirs + 1] = name
+                end
+            end
+            table.sort(dirs)
+        end
+        vim.schedule(function() cb(dirs) end)
+    end)
+end
+
+--- The module types that detect `abs_path` (`Projects/1.candidates`); none
+--- when it is refused.
+--- @param abs_path string
+--- @param cb fun(types: { type: string, marker: string }[])
+local function detect_types(abs_path, cb)
+    model.call(nil, "Projects/1.candidates", { path = abs_path }, function(c)
+        local types = {}
+        for _, ti in ipairs(c.outcome == "ok" and type(c.types) == "table" and c.types or {}) do
+            types[#types + 1] = { type = ti.type, marker = ti.marker or "" }
+        end
+        cb(types)
+    end)
+end
 
 --- @class loomworks.BrowserEntry
 --- @field name string directory basename
 --- @field abs_path string absolute path
---- @field types { type: string, marker: string }[]
+--- @field types { type: string, marker: string }[]|nil nil until the daemon answers
 
---- Build the set of project keys currently in loomworks.json.
---- Returns a set keyed by (relative_path, type) for checking "already added".
---- @param root string
+--- Build the set of the workspace's projects, keyed by (relative_path,
+--- type) for checking "already added": from the workspace view's project
+--- rows (none while it is not held).
 --- @return table<string, table<string, true>>  path -> { type -> true }
-local function build_added_set(root)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return {} end
-
+local function build_added_set()
     local added = {}
-    for _, proj in pairs(ws._projects) do
-        local rel = proj.path or proj.key
-        if not added[rel] then added[rel] = {} end
-        added[rel][proj.type] = true
+    local _, obs = require("loomworks.daemon.editor_ops").daemon_of()
+    local view = obs and obs:workspace_view() or nil
+    for _, row in ipairs(type(view) == "table" and view.projects or {}) do
+        if not added[row.path] then added[row.path] = {} end
+        added[row.path][row.type] = true
     end
     return added
-end
-
---- Derive the project key and optional path for a browser entry.
---- Delegates to workspace_view for testability.
---- @param root string workspace root
---- @param entry loomworks.BrowserEntry
---- @return string key, string|nil path
-local function derive_key_and_path(root, entry)
-    return workspace_view.derive_key_and_path(root, entry.abs_path, entry.name)
 end
 
 --- Open the project browser for a workspace root.
@@ -53,19 +86,35 @@ function M.open(root)
 
     local tree, view
 
-    --- Trigger an async scan for a directory and refresh on completion.
+    local function refresh()
+        if view and view:is_open() then view:refresh() end
+    end
+
+    --- Trigger an async scan for a directory and refresh on completion: its
+    --- subdirectories at once, each one's types as the daemon answers.
     --- @param abs_path string
     local function scan_dir(abs_path)
         if scan_cache[abs_path] or scanning[abs_path] then return end
         scanning[abs_path] = true
-        modules.scan_directory_async(abs_path, nil, function(entries)
+        list_dirs(abs_path, function(names)
             scanning[abs_path] = nil
-            scan_cache[abs_path] = entries
-            if view and view:is_open() then
-                view:refresh()
+            local entries = {}
+            for _, name in ipairs(names) do
+                local entry = { name = name, abs_path = abs_path .. "/" .. name }
+                entries[#entries + 1] = entry
+                detect_types(entry.abs_path, function(types)
+                    entry.types = types
+                    refresh()
+                end)
             end
+            scan_cache[abs_path] = entries
+            refresh()
         end)
     end
+
+    --- The root's entry (its types as the daemon answers).
+    --- @type loomworks.BrowserEntry
+    local root_entry = { name = root:match("([^/]+)$") or root, abs_path = root }
 
     --- Check if a type is already added for a relative path.
     --- @param added table
@@ -76,104 +125,48 @@ function M.open(root)
         return added[rel] and added[rel][type_name] or false
     end
 
-    --- Open the mapping dialog with detected tools for a new project.
-    --- Chains decomposed operations on accept via workspace_view.
-    --- @param type_info { type: string, marker: string }
-    --- @param key string project key
-    --- @param path string|nil relative path
-    --- @param config_names string[] available configuration names
-    --- @param keyed_tools table[] detected keyed tools (may be empty)
-    local function open_mapping_dialog(type_info, key, path, config_names, keyed_tools)
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        local raw_config_sets = {}
-        for _, cs_obj in pairs(ws._config_sets) do
-            raw_config_sets[cs_obj.name] = cs_obj:raw_mappings()
-        end
-        local mod = modules.get(type_info.type)
-        local has_keyed = mod and mod.has_keyed_tools or false
-
-        local ctx = workspace_view.compute_add_project_context(ws, type_info.type)
-
-        require("loomworks.ui.mapping_dialog").open({
-            ws = ws,
-            project_key = key,
-            project_type = type_info.type,
-            available_configs = config_names,
-            config_sets = raw_config_sets,
-            mod = mod,
-            tools = ctx.inherited_tool and {} or keyed_tools,
-            has_keyed_tools = has_keyed,
-            inherited_tool = ctx.inherited_tool,
-            no_tool_profiles = ctx.no_tool_profiles,
-            on_accept = function(result)
-                local ok, err = workspace_view.execute_add_project(ws, key, type_info.type, path, result, has_keyed)
-                if not ok then
-                    vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-                end
-            end,
-            on_cancel = function() end,
-        })
-    end
-
-    --- Add a project from a browser entry.
-    --- If configuration sets exist, opens a mapping dialog first.
-    --- For keyed-module types, ensures tool detection completes first.
+    --- Add a project from a browser entry: its key and path
+    --- (`Projects/1.candidates`), then the project, unmapped — configuration
+    --- set mappings and tool/SDK selection happen separately via the status
+    --- page.
     --- @param entry loomworks.BrowserEntry
     --- @param type_info { type: string, marker: string }
     local function do_add(entry, type_info)
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        if not ws then return end
-
-        local prep = workspace_view.prepare_add_project_from_browser(
-            ws, root, entry.abs_path, entry.name, type_info.type)
-
-        -- Add project directly with no mappings.
-        -- Config set mappings and tool/SDK selection happen separately
-        -- via the status page.
-        local ok, err = workspace_view.execute_add_project(
-            ws, prep.key, prep.mod_type, prep.path, { mappings = {} }, false)
-        if not ok then
+        -- (The editor holds no model, step 6b-alpha: the calls name none.)
+        if not require("loomworks.daemon.editor_ops").daemon_of() then return end
+        local function failed(err)
             vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
         end
+        model.call(nil, "Projects/1.candidates", { path = entry.abs_path, type = type_info.type }, function(c)
+            if c.outcome ~= "ok" then return failed(c.message) end
+            model.call(nil, "Projects/1.add", { key = c.key, type = type_info.type, path = c.path, mappings = {} },
+                function(r)
+                    local ok, err = model.result(r)
+                    if not ok then failed(err) end
+                end)
+        end)
     end
 
-    --- Remove a project that matches a browser entry.
+    --- Remove the project a browser entry shows as added: the workspace
+    --- view's project row of its directory (the input boundary: the entry
+    --- names a directory, the row is what the call names — by its id), then `Maintenance/1.execute_deletion { project }` with its
+    --- confirmation (loomworks.ui.actions.delete_project; step 5o C2c-2).
     --- @param entry loomworks.BrowserEntry
     local function do_remove(entry)
         local rel = entry.abs_path:sub(#root + 2)
         if rel == "" then rel = "." end
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        if not ws then return end
-
-        local project = workspace_view.find_project_by_path(ws, rel, entry.name)
-        if not project then
+        if not require("loomworks.daemon.editor_ops").daemon_of() then return end
+        local body = require("loomworks.status_source").read()
+        local prow
+        for _, row in ipairs(type(body.view) == "table" and body.view.projects or {}) do
+            local where = row.path or row.key
+            if where == rel or where == entry.name then prow = row; break end
+        end
+        if not (prow and require("loomworks.ui.helpers").actionable(body, prow)) then
             vim.notify("loomworks: project not found in workspace", vim.log.levels.WARN)
             return
         end
-
-        local ctx = workspace_view.compute_remove_context(ws, project)
-        if not ctx then return end
-
-        local dialog = require("loomworks.ui.dialog")
-        dialog.show({
-            title = "Confirm Remove",
-            lines = ctx.lines,
-            highlights = ctx.highlights,
-            keys = {
-                n = "close",
-                y = function(self)
-                    self:close()
-                    workspace_view.execute_remove_project(ws, project, ctx, function(ok, err)
-                        if not ok then
-                            vim.notify("loomworks: " .. (err or "failed to remove"), vim.log.levels.ERROR)
-                        end
-                    end)
-                end,
-            },
-        })
+        require("loomworks.ui.actions").delete_project(prow)()
     end
 
     --- Render a single browser entry line.
@@ -352,8 +345,7 @@ function M.open(root)
         t:leaf("Add Project", "Title")
         t:blank()
 
-        local added = build_added_set(root)
-        local root_name = root:match("([^/]+)$") or root
+        local added = build_added_set()
 
         -- Root is the single top-level foldable node, open by default on first render
         local root_fold_key = "browser:" .. root
@@ -361,11 +353,6 @@ function M.open(root)
             t._folds[root_fold_key] = true
         end
 
-        local root_entry = {
-            name = root_name,
-            abs_path = root,
-            types = modules.detect_all_types(root),
-        }
         render_entry(t, root_entry, added, root)
 
         t:blank()
@@ -396,7 +383,7 @@ function M.open(root)
             ["r"]       = "refresh_browser",
         },
         events = {
-            "active_set_changed",
+            "daemon_view_changed", -- the projects already added are the view's
         },
         on_close = function()
             if parent_win and vim.api.nvim_win_is_valid(parent_win) then
@@ -410,6 +397,8 @@ function M.open(root)
         if action == "refresh_browser" then
             scan_cache = {}
             scanning = {}
+            root_entry.types = nil
+            detect_types(root, function(types) root_entry.types = types; refresh() end)
             scan_dir(root)
             return { refresh = true }
         end
@@ -428,6 +417,7 @@ function M.open(root)
 
     view:open()
 
+    detect_types(root, function(types) root_entry.types = types; refresh() end)
     scan_dir(root)
 end
 

@@ -1,40 +1,35 @@
 TESTS_DIR := tests
 INIT_FILE := tests/minimal_init.lua
 
-.PHONY: test test-file test-standalone test-all install dist
+.PHONY: lw test test-file
 
 ## Run all tests (nvim/busted suite)
-## Plenary starts every spec file at once and waits TEST_TIMEOUT ms for ALL of
-## them together (its default, 50 s, is a whole-suite budget, not per file). A
-## file still running at the deadline prints nothing and fails the run, so the
-## budget must cover the slowest file on a loaded machine.
+## scripts/run_specs.lua runs every spec file as PlenaryBustedDirectory does
+## (one headless child nvim per file, same minimal_init, all started at once,
+## TEST_TIMEOUT ms for ALL of them together) but ends with a table naming each
+## file that exited non-zero, printed no summary, or was still running at the
+## deadline -- PlenaryBustedDirectory only exits 1. The budget must cover the
+## slowest file on a loaded machine. TEST_JOBS=N caps the concurrency.
+## The daemon specs run a real lw: the release the plugin pins, provisioned
+## into .lw-test/ (gitignored) by scripts/test_lw.lua with the plugin's own
+## download code, its bundle beside it. `make test` / `make test-file` set
+## LOOMWORKS_LW (and LOOMWORKS_INSTALL_DIR, where the bundle is) to it; to run
+## a spec by hand, `eval "$$(nvim -l scripts/test_lw.lua .lw-test)"` first.
+LW_TEST_DIR := .lw-test
+LW_ENV = lw_env="$$(nvim -l scripts/test_lw.lua $(LW_TEST_DIR))" && eval "$$lw_env"
+
+lw:
+	nvim -l scripts/test_lw.lua $(LW_TEST_DIR)
+
 TEST_TIMEOUT := 600000
+TEST_JOBS := 0
 test:
-	nvim --headless -u $(INIT_FILE) -c "PlenaryBustedDirectory $(TESTS_DIR)/ {minimal_init = '$(INIT_FILE)', timeout = $(TEST_TIMEOUT)}"
+	$(LW_ENV) && nvim -l scripts/run_specs.lua --timeout $(TEST_TIMEOUT) --jobs $(TEST_JOBS) --init $(INIT_FILE) $(TESTS_DIR)
 
 ## Run a single test file: make test-file FILE=tests/config_spec.lua
+## Run in this nvim, as each file of `make test` is: PlenaryBustedFile would
+## spawn it under plenary's fixed 50 s budget and, past it, exit 1 and drop
+## the run mid-test (on a loaded machine the daemon specs take longer,
+## leaving the daemons they started running).
 test-file:
-	nvim --headless -u $(INIT_FILE) -c "PlenaryBustedFile $(FILE)"
-
-## Run the standalone bootstrap tests (boot.verify / boot.json) under luvi.
-## These exercise luvi's OpenSSL and so cannot run under nvim/busted.
-test-standalone:
-	@command -v luvi >/dev/null 2>&1 || { echo "luvi not found on PATH (needed for standalone bootstrap tests)"; exit 1; }
-	luvi tests/standalone
-
-## Run both suites.
-test-all: test test-standalone
-
-## Build a fused-everything lw host from the working tree and install it for the
-## current user (frozen snapshot; use `lw --dev` for the live repo). Re-run to
-## update the installed snapshot.
-install:
-	bash scripts/dev-install.sh
-
-## Dry-run a release build into dist/ using the TEST key + local luvi. CI passes
-## the real version and signing key (see .github/workflows/release.yml).
-dist:
-	@command -v luvi >/dev/null 2>&1 || { echo "luvi not found on PATH"; exit 1; }
-	bash scripts/release/build_bundle.sh 0.0.0-dev dist tests/fixtures/dist/test_ec_priv.pem
-	bash scripts/release/fuse_host.sh "$$(command -v luvi)" tests/fixtures/dist/test_ec_pub.pem dist/lw-local 0.0.0-dev
-	@echo "dist/ built (dry-run, test key). Real releases: CI on a v* tag."
+	$(LW_ENV) && nvim --headless -u $(INIT_FILE) -c "lua require('plenary.busted').run('$(FILE)')"

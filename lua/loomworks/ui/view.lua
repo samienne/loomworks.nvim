@@ -15,7 +15,7 @@
 --- @field _win_opts table Snacks.win config overrides
 --- @field _on_close fun()|nil
 --- @field _on_write fun()|nil
---- @field _on_revert fun()|nil
+--- @field _on_revert fun(force: boolean)|nil
 --- @field _is_modified (fun(): boolean)|nil
 --- @field _lock_to_items boolean
 --- @field _filetype string buffer filetype
@@ -35,6 +35,24 @@
 ---     Storage lives outside the view — typically on the workspace.
 local View = {}
 View.__index = View
+
+--- `:e` / `:e!` on the acwrite buffer `bufnr` (BufReadCmd): `on_revert(force)`,
+--- `force` true for `:e!` (v:cmdbang), then `after()`. Vim refuses a plain
+--- `:e` on a modified buffer (E37), so it reaches here only while the
+--- buffer is not marked modified; `on_revert` decides what a plain `:e`
+--- does then (the buffer's flag can lag the state the revert acts on).
+--- @param bufnr integer
+--- @param on_revert fun(force: boolean)
+--- @param after? fun()
+function View.attach_revert(bufnr, on_revert, after)
+    vim.api.nvim_create_autocmd("BufReadCmd", {
+        buffer = bufnr,
+        callback = function()
+            on_revert(vim.v.cmdbang == 1)
+            if after then after() end
+        end,
+    })
+end
 
 --- @param opts table
 --- @return loomworks.View
@@ -141,21 +159,9 @@ function View:open(win_overrides)
             end,
         })
     end
-    -- Set up BufReadCmd for :e / :e! support. Vim refuses :e on a modified
-    -- buffer (E37) and only fires this autocmd on :e!. The acwrite buffer's
-    -- modified flag mirrors `is_modified`, which returns true whenever the
-    -- workspace has any divergence from the published baseline. So this
-    -- handler runs only when the user said "yes, force-revert".
     if self._on_revert and self._bufnr then
-        local on_revert = self._on_revert
         local view = self
-        vim.api.nvim_create_autocmd("BufReadCmd", {
-            buffer = self._bufnr,
-            callback = function()
-                on_revert()
-                view:refresh()
-            end,
-        })
+        View.attach_revert(self._bufnr, self._on_revert, function() view:refresh() end)
     end
     self:refresh()
     if self._cursor_storage then
@@ -212,7 +218,7 @@ function View:refresh()
         end
     end
 
-    -- The widget fits description summaries to the window (spec/ui.md §1.16).
+    -- The widget fits description summaries to the window (spec/plugin.md UI §1.16).
     self._widget.width = vim.api.nvim_win_get_width(win)
     local lines, highlights, _, needs_frame = self._widget:render()
 
@@ -426,7 +432,8 @@ function View:_setup_cursor_lock()
 end
 
 function View:_setup_events()
-    local events = require("loomworks.events")
+    -- The editor's event bus, through the facade (`lw.on` / `lw.off`).
+    local events = require("loomworks")
     self._event_handlers = {}
     for _, event_name in ipairs(self._events) do
         local handler = function()
@@ -458,7 +465,7 @@ function View:_cleanup()
         pcall(vim.api.nvim_del_autocmd, self._resize_autocmd)
         self._resize_autocmd = nil
     end
-    local events = require("loomworks.events")
+    local events = require("loomworks")
     for _, entry in ipairs(self._event_handlers) do
         events.off(entry[1], entry[2])
     end

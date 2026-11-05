@@ -27,98 +27,17 @@
 local M = {}
 
 -- ---------------------------------------------------------------------------
--- Parser
+-- Parser (host-neutral: loomworks.device_log_records, which the workspace
+-- daemon's `Launch/1.device_log` parses with too)
 -- ---------------------------------------------------------------------------
 
---- Strip escape sequences, BOM, and stray control bytes from a line.
---- The device connector can prepend colour sequences, send BEL
---- characters, or mix CRLF depending on the build — without
---- sanitising, those leak into the parse regex (breaking it) or into
---- the rendered buffer (showing up as weird glyphs).
---- @param line string
---- @return string
-local function sanitize(line)
-    -- UTF-8 BOM
-    if line:sub(1, 3) == "\xEF\xBB\xBF" then
-        line = line:sub(4)
-    end
-    -- ANSI CSI: ESC '[' [params] final-byte
-    line = line:gsub("\27%[[%d;?]*[@-~]", "")
-    -- OSC sequences: ESC ']' ... (terminated by BEL or ST)
-    line = line:gsub("\27%][^\7\27]*[\7\27]", "")
-    -- Other single-char escape sequences: ESC followed by one byte
-    -- that isn't '[' or ']' (covers ESC(A, ESC=, ESC\, ...).
-    line = line:gsub("\27[^%[%]]", "")
-    -- Headless CSI remnants: something upstream (overseer output
-    -- processing, neovim jobstart, or the device connector itself)
-    -- can eat the ESC byte but leave the visible `[41;155H` tail. Strip the tail
-    -- too — require at least two digits in the parameter block so
-    -- legitimate bracketed content like `[a92ab178]` or `[0xABCD]`
-    -- doesn't match.
-    line = line:gsub("%[%??%d%d+[%d; ]*[A-Za-z]", "")
-    -- Remove non-printable C0 controls except TAB, LF, CR, and DEL.
-    line = line:gsub("[%z\1-\8\11-\12\14-\31\127]", "")
-    -- Trailing CR (Windows-style line endings in a substream)
-    line = line:gsub("\r+$", "")
-    return line
-end
+local records = require("loomworks.device_log_records")
 
---- Expose the line sanitiser so streaming callers can clean a line
---- up once and use the result for both parse AND the raw fallback
---- (otherwise an unparseable line shows up in the view with its
---- escape remnants still attached).
---- @param line string
---- @return string cleaned
-function M.sanitize_line(line)
-    if type(line) ~= "string" then return "" end
-    return sanitize(line)
-end
+--- Expose the line sanitiser (device_log_records.sanitize_line).
+M.sanitize_line = records.sanitize_line
 
---- Parse a single device log line.
----
---- Expected format:
----   MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: message
----
---- Some lines use a two-segment DOMAIN/TAG form (no PROC) — we fall
---- back to that rather than dropping them.
----
---- Returns `nil, cleaned_line` when the line couldn't be parsed; the
---- caller is expected to keep that cleaned fallback visible as a
---- raw record so buffering / streaming issues are obvious.
---- @param line string
---- @return table|nil record { time, pid, tid, level, domain, proc?, tag, msg }
---- @return string|nil cleaned_line  sanitised form, for raw fallback
-function M.parse_line(line)
-    if type(line) ~= "string" or line == "" then return nil, "" end
-    line = sanitize(line)
-    if line == "" then return nil, "" end
-
-    local time, pid, tid, level, rest = line:match(
-        "^(%d%d%-%d%d %d%d:%d%d:%d%d%.%d+)%s+(%d+)%s+(%d+)%s+([A-Z])%s+(.*)$")
-    if not time then return nil, line end
-
-    -- Three-segment form: DOMAIN/PROC/TAG: msg. Neither PROC nor TAG holds
-    -- whitespace, so a two-segment line whose message contains "/" and ": "
-    -- (`C03F00/MUSL-LDSO: load /system/lib/x.so: ok`) is never split there.
-    local domain, proc, tag, msg = rest:match("^([^/%s]+)/([^/%s]+)/([^:%s]+):%s?(.*)$")
-    if not domain then
-        -- Two-segment form: DOMAIN/TAG: msg
-        domain, tag, msg = rest:match("^([^/%s]+)/([^:%s]+):%s?(.*)$")
-        proc = nil
-    end
-    if not domain then return nil, line end
-
-    return {
-        time = time,
-        pid = tonumber(pid),
-        tid = tonumber(tid),
-        level = level,
-        domain = domain,
-        proc = proc,
-        tag = tag,
-        msg = msg or "",
-    }
-end
+--- Parse a single device log line (device_log_records.parse_line).
+M.parse_line = records.parse_line
 
 -- ---------------------------------------------------------------------------
 -- Filtering
@@ -180,93 +99,8 @@ function M.match_filter(filter, record, rendered)
     return true
 end
 
---- Does the device log's `proc` column refer to `bundle`?
----
---- Three cases:
----   * exact match             `proc == bundle`
----   * prefix + separator      `proc` starts with `bundle.` or
----                             `bundle:` (sub-processes and service
----                             helpers that live under the app, e.g.
----                             `com.example.app.worker` or
----                             `com.example.app:helper`)
----   * left-truncation         some device log formats truncate the
----                             proc column to ~30 chars from the LEFT
----                             for long bundle names. The proc seen
----                             in the stream is a suffix of the
----                             real bundle. Matches when
----                             `bundle:sub(-#proc) == proc`.
---- @param proc string|nil
---- @param bundle string
---- @return boolean
-local function proc_matches_bundle(proc, bundle)
-    if not proc or not bundle or bundle == "" then return false end
-    if proc == bundle then return true end
-    local n = #bundle
-    local prefix = proc:sub(1, n + 1)
-    if prefix == bundle .. "." or prefix == bundle .. ":" then
-        return true
-    end
-    if #bundle > #proc and bundle:sub(-#proc) == proc then
-        return true
-    end
-    return false
-end
-
---- Build the session prefilter.
----
---- Modes:
----   * `"strict"` (default) — keep a record only if **both** the PID
----     is the app's PID AND the proc column matches the bundle.
----     This is the "All logs of selected app" behaviour:
----     drops system noise emitted by services that happen to run on
----     adjacent PIDs, drops the kernel/helpers that aren't our app.
----     If the launch resolved only one of pid/bundle, the prefilter
----     degrades to whichever was available (still narrow enough).
----   * `"app-related"` — keep if **either** side matches. Broader
----     net for when the strict mode is hiding runtime-helper output
----     the user wants to see.
----   * `"all"` — no prefilter. For debugging the stream itself.
----
---- Regardless of mode, unparseable "raw" records always pass —
---- device-connector errors, kernel panics, and similar diagnostic
---- lines stay visible.
----
---- @param opts { pid?: number, bundle?: string, mode?: "strict"|"app-related"|"all" }
---- @return fun(record: table): boolean
-function M.make_prefilter(opts)
-    opts = opts or {}
-    local mode = opts.mode or "strict"
-    local pid = opts.pid
-    local bundle = opts.bundle
-
-    if mode == "all" then
-        return function() return true end
-    end
-
-    if mode == "app-related" then
-        return function(record)
-            if not record then return false end
-            if record.header or record.raw then return true end
-            if pid and record.pid == pid then return true end
-            if bundle and proc_matches_bundle(record.proc, bundle) then
-                return true
-            end
-            return false
-        end
-    end
-
-    -- Default: strict — AND of whichever criteria are provided.
-    return function(record)
-        if not record then return false end
-        if record.header or record.raw then return true end
-        local pid_ok = pid and record.pid == pid
-        local bundle_ok = bundle and proc_matches_bundle(record.proc, bundle)
-        if pid and bundle then return pid_ok and bundle_ok end
-        if pid then return pid_ok end
-        if bundle then return bundle_ok end
-        return false
-    end
-end
+--- Build the session prefilter (device_log_records.make_prefilter).
+M.make_prefilter = records.make_prefilter
 
 -- ---------------------------------------------------------------------------
 -- Rendering (pure — shared by view appends, re-renders, and regex
@@ -378,7 +212,7 @@ local MAX_LINES_PER_FLUSH = 200
 --- pending records start dropping at the append point — bounds
 --- memory and stops the queue from growing unboundedly if we're
 --- persistently behind. Dropped records are still counted and
---- reported via the logger so the user knows there's a gap.
+--- reported in the view (a gap line) so the user knows there's a gap.
 local MAX_PENDING = 2000
 
 --- Create the singleton view. Lazy — nothing materialises until
@@ -432,6 +266,17 @@ function LogView:show(opts)
     vim.wo[self._win].wrap = false
     vim.wo[self._win].winfixheight = true
 
+    -- Its window closed any way (`q`, `:q`, `<C-w>c`): `on_close`, which
+    -- ends a stream the workspace daemon carries (M.start_remote).
+    local win = self._win
+    vim.api.nvim_create_autocmd("WinClosed", {
+        pattern = tostring(win), once = true,
+        callback = function()
+            if self._win == win then self._win = nil end
+            if self.on_close then self.on_close() end
+        end,
+    })
+
     if vim.api.nvim_win_is_valid(prev) then
         vim.api.nvim_set_current_win(prev)
     end
@@ -441,10 +286,13 @@ function LogView:show(opts)
 end
 
 function LogView:hide()
+    local was = self._win
     if self._win and vim.api.nvim_win_is_valid(self._win) then
         vim.api.nvim_win_close(self._win, true)
     end
     self._win = nil
+    -- (WinClosed calls it too; `on_close` is idempotent.)
+    if was and self.on_close then self.on_close() end
 end
 
 function LogView:toggle()
@@ -553,6 +401,19 @@ function LogView:_flush()
     end
     self._pending = remainder
 
+    -- If we dropped pending records to stay under the cap, tell the
+    -- user in the view itself — silent drops would hide a real
+    -- problem. One gap line per flush regardless of drop count, ahead
+    -- of the records that follow the gap. It is NOT kept in the ring:
+    -- the dropped records are still there, so a re-render shows them all
+    -- in order and the gap no longer applies.
+    if self._pending_dropped and self._pending_dropped > 0 then
+        local gap = { header = string.format("── %d lines dropped (the view fell behind the stream) ──",
+            self._pending_dropped) }
+        self._pending_dropped = 0
+        table.insert(batch, 1, gap)
+    end
+
     local lines = {}
     local hl_records = {}
     for _, rec in ipairs(batch) do
@@ -565,23 +426,6 @@ function LogView:_flush()
         end
     end
 
-    -- If we dropped pending records to stay under the cap, tell the
-    -- user (via the loomworks logger) — silent drops would hide a
-    -- real problem. Emit once per flush regardless of drop count
-    -- so we don't spam the log file.
-    if self._pending_dropped and self._pending_dropped > 0 then
-        local ok_lw, lw = pcall(require, "loomworks")
-        if ok_lw then
-            local ws = lw.get_workspace()
-            local log = ws and ws._core and ws._core._deps
-                and ws._core._deps.log
-            if log then
-                log:warn("device_log: dropped %d pending lines (UI behind stream)",
-                    self._pending_dropped)
-            end
-        end
-        self._pending_dropped = 0
-    end
 
     -- Schedule the next flush early when there's still a remainder
     -- so we work down the queue promptly instead of waiting a full
@@ -884,9 +728,132 @@ local _task = nil
 --- @type fun(record: table): boolean|nil
 local _prefilter = nil
 
+--- @class loomworks.DeviceLogRemote
+--- A stream the workspace daemon carries (`Launch/1.device_log`, step 5n
+--- C3): `handle` cancels it (nil when it was refused at once).
+--- @field handle { cancel: fun(self: table) }|nil
+
+--- @type loomworks.DeviceLogRemote|nil the daemon-carried stream feeding the view
+local _remote = nil
+
+--- @type (fun(): boolean)|nil starts the active run's daemon-carried stream again (M.set_source)
+local _source = nil
+
 local function ensure_view()
-    if not _view then _view = LogView.new() end
+    if not _view then
+        _view = LogView.new()
+        -- Closing the view ends a daemon-carried stream (its task is
+        -- cancelled, its subscription dropped); an in-process stream keeps
+        -- running hidden, as before.
+        _view.on_close = function()
+            if _remote then M.stop_remote() end
+        end
+    end
     return _view
+end
+
+--- The sink of a daemon-carried stream (M.start_remote): what the daemon's
+--- `Launch/1.device_log` task delivers (API.md §9.5), fed into the view.
+--- @class loomworks.DeviceLogSink
+--- @field level fun(name: string|nil) the task's `start` meta `level`
+--- @field records fun(records: loomworks.DeviceLogRecord[], dropped: integer|nil) a `log` signal
+--- @field line fun(text: string) a line of the task
+--- @field ended fun(err: string|nil) the task ended (nil: exit 0) or could not start
+
+--- Show a device log the workspace daemon streams (`daemon` mode, step 5n
+--- C3; API.md §9.5). Ends any previous stream, clears the view, shows it
+--- with `opts.banner`, then `opts.open(sink)` starts the stream and returns
+--- its handle (`handle:cancel()`; nil when refused at once). The sink feeds
+--- the view the daemon's records (normalized records, rendered as parsed
+--- lines); the task's `start` meta `level` sets the soft level filter as
+--- `default_soft_filter` does in-process — only when the view is new, so a
+--- level the user tuned is kept across runs; `dropped` is a gap line; the
+--- task's lines and its end are lines of the view, which stays readable.
+--- Closing the view, M.stop or M.stop_remote cancel the stream; nothing more
+--- reaches the view from it then. `opts.on_end(err)` follows the stream's
+--- own end (never a cancel).
+--- @param opts { banner?: string, open: fun(sink: loomworks.DeviceLogSink): table|nil, on_end?: fun(err: string|nil) }
+--- @return loomworks.DeviceLogRemote
+function M.start_remote(opts)
+    M.stop()
+    local view_existed = _view ~= nil
+    local view = ensure_view()
+    view:clear()
+    if opts.banner and opts.banner ~= "" then view:_inject_header(opts.banner) end
+    view:show()
+
+    --- @type loomworks.DeviceLogRemote
+    local remote = {}
+    _remote = remote
+    local function live() return _remote == remote end
+    --- @type loomworks.DeviceLogSink
+    local sink = {
+        level = function(name)
+            if not live() or view_existed then return end
+            local letter = records.level_letter(name)
+            if letter then
+                local f = vim.tbl_extend("force", {}, view._filter or {})
+                f.level = letter
+                view:set_filter(f)
+            end
+        end,
+        records = function(list, dropped)
+            if not live() then return end
+            -- Records the daemon's queue dropped are gone: the gap stays
+            -- in the ring (a re-render keeps it in place).
+            if type(dropped) == "number" and dropped > 0 then
+                view:append_record({ header = string.format("… %d records dropped", dropped) })
+            end
+            for _, r in ipairs(type(list) == "table" and list or {}) do
+                view:append_record(records.denormalize(r))
+            end
+        end,
+        line = function(text)
+            if not live() or type(text) ~= "string" or text == "" then return end
+            view:append_record({ header = text })
+        end,
+        ended = function(err)
+            if not live() then return end
+            _remote = nil
+            view:append_record({ header = "── device log stream ended"
+                .. (err and (": " .. tostring(err)) or "") .. " ──" })
+            if opts.on_end then opts.on_end(err) end
+        end,
+    }
+    local handle = opts.open(sink)
+    if live() then remote.handle = handle end
+    return remote
+end
+
+--- End the daemon-carried stream, if any: its task cancelled and its
+--- subscription dropped (the handle's `cancel`), a last line in the view.
+function M.stop_remote()
+    local r = _remote
+    if not r then return end
+    _remote = nil
+    if r.handle then pcall(r.handle.cancel, r.handle) end
+    if _view then _view:append_record({ header = "── device log stream stopped ──" }) end
+end
+
+--- What opening the view does while no stream runs (`daemon` mode): start
+--- the active device run's stream again. The session tracker sets it for a
+--- run the daemon launched and clears it when the run ends or its stream
+--- ended on its own. nil: opening only shows the view. It returns true when
+--- it started a stream; false (its run no longer active) and opening only
+--- shows the view.
+--- @param fn (fun(): boolean)|nil
+function M.set_source(fn)
+    _source = fn
+end
+
+--- Opening the view starts the active run's stream when none runs
+--- (M.set_source); true when it did (the stream shows the view).
+--- @return boolean
+local function open_source()
+    if _source and not _task and not _remote and not (_view and _view:is_visible()) then
+        return _source() == true
+    end
+    return false
 end
 
 --- Start a new device-log stream. Disposes any previous stream first so
@@ -930,7 +897,7 @@ function M.start(opts)
     end
     view:show()
 
-    local lw_overseer = require("loomworks.overseer")
+    local lw_overseer = require("loomworks.task_launch")
     _task = lw_overseer.run_streaming_task({
         name = opts.name or "device logs",
         cmd = opts.cmd,
@@ -955,8 +922,10 @@ function M.start(opts)
     return _task
 end
 
---- Stop the current stream. Safe to call when nothing's running.
+--- Stop the current stream (in-process, or carried by the workspace
+--- daemon: M.stop_remote). Safe to call when nothing's running.
 function M.stop()
+    M.stop_remote()
     if _task then
         pcall(function() _task:stop() end)
         pcall(function() _task:dispose() end)
@@ -969,16 +938,26 @@ end
 --- first call so `<leader>wO` works before a device session has
 --- ever started — the buffer is just empty until something streams
 --- into it.
+--- In `daemon` mode, opening it while no stream runs starts the active
+--- device run's stream again (M.set_source).
 function M.toggle()
+    if open_source() then return end
     ensure_view():toggle()
 end
 
 function M.show()
+    if open_source() then return end
     ensure_view():show()
 end
 
 function M.hide()
     if _view then _view:hide() end
+end
+
+--- Is the view shown?
+--- @return boolean
+function M.is_visible()
+    return _view ~= nil and _view:is_visible()
 end
 
 function M.set_filter(filter)
@@ -1011,13 +990,30 @@ function M.clear()
     if _view then _view:clear() end
 end
 
-function M.is_running() return _task ~= nil end
+--- Is a stream running — in-process, or carried by the workspace daemon?
+function M.is_running() return _task ~= nil or _remote ~= nil end
 function M.task() return _task end
 
 --- Test-only: reset module singletons between spec runs.
 function M._reset_for_tests()
     M.stop()
+    _source = nil
+    if _view then _view.on_close = nil; _view:hide() end
     _view = nil
+end
+
+--- Test-only: the view's rendered lines (empty without a view).
+--- @return string[]
+function M._lines_for_tests()
+    if not _view or not vim.api.nvim_buf_is_valid(_view._buf) then return {} end
+    _view:_flush()
+    return vim.api.nvim_buf_get_lines(_view._buf, 0, -1, false)
+end
+
+--- Test-only: the view's filter (nil without a view).
+--- @return table|nil
+function M._filter_for_tests()
+    return _view and _view._filter
 end
 
 -- Expose LogView for tests.
