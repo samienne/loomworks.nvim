@@ -32,9 +32,9 @@ used standalone with any adapter.
            │ TestAdapter interface
 ┌──────────┴───────────────────────────────────────┐
 │ loomworks_adapter.lua                            │
-│  Bridges ConfigUnit/TestUnit to loomtest.        │
-│  Registers on workspace load, refreshes on       │
-│  profile switch. Auto-builds test targets.       │
+│  Serves the workspace daemon's tests to loomtest │
+│  (view.Tests/1, Tests/1). Registers once the     │
+│  editor observes a workspace daemon.             │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -43,7 +43,7 @@ used standalone with any adapter.
 - **loomtest core** depends on: Neovim API, Snacks.win, overseer.nvim.
   Does NOT depend on loomworks.
 - **loomworks adapter** depends on: loomtest core (types), loomworks
-  (ConfigUnit, TestUnit, Target).
+  (`loomworks.test_source`, the daemon's tests).
 
 ## 3. TestAdapter Interface
 
@@ -117,7 +117,7 @@ Tests grouped by target → suite → test. Suites inferred from test
 names (gtest `Suite.Test` → suite `Suite` with child `Test`).
 
 ```
-▼ ✔ LumeMetaAPITest
+▼ ✔ MetaAPITest
   ▼ ✔ API_BitfieldPropertyTest (3)
       ✔ GetValue                    2ms
       ✔ SetValue                    1ms
@@ -159,6 +159,10 @@ failed > running > pending > passed > skipped > unknown.
 unfolds and restores cursor to the saved node.
 
 ## 5. Test Execution
+
+§5.1–§5.5 describe loomtest's own runner, used by an adapter that hands it
+RunSpecs. An adapter with `start` / `debug_start` (the loomworks adapter,
+§13) executes runs itself and reports through the run sink.
 
 ### 5.1 Direct binary execution
 
@@ -288,23 +292,28 @@ invalidates adapters, re-discovers tests, resets run timestamps.
 
 ## 13. Loomworks Adapter
 
-Bridges ConfigUnit/TestUnit to the loomtest TestAdapter interface.
-Registers on workspace load, re-registers on profile switch.
+`lua/loomworks/loomtest_adapter.lua` serves the workspace daemon's tests to
+the loomtest TestAdapter interface, reading them only through
+`loomworks.test_source`. It registers once the editor observes a workspace
+daemon. The editor discovers, builds and runs nothing of its own
+(`spec/plugin.md` §19.16 "Tests").
 
-A ConfigUnit can have several TestUnits — the module's, plus core's
-saved-targets TestUnit (specification §1.3.4, §8.9.3). The adapter follows
-the owning-unit dispatch rule of specification §8.9.4: run, debug and result
-parsing go through the TestUnit that owns the id; run-all and run-suite cover
-every TestUnit of every ConfigUnit of the profile, never only the first
-unit's first TestUnit. Saved entries appear as top-level `target:` or
-`launch:` nodes (a repeated name's later occurrences suffixed `#2`, `#3`, …,
-specification §8.9.2), with framework children when the program is a
-recognised framework executable; the children of a `launch` entry or of a
-repeated name's later occurrence carry an `@<entry id>` suffix on their ids
-(e.g. `test:Suite.Case@launch:Foo`), so the same case under two entries
-stays two nodes. A missing saved entry appears as an errored, non-runnable
-node. A saved entry runs in its own working directory (specification §1.3.4
-"Working directory").
+- **Tree, unit states and last results** come only from the daemon's
+  `loomworks.view.Tests/1`; a run's live statuses from `Tests/1` `results`
+  (any client's run).
+- **Discovery** is `Tests/1.discover`, sent when the view is `stale` on the
+  first ask or while the explorer is open, and forced by the explorer's
+  refresh.
+- **Runs**: `start` is one `Tests/1.run_cases`, a daemon task; `result`
+  reads `Tests/1.result`.
+
+### 13.1 Debugging
+
+`debug_start` is `Tests/1.prepare_debug`, then the debugger (nvim-dap, through
+`loomworks.debug`), then `Tests/1.collect` for the results.
+
+`status` reports where the daemon's tests stand (blocked: the tree is empty
+and nothing is done in the editor).
 
 ## 14. Future Considerations
 
