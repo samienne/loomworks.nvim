@@ -515,7 +515,9 @@ degraded ("End state").
   binary and its source, as for a launch); no launch — waiting for a
   workspace daemon, none is launched (`:LoomworksDaemon connect` starts
   one); retiring — waiting for the retiring daemon to exit; skip — the
-  incompatible-daemon note ("Connect" below). The relay reports no progress line.
+  incompatible-daemon note ("Connect" below). The relay reports no progress line
+  ([samienne/loomworks#37](https://github.com/samienne/loomworks/issues/37)
+  tracks one).
 - **Exit before `welcome`.** A relay that exits before `welcome` is mapped
   from its exit status ([loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Relay exit status") to a Runtime-line note,
   with the relay's `lw: ...` standard-error line as detail (never the
@@ -711,7 +713,10 @@ trust, the removal of the working copy) shows the `confirm` lines and sends
 back their `plan`. A confirmed deletion first cancels the editor's own tasks
 whose meta names the confirmation's `unit_ids` (or, for a profile, the
 profile row's id) — never matched by key or path ([API.md](protocol/API.md)
-§22); a confirmed nuke cancels every task the editor owns. A refused call (a stale id after a reload, a changed
+§22); a confirmed nuke cancels every task the editor owns. A confirmed
+deletion or nuke is a `Maintenance/1` call (`execute_deletion`, `nuke`) that
+runs as a task the editor owns ("Tasks in the task runner" below), reported
+when it ends. A refused call (a stale id after a reload, a changed
 plan, a held lock) is an error notification and changes nothing; the page
 shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is
@@ -1164,25 +1169,20 @@ where those run is "Editor operations" and "Availability" above.
   offers what the editor client needs — a transport range overlapping the
   plugin's, schemas no newer than the plugin's, and `/` `loomworks.Root/1`,
   `/tasks` `loomworks.Tasks/1`, `/workspace` `loomworks.Workspace/1` (one
-  check, `provision/needs.lua`). The pin is not part of the lw bundle, so the
-  pin commit changes no release asset. Releases are cut in two stages: the
-  build stage builds every asset of `vX` from a build commit C into an
-  unpublished draft release (no tag, C recorded as its target); the cutter
-  pins the draft, commits only `pinned.lua` on top of C and tags that commit
-  `vX`; the tag push never rebuilds — it publishes the draft (the one draft
-  named `vX`; none or several fail) only when the
-  tagged commit changes nothing but `pinned.lua` since C, the pin names `X`
-  and equals the draft's signed hash for every host asset and the bundle, the
-  signature verifies, every host binary and the bundle of the draft are
-  present and match `SHA256SUMS`, and the
-  descriptor passes the interface check. Any failure, or no draft, publishes
-  nothing. The cutter pushes only the tag first and pushes the pin commit to
-  a branch only after the publish succeeded, so a failed gate leaves no
-  branch pinning an unpublished draft. Hence a plugin checkout always pins a
-  published release, never one newer than every release. Ordinary CI runs the same check on the pinned
-  release as a warning only: a development checkout may need interfaces newer
-  than the last release (the editor then degrades with feature notes;
-  developers point `binary.path` / `LOOMWORKS_LW` at a newer `lw`).
+  check, `provision/needs.lua`). `lw` is released from its own repository,
+  which does not depend on the plugin ([loomworks core §16.12](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md#1612-release-integrity)
+  "Release cut"). The plugin pins only a **published** release, by an
+  ordinary change in the plugin's repository that touches nothing but
+  `pinned.lua` and is merged like any other (its required checks pass):
+  `pin.sh` fetches the release by its tag from `samienne/loomworks`
+  (`REPO_SLUG` overrides it), so a draft cannot be pinned, and it refuses a
+  release whose signature does not verify or whose descriptor fails the
+  interface check. Hence a plugin checkout always pins a published release,
+  never one newer than every release, and an `lw` release never waits for the
+  plugin. The plugin's CI runs its specs against the pinned release. A
+  development checkout may need interfaces newer than the last release (the
+  editor then degrades with feature notes; developers point `binary.path` /
+  `LOOMWORKS_LW` at a newer `lw`).
 
   **The plugin-managed `lw`** lives at
   `<editor data>/loomworks/lw/<sha256>/lw` (`lw.exe` on Windows),
@@ -1283,7 +1283,18 @@ where those run is "Editor operations" and "Availability" above.
   the editor removes no slot in `loomworks/lw/` or `loomworks/bundle/`, and
   nothing another process left there; it removes only its own temporary file
   and staging directory of a failed attempt. Slot directory mtimes (binary and
-  bundle slots) still record last use for that future pruning. A search-path or explicit `lw` is probed before
+  bundle slots) still record last use for that future pruning. When pruning
+  resumes it removes, after a successful download and only when no download
+  runs and a wanted hash is known (the pin's and, with `binary.channel` set,
+  the accepted channel release's — both kept), only entries named exactly 64
+  lowercase hex digits that are real directories (a link or junction is
+  skipped, never followed) whose realpath is a direct child of the realpath of
+  `<editor data>/loomworks/lw`, itself a real directory, and that hold only
+  the regular file `lw`/`lw.exe`; never the binary of a daemon the editor
+  launched or observes, or the live daemon's, and never a slot used within the
+  last 14 days. The file is unlinked, then the empty directory removed (a
+  failure skips it). A temporary file another process left is removed once a
+  day old. A search-path or explicit `lw` is probed before
   the launch ("Pre-launch probe" above); the managed `lw` is not.
 
   **Channel upgrades**. The setup option `binary.channel`
