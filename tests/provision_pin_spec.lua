@@ -2,8 +2,8 @@
 -- the lw release it downloads in daemon mode (loomworks.provision.pinned,
 -- written by scripts/release/pin.sh from a release's signed SHA256SUMS);
 -- managed.wanted() is this host's asset of it; the pin is checked against
--- the release (signature, hashes, descriptor interfaces, pin-commit diff) and
--- never ships in the lw bundle.
+-- the release (signature, hashes, descriptor interfaces, pin-commit diff).
+-- The pinned release is self-contained: a release bundle is never pinned.
 
 local managed = require("loomworks.provision.managed")
 local needs = require("loomworks.provision.needs")
@@ -15,8 +15,7 @@ local sha_c = string.rep("c", 64)
 local sha_z = string.rep("e", 64)
 local fake_pin = {
     version = "0.1.50",
-    assets = { ["lw-linux-x86_64"] = sha_a, ["lw-macos-arm64"] = sha_b, ["lw-windows-x86_64.exe"] = sha_c,
-        ["loomworks-lua-0.1.50.zip"] = sha_z },
+    assets = { ["lw-linux-x86_64"] = sha_a, ["lw-macos-arm64"] = sha_b, ["lw-windows-x86_64.exe"] = sha_c },
 }
 
 local function exe(name) return vim.fn.executable(name) == 1 end
@@ -61,9 +60,9 @@ describe("managed.wanted (the plugin pin)", function()
 
     it("is this host's asset of the pin", function()
         local w = managed.wanted({ pinned = fake_pin, sysname = "Darwin", machine = "arm64" })
-        assert.same({ sha256 = sha_b, bundle_sha256 = sha_z, version = "0.1.50", asset = "lw-macos-arm64" }, w)
+        assert.same({ sha256 = sha_b, version = "0.1.50", asset = "lw-macos-arm64" }, w)
         w = managed.wanted({ pinned = fake_pin, sysname = "Windows_NT", machine = "x86_64" })
-        assert.same({ sha256 = sha_c, bundle_sha256 = sha_z, version = "0.1.50", asset = "lw-windows-x86_64.exe" }, w)
+        assert.same({ sha256 = sha_c, version = "0.1.50", asset = "lw-windows-x86_64.exe" }, w)
     end)
 
     it("wants nothing on an unsupported host, a pin without the asset, an invalid pin", function()
@@ -71,18 +70,10 @@ describe("managed.wanted (the plugin pin)", function()
         assert.is_nil(w); assert.truthy(why:find("no published lw for linux/riscv64", 1, true))
         w, why = managed.wanted({ pinned = { version = "0.1.50", assets = {} }, sysname = "Linux", machine = "x86_64" })
         assert.is_nil(w); assert.truthy(why:find("has no lw-linux-x86_64", 1, true))
-        -- A pin without the bundle's hash wants no managed lw (§19.16 "Plugin pin").
-        w, why = managed.wanted({ pinned = { version = "0.1.50", assets = { ["lw-linux-x86_64"] = sha_a } },
+        w, why = managed.wanted({ pinned = { version = "0.1.50", assets = { ["lw-linux-x86_64"] = "zz" } },
             sysname = "Linux", machine = "x86_64" })
-        assert.is_nil(w); assert.truthy(why:find("has no loomworks-lua-0.1.50.zip", 1, true), why)
-        w, why = managed.wanted({ pinned = { version = "0.1.50", assets = { ["lw-linux-x86_64"] = sha_a,
-            ["loomworks-lua-0.1.50.zip"] = "zz" } }, sysname = "Linux", machine = "x86_64" })
         assert.is_nil(w); assert.truthy(why:find("invalid plugin pin", 1, true))
-        w, why = managed.wanted({ pinned = { version = "0.1.50", assets = { ["lw-linux-x86_64"] = "zz",
-            ["loomworks-lua-0.1.50.zip"] = sha_z } }, sysname = "Linux", machine = "x86_64" })
-        assert.is_nil(w); assert.truthy(why:find("invalid plugin pin", 1, true))
-        w, why = managed.wanted({ pinned = { version = "../x", assets = { ["lw-linux-x86_64"] = sha_a,
-            ["loomworks-lua-../x.zip"] = sha_z } },
+        w, why = managed.wanted({ pinned = { version = "../x", assets = { ["lw-linux-x86_64"] = sha_a } },
             sysname = "Linux", machine = "x86_64" })
         assert.is_nil(w); assert.truthy(why:find("invalid plugin pin", 1, true))
         w, why = managed.wanted({ pinned = false })
@@ -95,14 +86,13 @@ describe("managed.wanted (the plugin pin)", function()
         if managed.host_asset() then
             assert.equals(committed.version, w.version)
             assert.equals(committed.assets[w.asset], w.sha256)
-            assert.equals(committed.assets[managed.bundle_asset(committed.version)], w.bundle_sha256)
             local got, why, missing = managed.find({ data = "/nonexistent-data", exists = function() return false end })
             assert.is_nil(got); assert.truthy(why:find("not installed", 1, true))
             assert.same(w, missing)
         end
     end)
 
-    it("the committed pin names one valid hash per host asset and the bundle, and nothing else", function()
+    it("the committed pin names one valid hash per host asset, and nothing else", function()
         local f = assert(io.open("lua/loomworks/provision/pinned.lua", "rb"))
         local loaded = assert(pin.load_pinned(f:read("*a")))
         f:close()
@@ -113,9 +103,9 @@ describe("managed.wanted (the plugin pin)", function()
                 and loaded.assets[a]:match("^%x+$"), a)
             sums[a] = loaded.assets[a]
         end
-        local zip = managed.bundle_asset(loaded.version)
-        assert.truthy(type(loaded.assets[zip]) == "string" and #loaded.assets[zip] == 64 and loaded.assets[zip]:match("^%x+$"))
-        sums[zip] = loaded.assets[zip]
+        local n = 0
+        for _ in pairs(loaded.assets) do n = n + 1 end
+        assert.equals(vim.tbl_count(managed.HOST_ASSETS), n)
         assert.same({}, pin.check_pinned(loaded, loaded.version, sums))
     end)
 end)
@@ -168,6 +158,7 @@ describe("scripts/release/pin.lua", function()
         assert.equals(sha_b, sums["lw-macos-arm64"])
         local text = assert(pin.render("0.1.50", sums))
         local loaded = assert(pin.load_pinned(text))
+        -- The release bundle SHA256SUMS still lists is not pinned.
         assert.same(fake_pin, loaded)
         assert.same({}, pin.check_pinned(loaded, "0.1.50", sums))
         local _, why = pin.render("0.1.50", { ["lw-linux-x86_64"] = sha_a })
@@ -224,8 +215,7 @@ describe("scripts/release/pin.lua", function()
         local function release(version, d)
             local sha = require("loomworks.provision.sha256")
             local lines = {}
-            for _, a in ipairs({ "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe",
-                "loomworks-lua-" .. version .. ".zip" }) do
+            for _, a in ipairs({ "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe" }) do
                 put(dir .. "/" .. a, "binary " .. a)
                 lines[#lines + 1] = sha.file(dir .. "/" .. a) .. "  " .. a
             end
@@ -281,10 +271,6 @@ describe("scripts/release/pin.lua", function()
             os.remove(dir .. "/lw-macos-arm64")
             local p = table.concat(pin.verify("0.1.50", dir, { pub = pub, pinned = out }), "\n")
             assert.truthy(p:find("lw-macos-arm64 is missing", 1, true), p)
-            -- The bundle too (§19.16 "Plugin pin": the publish gate).
-            os.remove(dir .. "/loomworks-lua-0.1.50.zip")
-            p = table.concat(pin.verify("0.1.50", dir, { pub = pub, pinned = out }), "\n")
-            assert.truthy(p:find("loomworks-lua-0.1.50.zip is missing", 1, true), p)
             assert.same({}, pin.verify("0.1.50", dir, { pub = pub, pinned = out, no_binaries = true }))
             -- --no-binaries on the command line (the warning-only CI check).
             local said = {}

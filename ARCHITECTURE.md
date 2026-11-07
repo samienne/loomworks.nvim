@@ -49,7 +49,7 @@ vendored byte-identical from a loomworks release (below).
  │              daemon/task_runner, remote_task, task_launch  tasks     │
  │              proto/*                 envelope, schemas (vendored)    │
  ├──────────────────────────────────────────────────────────────────────┤
- │ Provisioning provision/*             which lw, download, bundle      │
+ │ Provisioning provision/*             which lw, download              │
  └──────────────────────────────────────────────────────────────────────┘
         │  `lw daemon run --root <root> --stdio` (the relay)
         ▼
@@ -130,20 +130,16 @@ connection directly: reads go through a source, writes through a call module.
   (`binary.prefer` reorders); `probe.lua` caches a pre-launch compatibility
   verdict; `needs.lua` states what a release must offer.
 - `pinned.lua` — the release the plugin pins: its version and the SHA-256 of
-  each asset, taken from the release's signed `SHA256SUMS` by
+  each host binary, taken from the release's signed `SHA256SUMS` by
   `scripts/release/pin.sh`.
 - `fetch.lua` — download next to `<stdpath("data")>/loomworks/lw/<sha256>/`,
   compare the SHA-256 with the pinned one, install by rename.
-- `bundle.lua`, `unzip.lua`, `libdeflate.lua` — the release's Lua bundle into
-  `<stdpath("data")>/loomworks/bundle/<sha256>/lua-<version>/`, staged in a
-  per-process `.stage-<sha256>.<pid>.<n>` directory and renamed into place.
 - `managed.lua` — the layout of the managed slots;
   `channel.lua` — stable/unstable upgrades; `cache.lua` — pruning of unused
   slots (paused, samienne/loomworks#101).
 
-Deletion is limited to the plugin's own temporary files and staging
-directories; see the deletion-safety rules in `AGENTS.md` and §19.16 of the
-spec.
+Deletion is limited to the plugin's own temporary files; see the
+deletion-safety rules in `AGENTS.md` and §19.16 of the spec.
 
 ## Vendoring
 
@@ -158,7 +154,7 @@ them free of line-ending conversion.
 `make test` runs every `tests/*_spec.lua` (plenary/busted) in its own headless
 Neovim (`scripts/run_specs.lua`). The daemon specs run against a real `lw`:
 `scripts/test_lw.lua` provisions the release the plugin pins into `.lw-test/`
-with the plugin's own download and bundle code, and the Makefile points
-`LOOMWORKS_LW` and `LOOMWORKS_INSTALL_DIR` at it. `make test-file FILE=...`
+with the plugin's own download code, and the Makefile points `LOOMWORKS_LW`
+at it. `make test-file FILE=...`
 runs one spec. Fixtures (`tests/fixtures/`) include status-page golden files,
 a stub device module and SDK, and a fake relay process.

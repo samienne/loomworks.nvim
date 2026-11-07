@@ -4,7 +4,7 @@
 
 The Neovim plugin of loomworks: a thin client of the `lw` workspace daemon.
 It keeps the daemon client, the UI, loomtest, the LSP/DAP integrations, the
-provisioning of the managed `lw` and its Lua bundle, and a few files vendored
+provisioning of the managed `lw`, and a few files vendored
 from loomworks. The daemon, the `lw` CLI, the modules, the SDK providers and
 the workspace engine live in **samienne/loomworks** (its own checkout, spec
 and workflow). The plugin holds no workspace
@@ -15,7 +15,7 @@ itself; protocol-only coupling, no plugin-side fallbacks.
 
 - **[spec/plugin.md](spec/plugin.md)** — the plugin's one normative spec.
   Part I the editor client (§9 LSP, §13 auto-load, §14 commands, §18.11,
-  §19.16 the editor as a client incl. the managed `lw` and bundle), Part II
+  §19.16 the editor as a client incl. the managed `lw`), Part II
   the UI (status page, highlights, statusline; local numbering). The core
   contract (core §1–§8, §10–§12, §15–§19) lives in loomworks'
   [`spec/core/`](https://github.com/samienne/loomworks/blob/main/spec/core/README.md),
@@ -131,8 +131,8 @@ and *why* — not a dump of individual branch commits.
 
 The plugin deletes only what its provisioning creates. Any change that touches
 deletion logic in `lua/loomworks/provision/` (`cache.prune`, the `.dl` temp
-file of `fetch.ensure`, the bundle staging of `bundle.lua`) **must** be
-reviewed for directory safety before merging:
+file of `fetch.ensure`) **must** be reviewed for directory safety before
+merging:
 
 1. **Boundary check**: path prefix comparisons include a trailing `/`
    separator (`/root` must not match `/roots/...`): `path == prefix or
@@ -151,11 +151,6 @@ reviewed for directory safety before merging:
    prune removes another pid's regular `.dl` file after 24 h. **Pruning is
    paused** (samienne/loomworks#101): keep it off until that issue is
    resolved, and re-review these rules when it is re-enabled.
-3. **Managed bundle** (spec §19.16): the editor removes only its own `.dl`
-   file and its own staging directory `.stage-<sha256>.<pid>.<n>` — that exact
-   path, which must be a real directory (lstat; not a link/junction) directly
-   under `<stdpath data>/loomworks/bundle/`. Links inside it are unlinked,
-   never followed. No bundle slot (`bundle/<sha256>/`) is ever removed.
 
 ## Implementation Notes
 
@@ -178,7 +173,7 @@ reviewed for directory safety before merging:
   `loomtest_adapter.lua` serves the daemon's `view.Tests/1` / `Tests/1`.
   neotest only refuses (`neotest/init.lua`).
 - **Provisioning** (`provision/`): `select` → `probe` → managed slot via
-  `fetch` and `bundle`; the pin is `provision/pinned.lua`
+  `fetch`; the pin is `provision/pinned.lua`
   (`scripts/release/pin.sh`).
 - **Windows paths**: compare normalized paths; atomic renames may need a retry
   when the target is open.

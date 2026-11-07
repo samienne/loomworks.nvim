@@ -26,9 +26,8 @@ local function tmp()
 end
 M.tmp = tmp
 
---- The lw under test: LOOMWORKS_LW, checked once (`lw version --json`
---- answers only when the binary finds its release bundle). Errors when unset
---- or unusable: these specs need a real lw.
+--- The lw under test: LOOMWORKS_LW, checked once (`lw version --json`).
+--- Errors when unset or unusable: these specs need a real lw.
 local checked
 --- @return string
 function M.lw_path()
@@ -41,8 +40,8 @@ function M.lw_path()
     if checked ~= p then
         local r = vim.system({ p, "version", "--json" }, { text = true }):wait()
         if r.code ~= 0 then
-            error("LOOMWORKS_LW=" .. p .. " does not run (it finds its release bundle through "
-                .. "LOOMWORKS_INSTALL_DIR; see `make lw`): " .. (r.stderr or "") .. (r.stdout or ""), 0)
+            error("LOOMWORKS_LW=" .. p .. " does not run (see `make lw`): " .. (r.stderr or "")
+                .. (r.stdout or ""), 0)
         end
         checked = p
     end
@@ -62,7 +61,7 @@ end
 
 --- An isolated environment: its own data dir (trust key, runtime state) and
 --- config dir (lw settings). `extra` adds/overrides variables (false removes).
---- LOOMWORKS_LW and LOOMWORKS_INSTALL_DIR (the release bundle) carry over.
+--- LOOMWORKS_LW carries over.
 --- @param extra? table<string, string|false>
 --- @return table env { vars = dict, data = dir, config = dir }
 function M.env(extra)

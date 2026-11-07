@@ -34,7 +34,7 @@ Companion specs in this repository:
 - **Part I — The editor client**: the editor-side sections of the former core
   specification (§9 LSP integration, §13 auto-load, §14 Neovim commands, §18.11
   remote execution in the editor, §19.16 the editor as a client, including the
-  managed `lw` and its bundle).
+  managed `lw`).
 - **Part II — UI**: the status page, highlight groups and the statusline
   component (the former `spec/ui.md`; its section numbers are local to Part II,
   and "core §X.Y" in it means a section of Part I).
@@ -1121,9 +1121,9 @@ where those run is "Editor operations" and "Availability" above.
     a status note naming the problems ("too old/incompatible: …") and the
     search goes on to the managed `lw`; an explicit binary is never
     replaced (rule 1), the verdict is only noted;
-  - **unknown** (`version --json` exits non-zero — e.g. a host with no
-    system Lua — a descriptor with no `schemas`, or a timeout) — the binary
-    is used and the handshake decides.
+  - **unknown** (`version --json` exits non-zero — e.g. a host from before
+    self-contained executables with no bundle installed — a descriptor with no
+    `schemas`, or a timeout) — the binary is used and the handshake decides.
 
   A missing feature interface is not a failure: that feature degrades with a
   note ("Interface client" above). The managed `lw` is not probed at run
@@ -1159,11 +1159,12 @@ where those run is "Editor operations" and "Availability" above.
   (`binary.download = false` turns that off): official releases only ([loomworks core §17.8](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)).
 
   **Plugin pin**. The plugin carries the release it downloads:
-  `lua/loomworks/provision/pinned.lua`, `{ version, assets = { [<asset>]
+  `lua/loomworks/provision/pinned.lua`, `{ version, assets = { [<host asset>]
   = <sha256> } }` with one hash per published host asset (`lw-linux-x86_64`,
   `lw-macos-arm64`, `lw-windows-x86_64.exe`; the plugin keeps its own copy of
-  that table) and one for the release bundle `loomworks-lua-<version>.zip`. A
-  pin without the bundle's hash wants no managed `lw`. It is never edited by hand: `scripts/release/pin.sh` writes it
+  that table). The pinned release is self-contained (its executable carries its
+  code, [loomworks core §16.13](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)): the host binary is the whole managed `lw`, and a
+  release bundle in `SHA256SUMS` ([loomworks core §16.14](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) is not pinned. It is never edited by hand: `scripts/release/pin.sh` writes it
   from a release's `SHA256SUMS` after verifying `SHA256SUMS.sig` with the
   committed release key, and only when the release's descriptor ([loomworks core §16.41](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md))
   offers what the editor client needs — a transport range overlapping the
@@ -1217,55 +1218,10 @@ where those run is "Editor operations" and "Availability" above.
   is never launched) whose SHA-256 matches its slot's name; the editor hashes
   it once per process before first using it. One that does not match is
   corrupt: never launched, one note, and in daemon mode downloaded again and
-  renamed over it.
-
-  **The managed bundle.** A release host carries no system Lua ([loomworks core §16.22](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)), so
-  the managed `lw` is a pair: the host binary above and the bundle
-  `loomworks-lua-<version>.zip` of the same release, hashed by the same pin or
-  channel result. The bundle lives at
-  `<editor data>/loomworks/bundle/<sha256>/lua-<version>/`, `<sha256>` being
-  the zip's SHA-256: exactly the zip's entries, written once, never modified.
-  Every process the editor starts from the managed binary (relay, the daemon
-  it launches, the channel query, a retirement's relaunch) gets
-  `LOOMWORKS_INSTALL_DIR=<editor data>/loomworks/bundle/<sha256>`, so `lw`
-  runs that bundle as a release source ([loomworks core §16.22](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) and still follows a
-  repository pin ([loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)); never `LOOMWORKS_LUA` (a development source
-  bypasses the pin). `lw` may write there what its install folder holds
-  besides bundles (`release-notes-seen`, the pin redirect's `pinned/`); the
-  plugin never runs `lw self-update` with it. A search-path or explicit `lw`
-  gets no install-folder override.
-
-  When the managed `lw` is wanted and its bundle slot is absent, the zip is
-  downloaded with the binary's source, transfer bounds and `binary.download`
-  switch into `<sha256>.<pid>.<n>.dl` in `loomworks/bundle/`, and its SHA-256
-  must equal the wanted one. The plugin reads it itself (no external tool).
-  Nothing is installed unless every entry:
-  - is a regular file or directory (no link, no other type) under
-    `loomworks/`;
-  - has a name of `/`-separated segments, none empty, `.` or `..`, with no
-    leading `/`, no `\`, `:` or NUL;
-  - has a name no other entry repeats case-insensitively;
-  - matches its CRC-32.
-
-  Entries are written as newly created regular files (never through an
-  existing file or link) into
-  `loomworks/bundle/.stage-<sha256>.<pid>.<n>/lua-<version>/`, created by an
-  exclusive mkdir. The staging directory is then renamed to
-  `loomworks/bundle/<sha256>` (on Windows retried briefly). The rename never
-  replaces a non-empty directory: a slot another editor installed meanwhile
-  is used. Requests for one hash share one provisioning. A failure installs
-  nothing and is one note (running degraded), not retried until
-  `:LoomworksDaemon connect`. The temporary file is removed, and the editor
-  removes its own staging directory: only that exact path, a real directory
-  under `loomworks/bundle/`, with links inside unlinked, never followed.
-
-  `loomworks/bundle/` and its slots are created as, and must be, real
-  directories. A slot is present only when `<sha256>` and `lua-<version>` are
-  real directories (lstat) and `lua-<version>/loomworks/cli.lua` is a regular
-  file. It is then used by presence: it is only ever populated by the rename
-  after verification, as for `lw`'s pinned bundles ([loomworks core §16.24](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)). Any other state
-  at that path is never used, never repaired or removed automatically, and
-  makes the managed source absent with one note naming it.
+  renamed over it. Every process the editor starts from the managed binary
+  gets no install-folder or source override (never `LOOMWORKS_INSTALL_DIR` or
+  `LOOMWORKS_LUA`), and the plugin never runs `lw self-update` with it (its
+  slot is named by its hash).
 
   The source is `<base>/<asset>` for a release-source override (the
   setup option `binary.release_url`, else `LOOMWORKS_RELEASE_URL`: a local
@@ -1279,11 +1235,10 @@ where those run is "Editor operations" and "Availability" above.
   Each slot's directory mtime is its last use: set when the slot is created
   or installed into, and whenever an editor selects the binary (marked at
   most once an hour) or connects to a daemon whose handle names it.
-  Pruning of managed binaries and bundles is paused (samienne/loomworks#101):
-  the editor removes no slot in `loomworks/lw/` or `loomworks/bundle/`, and
-  nothing another process left there; it removes only its own temporary file
-  and staging directory of a failed attempt. Slot directory mtimes (binary and
-  bundle slots) still record last use for that future pruning. When pruning
+  Pruning of managed binaries is paused (samienne/loomworks#101): the editor
+  removes no slot in `loomworks/lw/`, and nothing another process left there;
+  it removes only its own temporary file of a failed attempt. Slot directory
+  mtimes still record last use for that future pruning. When pruning
   resumes it removes, after a successful download and only when no download
   runs and a wanted hash is known (the pin's and, with `binary.channel` set,
   the accepted channel release's — both kept), only entries named exactly 64
@@ -1308,20 +1263,19 @@ where those run is "Editor operations" and "Availability" above.
      download above). Only that binary resolves a channel — never an `lw`
      from the search path or an explicit one, which are the user's to update.
   2. It runs `<pinned lw> release query --channel <channel> --json` ([loomworks core §16.42](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md))
-     with the release-source override (`binary.release_url`) and the
-     install-folder override of "Install location" passed through, the
-     editor's data directory as working directory, and bounded fetch limits.
-     The output must name a valid release version, this host's asset and
-     `loomworks-lua-<version>.zip`, each with a 64-hex hash, and carry the release's descriptor; that descriptor must
+     with the release-source override (`binary.release_url`) passed through,
+     the editor's data directory as working directory, and bounded fetch
+     limits. The output must name a valid release version, this host's asset
+     and a 64-hex hash, and carry the release's descriptor; that descriptor must
      pass the interface check of "Plugin pin", with the pre-launch probe's
      schema rule (schemas **equal** to the plugin's: the managed `lw` is what
      the search falls through to, and a daemon with older schemas would be
      weighed for a retirement).
   3. A result that passes and names a version newer than the current wanted
      one ([loomworks core §16.29](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md) ordering: a pre-release ranks below its release) is
-     **accepted**: it becomes the wanted binary and bundle, both provisioned as
-     above, each hash-checked against the query's hash. It is recorded as
-     accepted only once both succeeded; a failed download is one note and
+     **accepted**: it becomes the wanted binary and is downloaded as above,
+     hash-checked against the hash from the query. It is recorded as accepted
+     only once that download succeeded; a failed download is one note and
      the current wanted binary stays. A running daemon is not
      switched while it is busy: its code identity now differs from the
      wanted binary's, so the editor retires it once it is idle ([loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)
@@ -1332,12 +1286,13 @@ where those run is "Editor operations" and "Availability" above.
      the same release is not checked again.
 
   The wanted binary is the newer of the pin and the last accepted channel
-  result, so it never goes below the pin. The last result is kept in the
+  result, so it never goes below the pin. Every release it can name is
+  therefore self-contained, as the pin is. The last result is kept in the
   plugin's own file `<editor data>/loomworks/channel.json` (outside
   `loomworks/lw/`, written atomically, never pruned); changing
   `binary.channel` invalidates it. Switching from `unstable` to `stable`
   keeps a newer accepted pre-release until stable overtakes it (as for lw's
-  own bundles, [loomworks core §16.29](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)); unsetting `binary.channel` returns to the pin. A
+  own self-update, [loomworks core §16.29](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)); unsetting `binary.channel` returns to the pin. A
   query result older than the accepted one (a withdrawn release) is ignored.
   Offline, a bad signature, a tampered descriptor or a pinned `lw` older than
   the query command are one note each; the editor keeps the current wanted
@@ -1412,14 +1367,14 @@ where those run is "Editor operations" and "Availability" above.
   that reports no `busy_clients` ([loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Busy"), its own observer connection
   is counted among the observers, not subtracted again.
 
-  **Install location.** Everything the plugin installs (host binaries in
-  `loomworks/lw/`, release bundles in `loomworks/bundle/`, and what a managed
-  `lw` downloads for itself, the pin redirect's binaries and bundles, through
-  its install-folder override `LOOMWORKS_INSTALL_DIR`, which is its bundle
-  slot, [loomworks core §16.22](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) stays under the
-  editor's data directory (`<editor data>/loomworks/`) — except the bundle
-  copy a pinned release older than the install folder provisions for itself,
-  which lands in `lw`'s per-user data directory ([loomworks core §16.22](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)). The plugin never installs a system-wide `lw`
+  **Install location.** Everything the plugin installs (its managed `lw`
+  executables, in `loomworks/lw/`) stays under the editor's data directory
+  (`<editor data>/loomworks/`). What an `lw` the plugin runs downloads for
+  itself (a pin redirect's executable, [loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) goes to that `lw`'s
+  machine-local executable cache ([loomworks core §16.13](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)), shared with every other `lw`
+  on the machine ([loomworks core §16.22](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)); a pinned release from before self-contained
+  executables provisions its own bundle where that release chooses
+  ([loomworks core §16.22](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)). The plugin never installs a system-wide `lw`
   and never writes configuration into the user's home. Shared runtime state
   stays where `lw` keeps it, for every `lw` on the machine: daemon sockets and
   identity, the trust store ([loomworks core §17.2](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)), daemon logs. The plugin reads `lw`'s

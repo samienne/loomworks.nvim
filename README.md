@@ -42,9 +42,8 @@ The editor launches the workspace daemon from the first of:
 2. `lw` on your `PATH` (absolute entries only), when it is compatible with
    the plugin;
 3. the **managed `lw`**: the release this plugin pins, downloaded on first
-   use, verified against the release's signed checksums and installed with its
-   Lua bundle under Neovim's data directory (`<stdpath("data")>/loomworks/lw/`
-   and `.../loomworks/bundle/`).
+   use, verified against the release's signed checksums and installed under
+   Neovim's data directory (`<stdpath("data")>/loomworks/lw/`).
 
 `binary.prefer = "managed"` puts 3 before 2. `:checkhealth loomworks` shows
 which `lw` is used and why; `:LoomworksDaemon status` shows the daemon.

@@ -589,7 +589,8 @@ function Observer:_spawn(want, probed)
     local token = { form = want.form, answer = want.answer, instance = want.instance }
     local connect = self.opts.relay or require("loomworks.daemon.client.relay").connect
     local r, err = connect({
-        argv = { bin }, root = self.root, env = sel.env, form = want.form, instance = want.instance,
+        argv = { bin }, root = self.root, env = sel.env, unset = binsel.child_unset(sel),
+        form = want.form, instance = want.instance,
         client = "editor", role = "observer", kill_ms = self.opts.kill_ms,
         on_message = function(msg)
             vim.schedule(function()
@@ -693,10 +694,6 @@ function Observer:_download(sel)
         self:_spawn(self._want or { form = "ordinary" })
     end)
     local url = type(st) == "table" and st.url or fetch.url(want, fopts)
-    if want.bundle_missing then
-        what = "the bundle of " .. what
-        url = fetch.bundle_url(want, fopts)
-    end
     if self._downloading then
         self:_set("downloading", "downloading " .. what .. " from " .. tostring(url) .. " — degraded meanwhile")
     end
@@ -825,9 +822,7 @@ function Observer:_channel_check(explicit)
         end
         -- 2. It resolves the channel.
         local query = self.opts.channel_query or chan.run
-        -- The pinned lw runs its own bundle (spec §19.16 "The managed bundle").
-        local install_dir = managed.bundle_slot(pin.bundle_sha256, { data = data })
-        query(pinned, setting.channel, { release_url = setting.release_url, data = data, install_dir = install_dir }, function(res)
+        query(pinned, setting.channel, { release_url = setting.release_url, data = data }, function(res)
             if self._channel_token ~= token or self.state == "stopped" then return end
             local c = ctx()
             local out = chan.classify(res, c)
