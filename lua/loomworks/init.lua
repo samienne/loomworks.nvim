@@ -518,13 +518,44 @@ end
 -- UI
 -- ---------------------------------------------------------------------------
 
---- Create a new workspace (loomworks.json) at the given root: refused,
---- nothing written (spec §19.16 "Model writes": `lw init` creates it).
---- @param root string workspace root directory
---- @param name? string workspace name
+--- Create a new workspace at `root` (spec/plugin.md §13.5): run `lw init`
+--- from the host binary the editor selected, in a terminal window
+--- (loomworks.lw_init); the editor writes nothing itself. When lw exits 0 the
+--- workspace is loaded as any other (`setup{root}`, §13.4); a failure is an
+--- error notification. Returns false + why when no lw can be selected (the
+--- selection's reason, or nothing runs); true once lw init is started.
+--- @param root? string workspace root directory (default: cwd)
+--- @param name? string workspace name (`lw init --name`)
 --- @return boolean ok, string|nil err
 function M.create_workspace(root, name)
-    return false, require("loomworks.daemon.facade").CREATE_REFUSAL
+    local dir = resolve_root(root)
+    return require("loomworks.lw_init").run(dir, { binary = M._binary_config, name = name }, function(ok, err)
+        if ok then
+            M.setup({ root = dir })
+        else
+            vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+        end
+    end)
+end
+
+--- `:LoomworksInit [path]` (spec/plugin.md §13.5): load the workspace at
+--- `path` when it holds one (with no `path`: the root the upward search finds
+--- from cwd); otherwise run `lw init` there (default: cwd), then load it.
+--- An explicit `path` is used as given: no upward search.
+--- @param path? string
+function M.init_command(path)
+    local dir
+    if path and path ~= "" then
+        dir = resolve_root(path)
+    else
+        local found = require("loomworks.root_finder").find(vim.fn.getcwd())
+        dir = resolve_root(found)
+    end
+    if require("loomworks.lw_init").has_workspace(dir) then
+        return M.setup({ root = dir })
+    end
+    local ok, err = M.create_workspace(dir)
+    if not ok then vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR) end
 end
 
 --- Open the project browser for adding projects.

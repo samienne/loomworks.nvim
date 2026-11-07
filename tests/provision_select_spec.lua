@@ -52,6 +52,8 @@ describe("host binary order (§19.16)", function()
         assert.equals("LOOMWORKS_LW=refused setting=not tried PATH=not tried managed=not tried", verdicts(sel))
         assert.truthy(sel.note:find("LOOMWORKS_LW names /gone/lw, which is not a file", 1, true), sel.note)
         assert.equals(sel.note, binsel.none_note(sel))
+        -- Without the Runtime line's "running degraded" (`lw init`, §13.5).
+        assert.equals(sel.note, binsel.none_note(sel, { degraded = false }) .. "; running degraded")
         bin, src, sel = run({ setting = { path = "/gone/lw" }, path = "/p/lw" })
         assert.is_nil(bin)
         assert.truthy(sel.note:find("binary.path setting names /gone/lw", 1, true), sel.note)
@@ -81,6 +83,7 @@ describe("host binary order (§19.16)", function()
             .. "lw on PATH: no lw on the search path; plugin-managed lw: " .. managed.NOT_YET
             .. ") — running degraded", sel.note)
         assert.equals(binsel.NONE_NOTE, binsel.none_note(nil))
+        assert.equals(sel.note, binsel.none_note(sel, { degraded = false }) .. " — running degraded")
     end)
 
     it("binary.source (development only) adds LOOMWORKS_LUA to a chosen binary, never chooses one", function()

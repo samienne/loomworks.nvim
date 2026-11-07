@@ -61,13 +61,14 @@ hl(0, "LoomworksAdd",     { link = "Constant",  default = true })
 hl(0, "LoomworksTarget",  { link = "Comment",   default = true })
 hl(0, "LoomworksVariant", { link = "Type",      default = true })
 
+-- `:LoomworksInit [path]` (spec/plugin.md §13.5): load the workspace at
+-- `path`, or run `lw init` there when it holds none.
 vim.api.nvim_create_user_command("LoomworksInit", function(cmd)
-  local path = cmd.args ~= "" and cmd.args or nil
-  require("loomworks").setup({ root = path })
+  require("loomworks").init_command(cmd.args ~= "" and cmd.args or nil)
 end, {
   nargs = "?",
   complete = "dir",
-  desc = "loomworks: initialize workspace from directory (default: cwd)",
+  desc = "loomworks: load the workspace at a directory, or run lw init there (default: cwd)",
   force = true,
 })
 

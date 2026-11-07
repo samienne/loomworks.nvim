@@ -60,6 +60,7 @@ local M = {}
 --- @field env? table<string, string> extra environment for every process started from the binary: `binary.source`'s `LOOMWORKS_LUA` (the managed lw gets none, §19.16)
 --- @field download? loomworks.provision.Wanted the plugin-managed lw to download first (it decided the search)
 --- @field note? string why there is none (the Runtime line)
+--- @field reason? string `note` without the Runtime line's "running degraded" (`none_note(sel, { degraded = false })`)
 --- @field warning? string an ignored setup value
 --- @field probe? string the chosen binary still to be probed (no cached verdict yet, step 5h.5)
 --- @field probe_note? string the pre-launch probe's lasting note: an incompatible lw on PATH that was skipped, or an incompatible explicit one used anyway
@@ -74,7 +75,8 @@ M.LABELS = {
 
 --- The note when nothing resolved and no details are known (an injected
 --- resolver returned nil).
-M.NONE_NOTE = "no lw host binary found (LOOMWORKS_LW, binary.path, PATH, plugin-managed lw) — running degraded"
+M.NONE_NOTE_BASE = "no lw host binary found (LOOMWORKS_LW, binary.path, PATH, plugin-managed lw)"
+M.NONE_NOTE = M.NONE_NOTE_BASE .. " — running degraded"
 
 local function is_win() return package.config:sub(1, 1) == "\\" end
 
@@ -288,8 +290,9 @@ function M.resolve(root, opts)
                 end
             else
                 add(source, "refused", p, bad)
-                sel.note = string.format("%s names %s, which is %s — no lw host binary "
-                    .. "(an explicit lw is never replaced by another); running degraded", M.LABELS[source], p, bad)
+                sel.reason = string.format("%s names %s, which is %s — no lw host binary "
+                    .. "(an explicit lw is never replaced by another)", M.LABELS[source], p, bad)
+                sel.note = sel.reason .. "; running degraded"
             end
         else
             add(source, "absent", nil, "not set")
@@ -343,7 +346,10 @@ function M.resolve(root, opts)
             sel.warning = sel.warning and (sel.warning .. "; " .. why) or why
         end
     end
-    if not sel.path and not sel.note and not sel.download then sel.note = M.none_note(sel) end
+    if not sel.path and not sel.note and not sel.download then
+        sel.reason = M.none_note(sel, { degraded = false })
+        sel.note = M.none_note(sel)
+    end
     -- Only the plugin's managed lw resolves a channel (spec §19.16 "Channel
     -- upgrades"): an lw the user installed or named is theirs to update.
     if setting.channel and sel.path and sel.source ~= "managed" then
@@ -367,24 +373,30 @@ function M.child_unset(sel)
 end
 
 --- The Runtime-line note for a selection that chose nothing: each source and
---- why it gave nothing.
+--- why it gave nothing. opts.degraded = false leaves out "running degraded"
+--- (a caller for which nothing runs degraded, e.g. `lw init`).
 --- @param sel? loomworks.provision.Selection
+--- @param opts? { degraded?: boolean }
 --- @return string
-function M.none_note(sel)
-    if not sel then return M.NONE_NOTE end
-    if sel.note then return sel.note end
+function M.none_note(sel, opts)
+    local tail = (opts and opts.degraded == false) and "" or " — running degraded"
+    if not sel then return M.NONE_NOTE_BASE .. tail end
+    if sel.note then
+        if tail == "" and sel.reason then return sel.reason end
+        return sel.note
+    end
     if sel.download then
         local d = sel.download
         return "the plugin-managed lw v" .. tostring(d.version) .. " (" .. tostring(d.asset)
-            .. (d.unreadable and ") could not be read — running degraded"
-                or d.corrupt and ") is corrupt — running degraded" or ") is not installed yet — running degraded")
+            .. (d.unreadable and ") could not be read" or d.corrupt and ") is corrupt" or ") is not installed yet")
+            .. tail
     end
     local parts = {}
     for _, c in ipairs(sel.candidates or {}) do
         parts[#parts + 1] = c.label .. ": " .. tostring(c.reason or c.verdict)
     end
-    if #parts == 0 then return M.NONE_NOTE end
-    return "no lw host binary (" .. table.concat(parts, "; ") .. ") — running degraded"
+    if #parts == 0 then return M.NONE_NOTE_BASE .. tail end
+    return "no lw host binary (" .. table.concat(parts, "; ") .. ")" .. tail
 end
 
 --- One line naming the chosen binary and why (the Runtime line while it

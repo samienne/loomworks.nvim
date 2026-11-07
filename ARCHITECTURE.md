@@ -65,6 +65,7 @@ connection directly: reads go through a source, writes through a call module.
 |---|---|
 | `loomworks/init.lua` | Public API: `setup`, workspace root, profile/target actions, event registration (`on`/`off`), getters over the views |
 | `loomworks/auto_load.lua` | When to load a workspace (auto-load modes, root changes) |
+| `loomworks/lw_init.lua` | Creating a workspace (`:LoomworksInit`, `N`): runs `lw init` from the selected `lw` (probed or downloaded first) in a terminal window, one run per root |
 | `loomworks/reload.lua` | Development: `:LoomworksReload` |
 | `loomworks/health.lua` | `:checkhealth loomworks`: the observer, the selected `lw`, its probe |
 | `loomworks/version.lua` | The plugin's version, from `CHANGELOG.md` |

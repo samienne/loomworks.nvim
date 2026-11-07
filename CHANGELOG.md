@@ -66,6 +66,13 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   the workspace daemon - run lw init in a terminal" (#414).
 
 ### Fixed
+- `:LoomworksInit` in a directory with no workspace, and `N` on the status
+  page, now run `lw init` themselves in a terminal window, with the same `lw`
+  the plugin uses for the workspace daemon (the plugin-managed one when no
+  `lw` is installed, and an incompatible `lw` on PATH skipped as for the
+  daemon), and load the new workspace when it succeeds. They used
+  to refuse and tell you to run `lw init` in a terminal, which a plugin-only
+  install could not do (#427).
 - The editor's plugin-managed `lw` could not start: a release `lw` before
   0.2.0-beta.3 carried no Lua of its own. The plugin now pins the
   self-contained `lw` 0.2.0-beta.3, whose executable carries its own code, and
