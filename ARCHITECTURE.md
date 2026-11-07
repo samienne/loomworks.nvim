@@ -1550,8 +1550,12 @@ are valid.
   samienne/loomworks.nvim, otherwise samienne/loomworks; no fallback). The
   `lw.sh` / `lw.cmd` templates apply the same prefix test to the pinned version
   for the download URL and `gh attestation verify --repo`. An override is one
-  mirror for all versions. Both channels' newest-release lookups stay on
-  samienne/loomworks.nvim, so moving to 0.2 is always an explicit version or pin.
+  mirror for all versions. Without an override the newest-release lookups ask
+  samienne/loomworks first (`update.DEFAULT_RELEASE_URL` / `RELEASES_API_URL`)
+  and samienne/loomworks.nvim as the fallback (`LEGACY_RELEASE_URL` /
+  `LEGACY_RELEASES_API_URL`): stable falls back only when samienne/loomworks
+  has no stable release (its `latest` manifest is not found), unstable takes the
+  highest version of both lists.
 
 An explicit release-source override (`opts.url` / `LOOMWORKS_RELEASE_URL` /
 `release-url` config) **supersedes** the channel: the mirror is used as-is and

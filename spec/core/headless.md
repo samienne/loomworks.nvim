@@ -2035,14 +2035,22 @@ command) saves it. A pin (§16.21) is
 independent of and takes precedence over channel resolution: a pinned
 invocation acquires exactly the pinned version+hash and consults no channel. An
 explicit release-source location override (a mirror) likewise supersedes
-channel resolution, which applies only to the default origin. On this release
-line both channels resolve the newest release in samienne/loomworks.nvim, so
-channel resolution never leaves 0.1.x; a release of 0.2 or later is reached
-only through an explicit version or a pin (§16.21, §16.23). When such an
+channel resolution, which applies only to the default origin. When such an
 override supersedes an explicitly-requested **non-default** channel, self-update
 MUST warn that the channel was ignored — the supersede is by design, but it MUST
 NOT be silent, or a user who selected a channel will believe it took effect. (A
 default-channel selection under an override is no conflict and warns nothing.)
+
+On the default origin, newest-release resolution MUST consult
+samienne/loomworks first and samienne/loomworks.nvim as the fallback, so a
+channel crosses over to 0.2 or later once such a release reaches it. **stable**
+resolves the newest full release of samienne/loomworks; only when that
+repository has no full release does it resolve the newest full release of
+samienne/loomworks.nvim, and that absence MUST NOT be an error. **unstable**
+resolves the highest version (by the ordering below) across both repositories'
+releases. Resolution only selects a version: that version's artifacts are
+fetched from the repository it was published in (§16.23) and verified exactly
+as any other.
 
 A pre-release version orders **below** its corresponding full release: version
 comparison used for activation, "already newest," and cache reclamation
