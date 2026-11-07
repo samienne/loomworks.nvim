@@ -127,8 +127,8 @@ end
 ---   cwd         working directory (default: the editor's data directory)
 ---   timeout_ms  the bound (default TIMEOUT_MS)
 ---   argv        the command (default `{ path, "version", "--json" }`)
----   env         extra environment (a selection's `env`: a managed lw's
----               LOOMWORKS_INSTALL_DIR, spec §19.16 "The managed bundle")
+---   env         extra environment (a selection's `env`: `binary.source`'s
+---               LOOMWORKS_LUA)
 --- @param path string
 --- @param opts? table
 --- @param cb fun(v: loomworks.provision.Probe)

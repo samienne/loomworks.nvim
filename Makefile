@@ -12,9 +12,8 @@ INIT_FILE := tests/minimal_init.lua
 ## slowest file on a loaded machine. TEST_JOBS=N caps the concurrency.
 ## The daemon specs run a real lw: the release the plugin pins, provisioned
 ## into .lw-test/ (gitignored) by scripts/test_lw.lua with the plugin's own
-## download code, its bundle beside it. `make test` / `make test-file` set
-## LOOMWORKS_LW (and LOOMWORKS_INSTALL_DIR, where the bundle is) to it; to run
-## a spec by hand, `eval "$$(nvim -l scripts/test_lw.lua .lw-test)"` first.
+## download code. `make test` / `make test-file` set LOOMWORKS_LW to it; to
+## run a spec by hand, `eval "$$(nvim -l scripts/test_lw.lua .lw-test)"` first.
 LW_TEST_DIR := .lw-test
 LW_ENV = lw_env="$$(nvim -l scripts/test_lw.lua $(LW_TEST_DIR))" && eval "$$lw_env"
 

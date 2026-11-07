@@ -89,11 +89,9 @@ local function valid_accepted(a)
     local fetch = require("loomworks.provision.fetch")
     if type(a) ~= "table" or type(a.descriptor) ~= "table" then return nil end
     local w = fetch.check_wanted(a)
-    -- An accepted release without its bundle's hash (an older record) is
-    -- not usable: the managed lw is a pair.
-    if not w or not w.bundle_sha256 then return nil end
-    return { version = w.version, asset = w.asset, sha256 = w.sha256, bundle_sha256 = w.bundle_sha256,
-        descriptor = a.descriptor }
+    if not w then return nil end
+    -- Read for its binary only: a leftover `bundle_sha256` is dropped.
+    return { version = w.version, asset = w.asset, sha256 = w.sha256, descriptor = a.descriptor }
 end
 
 --- Read channel.json, or nil when it is absent or unusable (an unusable file
@@ -201,8 +199,7 @@ function M.accepted(setting, asset, opts)
     local rec = opts.load and opts.load() or M.load(opts)
     local a = rec and rec.accepted
     if not a or a.asset ~= asset or #M.problems(a.descriptor) > 0 then return nil end
-    return { sha256 = a.sha256, bundle_sha256 = a.bundle_sha256, version = a.version, asset = a.asset,
-        channel = setting.channel }
+    return { sha256 = a.sha256, version = a.version, asset = a.asset, channel = setting.channel }
 end
 
 local function split(v)
@@ -256,15 +253,13 @@ function M.args(channel)
 end
 
 --- The query's extra environment: the release-source override
---- (`binary.release_url`) and the install-folder override, the pinned
---- managed lw's bundle slot (spec §19.16 "The managed bundle",
---- `opts.install_dir`), passed through.
---- @param opts? { release_url?: string, install_dir?: string }
+--- (`binary.release_url`), passed through; no install-folder override (spec
+--- §19.16 "Channel upgrades").
+--- @param opts? { release_url?: string }
 --- @return table<string, string>
 function M.env(opts)
     opts = opts or {}
     local env = {}
-    if type(opts.install_dir) == "string" and opts.install_dir ~= "" then env.LOOMWORKS_INSTALL_DIR = opts.install_dir end
     if type(opts.release_url) == "string" and opts.release_url ~= "" then env.LOOMWORKS_RELEASE_URL = opts.release_url end
     return env
 end
@@ -323,19 +318,8 @@ function M.classify(res, ctx)
                 .. "); " .. staying) }
     end
     local sha = type(d.assets) == "table" and d.assets[ctx.asset] or nil
-    local zip = require("loomworks.provision.managed").bundle_asset(v)
-    local bsha = type(d.assets) == "table" and d.assets[zip] or nil
     local w = fetch.check_wanted({ sha256 = sha, version = v, asset = ctx.asset })
     if not w then return failed("lw v" .. v .. " on " .. ch .. " has no valid " .. tostring(ctx.asset)) end
-    if bsha == nil then
-        -- `lw release query` names no bundle yet (samienne/loomworks#102):
-        -- the managed lw is a pair, so nothing new is wanted.
-        return { kind = "no_bundle", version = v,
-            note = with_override("binary.channel = " .. ch .. ": lw v" .. v .. " is offered without the hash of its "
-                .. zip .. " (lw release query lists no bundle yet); " .. staying) }
-    end
-    w = fetch.check_wanted({ sha256 = sha, version = v, asset = ctx.asset, bundle_sha256 = bsha })
-    if not w then return failed("lw v" .. v .. " on " .. ch .. " has no valid " .. zip .. " hash") end
     local problems = M.problems(d.descriptor)
     if #problems > 0 then
         local why = table.concat(problems, "; ")
@@ -345,8 +329,7 @@ function M.classify(res, ctx)
     end
     w.channel = ch
     return { kind = "accepted", version = v, wanted = w, override = ignored,
-        accepted = { version = w.version, asset = w.asset, sha256 = w.sha256, bundle_sha256 = w.bundle_sha256,
-            descriptor = d.descriptor },
+        accepted = { version = w.version, asset = w.asset, sha256 = w.sha256, descriptor = d.descriptor },
         note = with_override("lw v" .. v .. " from " .. ch .. " accepted") }
 end
 
@@ -368,8 +351,7 @@ end
 
 --- Run `<pinned> release query --channel <c> --json` (async, bounded) with
 --- the editor's data directory as working directory; `cb(res)` on the main
---- loop. opts: release_url, install_dir (the pinned lw's bundle slot: its
---- LOOMWORKS_INSTALL_DIR), cwd, timeout_ms (tests).
+--- loop. opts: release_url, cwd, timeout_ms (tests).
 --- @param pinned string the pinned managed lw (present and verified)
 --- @param channel string
 --- @param opts? table
