@@ -26,6 +26,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+## 0.1.51 - 2026-11-07
+
+Bridge release: lw now fetches 0.2 and later releases from samienne/loomworks,
+where lw is published from 0.2 on, so a pin of 0.2 or later works under this
+host. `lw self-update` still stays within 0.1.x; moving to 0.2 takes an
+explicit pin or a new install.
+
 ### Upgrade notes
 - The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8
   cache is migrated when it loads and written as version 9 by the next save;
