@@ -67,8 +67,8 @@ a directory containing `loomworks.json` (or a not-yet-published
 [path]` loads the workspace at `path` explicitly; where there is none, it runs
 `lw init` there in a terminal window, with the same `lw` the plugin uses for
 the workspace daemon (the plugin-managed one when no `lw` is installed), and
-loads the new workspace when `lw init` succeeds. To create and edit workspaces
-from the command line, see `lw`'s documentation in
+loads the new workspace when `lw init` succeeds (closing the terminal). To
+create and edit workspaces from the command line, see `lw`'s documentation in
 [loomworks](https://github.com/samienne/loomworks).
 
 ## Setup options
@@ -147,7 +147,7 @@ On the status page (`?` shows them all): `<Tab>`/`<S-Tab>` move, `l`/`h`
 open/close a fold, `<CR>` activates a profile, `b` builds (`<C-b>` serially),
 `c` configures, `R` rebuilds, `C` cleans, `D` deletes, `t` shows a task, `o`
 shows build options, `e` edits a description, `P` cycles publish intent, `N`
-runs `lw init` in a terminal, `L` loads, `<C-n>` resets the workspace, `U` discards the
+runs `lw init` in a terminal where no workspace is, `L` loads, `<C-n>` resets the workspace, `U` discards the
 working copy, `T` reviews trust, `K` hovers, `q` closes. `:w` publishes the
 working copy to `loomworks.json`; `:e!` reverts it.
 

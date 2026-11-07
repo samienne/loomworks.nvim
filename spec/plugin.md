@@ -358,17 +358,21 @@ show their progress through fidget.nvim when it is installed (§19.16
 
 The editor writes no workspace file itself: `lw init` creates the workspace,
 and the editor runs it. `:LoomworksInit [path]` loads the workspace at `path`
-when `path` holds `loomworks.json` or `.nvim/loomworks.user.json` (with no
-`path`: the root the upward search of §13.2 finds from cwd); otherwise it
-runs `lw init` in `path` (default: cwd). `N` on the status page runs `lw
-init` in the workspace root, else in cwd.
+when `path` holds `loomworks.json` or `.nvim/loomworks.user.json` (an
+explicit `path` is used as given, with no upward search; with no `path`: the
+root the upward search of §13.2 finds from cwd); otherwise it runs `lw init`
+in `path` (default: cwd). `N` on the status page runs `lw init` in the
+workspace root, else in cwd; where that directory already holds a workspace
+it runs nothing, and loads it, or says it exists when it is the one loaded.
 
 `lw init` is run from the host binary the editor selected (§19.16 "Host
-binary"; the plugin-managed `lw` is downloaded first when the selection wants
-it), in a terminal window, with the environment of every process the editor
-starts from that binary (§19.16 "Plugin pin"). When it exits 0 the editor
-loads the directory as any other workspace (§13.4); any other exit loads
-nothing and leaves `lw`'s output in the terminal. With no host binary
+binary"; an unprobed one is probed first and the plugin-managed `lw`
+downloaded first, as for the daemon), in a terminal window, with the
+environment of every process the editor starts from that binary (§19.16
+"Plugin pin"). When it exits 0 the editor closes the terminal and loads the
+directory as any other workspace (§13.4); any other exit loads nothing and
+leaves `lw`'s output in the terminal. One run per directory at a time: a
+second focuses the running terminal, or is refused. With no host binary
 nothing runs: the error notification is the selection's reason, or the
 download's error.
 
@@ -1636,7 +1640,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
 | `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
-| `N`     | create_workspace | Run `lw init` in a terminal, then load the workspace (§13.5) |
+| `N`     | create_workspace | Run `lw init` in a terminal where no workspace is, then load the workspace (§13.5) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |

@@ -69,7 +69,8 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 - `:LoomworksInit` in a directory with no workspace, and `N` on the status
   page, now run `lw init` themselves in a terminal window, with the same `lw`
   the plugin uses for the workspace daemon (the plugin-managed one when no
-  `lw` is installed), and load the new workspace when it succeeds. They used
+  `lw` is installed, and an incompatible `lw` on PATH skipped as for the
+  daemon), and load the new workspace when it succeeds. They used
   to refuse and tell you to run `lw init` in a terminal, which a plugin-only
   install could not do (#427).
 - The editor's plugin-managed `lw` could not start: a release `lw` before
