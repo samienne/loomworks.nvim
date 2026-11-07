@@ -27,15 +27,6 @@ function M.argv(bin, args)
     return vim.list_extend({ bin }, args)
 end
 
---- The selection's reason for choosing no binary, without the Runtime line's
---- "running degraded" (nothing runs degraded here).
---- @param sel? loomworks.provision.Selection
---- @return string
-local function why_none(sel)
-    local note = require("loomworks.provision.select").none_note(sel)
-    return (note:gsub(" — running degraded$", ""))
-end
-
 --- Open a terminal window running `lw init` in `root` from `sel`'s binary.
 --- @param root string
 --- @param bin string
@@ -94,7 +85,7 @@ function M.run(root, opts, cb)
     local bin, source, sel = binsel.resolve(root, { setting = opts.binary, getenv = opts.getenv, data = opts.data })
     if type(sel) ~= "table" then sel = { path = bin, source = source, candidates = {} } end
     if bin then return spawn(root, bin, sel, args, cb) end
-    if not sel.download then return false, why_none(sel) end
+    if not sel.download then return false, binsel.none_note(sel, { degraded = false }) end
     -- The wanted plugin-managed lw, downloaded first (as the observer does).
     local want = sel.download
     local setting = opts.binary or {}
