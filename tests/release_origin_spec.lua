@@ -46,10 +46,14 @@ describe("boot.origin", function()
         end
     end)
 
-    it("looks up the latest release in the legacy repository only", function()
-        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    it("looks up the latest release in loomworks, with loomworks.nvim as the fallback", function()
+        assert.equals("https://github.com/samienne/loomworks/releases/latest/download",
             origin.LATEST_DOWNLOAD)
-        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases", origin.RELEASES_API)
+        assert.equals("https://api.github.com/repos/samienne/loomworks/releases", origin.RELEASES_API)
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+            origin.LEGACY_LATEST_DOWNLOAD)
+        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases",
+            origin.LEGACY_RELEASES_API)
     end)
 end)
 
@@ -85,11 +89,100 @@ describe("boot.update fetches a version from the repository it was published in"
         end
     end)
 
-    it("looks up the latest release and the releases API in the legacy repository only", function()
-        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    it("looks up the latest release in loomworks first, loomworks.nvim second", function()
+        assert.equals("https://github.com/samienne/loomworks/releases/latest/download",
             update.DEFAULT_RELEASE_URL)
-        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases", update.RELEASES_API_URL)
+        assert.equals("https://api.github.com/repos/samienne/loomworks/releases", update.RELEASES_API_URL)
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+            update.LEGACY_RELEASE_URL)
+        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases",
+            update.LEGACY_RELEASES_API_URL)
         assert.equals(update.DEFAULT_RELEASE_URL, update.release_base())
+    end)
+
+    describe("resolves the newest release (spec 16.29)", function()
+        local download = require("boot.download")
+        local saved_fetch, served, asked
+        local NEW_LATEST = "https://github.com/samienne/loomworks/releases/latest/download/manifest.json"
+        local OLD_LATEST = "https://github.com/samienne/loomworks.nvim/releases/latest/download/manifest.json"
+        local NEW_API = "https://api.github.com/repos/samienne/loomworks/releases"
+        local OLD_API = "https://api.github.com/repos/samienne/loomworks.nvim/releases"
+        local function not_found(url)
+            return "curl failed (22) for " .. url .. ": curl: (22) The requested URL returned error: 404"
+        end
+        local function manifest(v) return '{"schema":1,"version":"' .. v .. '"}' end
+        local function list(...)
+            local out = {}
+            for _, t in ipairs({ ... }) do out[#out + 1] = '{"draft":false,"tag_name":"v' .. t .. '"}' end
+            return "[" .. table.concat(out, ",") .. "]"
+        end
+
+        before_each(function()
+            served, asked = {}, {}
+            saved_fetch = download.fetch
+            download.fetch = function(url)
+                asked[#asked + 1] = url
+                local body = served[url]
+                if type(body) == "string" then return body end
+                return nil, body and body.err or not_found(url)
+            end
+        end)
+
+        after_each(function() download.fetch = saved_fetch end)
+
+        it("stable: takes loomworks' latest release", function()
+            served[NEW_LATEST] = manifest("0.2.0")
+            served[OLD_LATEST] = manifest("0.1.51")
+            assert.equals("0.2.0", update.resolve_newest_version({ channel = "stable" }))
+            assert.same({ NEW_LATEST }, asked)
+        end)
+
+        it("stable: falls back to loomworks.nvim while loomworks has no stable release", function()
+            served[OLD_LATEST] = manifest("0.1.51")
+            local v, err = update.resolve_newest_version({ channel = "stable" })
+            assert.equals("0.1.51", v, err)
+            assert.same({ NEW_LATEST, OLD_LATEST }, asked)
+        end)
+
+        it("stable: does not fall back when loomworks is unreachable", function()
+            served[NEW_LATEST] = { err = "curl failed (28) for " .. NEW_LATEST .. ": timed out" }
+            served[OLD_LATEST] = manifest("0.1.51")
+            local v, err = update.resolve_newest_version({ channel = "stable" })
+            assert.is_nil(v)
+            assert.truthy(tostring(err):find("timed out", 1, true))
+            assert.same({ NEW_LATEST }, asked)
+        end)
+
+        it("unstable: takes the highest version across both repositories", function()
+            served[NEW_API] = list("0.2.0-beta.3", "0.2.0-beta.1")
+            served[OLD_API] = list("0.1.51", "0.1.50")
+            assert.equals("0.2.0-beta.3", update.resolve_newest_version({ channel = "unstable" }))
+            served[NEW_API] = list()
+            assert.equals("0.1.51", update.resolve_newest_version({ channel = "unstable" }))
+            served[OLD_API] = list("0.3.0")
+            served[NEW_API] = list("0.2.0")
+            assert.equals("0.3.0", update.resolve_newest_version({ channel = "unstable" }))
+        end)
+
+        it("unstable: fails when either releases list cannot be read", function()
+            served[OLD_API] = list("0.1.51")
+            assert.is_nil((update.resolve_newest_version({ channel = "unstable" })))
+        end)
+
+        it("with an override asks only the override, on either channel", function()
+            env.LOOMWORKS_RELEASE_URL = "https://mirror.example/flat"
+            served["https://mirror.example/flat/manifest.json"] = manifest("0.1.50")
+            for _, channel in ipairs({ "stable", "unstable" }) do
+                asked = {}
+                assert.equals("0.1.50", update.resolve_newest_version({ channel = channel }), channel)
+                assert.same({ "https://mirror.example/flat/manifest.json" }, asked, channel)
+            end
+            -- A missing manifest at the override is an error, never a fallback.
+            served["https://mirror.example/flat/manifest.json"] = nil
+            asked = {}
+            assert.is_nil((update.resolve_newest_version({ channel = "stable" })))
+            assert.same({ "https://mirror.example/flat/manifest.json" }, asked)
+        end)
     end)
 
     it("treats an override as one mirror for all versions", function()

@@ -8,10 +8,15 @@
 -- in sh/cmd, by the same prefix test: a version starting `0.0.` or `0.1.` is
 -- legacy, anything else is current.
 --
--- Queries for the LATEST release only ever go to the legacy repository: this
--- line's hosts stay within 0.1.x on their own, and moving to 0.2 or later is
--- always an explicit version or pin. A release-url override (LOOMWORKS_RELEASE_URL / `release-url`) is one mirror for
--- all versions; boot.update applies it before consulting this module.
+-- Queries for the NEWEST release (spec §16.29) ask the current repository
+-- first and the legacy one as the fallback, so self-update crosses over to 0.2
+-- once a 0.2 release reaches the channel: stable takes the current repository's
+-- latest release and falls back to the legacy one's only while the current one
+-- has no stable release; unstable takes the highest version of both release
+-- lists. The version found is then fetched from its own origin, as above. A
+-- release-url override (LOOMWORKS_RELEASE_URL / `release-url`) is one mirror for
+-- all versions and the only place asked; boot.update applies it before
+-- consulting this module.
 --
 -- Pure and dependency-free.
 
@@ -54,10 +59,12 @@ function M.download_base(version)
 end
 
 -- The newest non-prerelease's assets (GitHub resolves `latest`): the `stable`
--- channel. Only the legacy repository.
-M.LATEST_DOWNLOAD = M.GITHUB .. "/" .. M.LEGACY_REPO .. "/releases/latest/download"
+-- channel's query, current repository first, then the legacy one.
+M.LATEST_DOWNLOAD = M.GITHUB .. "/" .. M.REPO .. "/releases/latest/download"
+M.LEGACY_LATEST_DOWNLOAD = M.GITHUB .. "/" .. M.LEGACY_REPO .. "/releases/latest/download"
 
--- The releases API of the legacy repository (the `unstable` channel's query).
-M.RELEASES_API = "https://api.github.com/repos/" .. M.LEGACY_REPO .. "/releases"
+-- The releases APIs (the `unstable` channel's query asks both).
+M.RELEASES_API = "https://api.github.com/repos/" .. M.REPO .. "/releases"
+M.LEGACY_RELEASES_API = "https://api.github.com/repos/" .. M.LEGACY_REPO .. "/releases"
 
 return M
