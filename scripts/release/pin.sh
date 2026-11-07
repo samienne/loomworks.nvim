@@ -32,11 +32,19 @@ for a in "$@"; do
 done
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-slug="${REPO_SLUG:-samienne/loomworks.nvim}"
 tag="v$version"
 
 printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
   || { echo "pin.sh: version '$version' is not <n>.<n>.<n>[-pre]" >&2; exit 2; }
+
+# The repository the release is published in, by version (lw's boot.origin
+# rule, as lua/loomworks/provision/fetch.lua): 0.0.x and 0.1.x on
+# samienne/loomworks.nvim, 0.2.0 and later on samienne/loomworks. REPO_SLUG overrides.
+case "$version" in
+  0.0.*|0.1.*) default_slug=samienne/loomworks.nvim ;;
+  *) default_slug=samienne/loomworks ;;
+esac
+slug="${REPO_SLUG:-$default_slug}"
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
