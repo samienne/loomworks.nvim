@@ -69,7 +69,9 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 - The editor's plugin-managed `lw` could not start: a release `lw` before
   0.2.0-beta.3 carried no Lua of its own. The plugin now pins the
   self-contained `lw` 0.2.0-beta.3, whose executable carries its own code, and
-  downloads nothing else. A `<data>/loomworks/bundle/` folder left by earlier
+  downloads nothing else. It no longer inherits an exported `LOOMWORKS_LUA`
+  or `LOOMWORKS_INSTALL_DIR` from the editor's environment (an `lw` you
+  installed or named still does). A `<data>/loomworks/bundle/` folder left by earlier
   development builds is no longer used and can be deleted (#414, #423).
 
 ### Removed

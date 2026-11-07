@@ -9,6 +9,8 @@
 --   exit-held <ms>     leaves a child holding its standard output and error
 --                      for <ms>, then exits 10 at once
 --   sleep <ms>         (the child) sleeps <ms>, then exits 0
+--   env <file>         writes its LOOMWORKS_LUA and LOOMWORKS_INSTALL_DIR
+--                      (or "-" when unset) to <file>, one per line; exits 10
 local uv = vim.uv or vim.loop
 local mode, a = arg[1], arg[2]
 
@@ -60,6 +62,13 @@ elseif mode == "eof-hang" then
 elseif mode == "eof-exit" then
     close_stdout()
     vim.wait(tonumber(a))
+    os.exit(10)
+elseif mode == "env" then
+    local f = assert(io.open(a, "w"))
+    for _, n in ipairs({ "LOOMWORKS_LUA", "LOOMWORKS_INSTALL_DIR" }) do
+        f:write(n, "=", os.getenv(n) or "-", "\n")
+    end
+    f:close()
     os.exit(10)
 elseif mode == "exit-held" then
     child({ "sleep", a }, true)

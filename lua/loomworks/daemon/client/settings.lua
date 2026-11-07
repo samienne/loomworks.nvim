@@ -46,12 +46,14 @@ function M.state_dir()
     return M.data_dir() .. "/daemon"
 end
 
---- A relay's environment as a "K=V" list: this process's, with `LW_ROOT`
---- and then `extra` (the selection's, e.g. `binary.source`) set last.
+--- A relay's environment as a "K=V" list: this process's without the names
+--- in `unset` (the managed lw's: loomworks.provision.select.child_unset), with
+--- `LW_ROOT` and then `extra` (the selection's, e.g. `binary.source`) set last.
 --- @param root string
 --- @param extra? table<string, string>
+--- @param unset? string[]
 --- @return string[]
-function M.env(root, extra)
+function M.env(root, extra, unset)
     local out, by_key = {}, {}
     for k, v in pairs(uv.os_environ()) do
         local key = is_win() and k:upper() or k
@@ -65,6 +67,7 @@ function M.env(root, extra)
         end
     end
     local function set(k, v) by_key[is_win() and k:upper() or k] = { k, v } end
+    for _, k in ipairs(unset or {}) do by_key[is_win() and k:upper() or k] = nil end
     set("LW_ROOT", root)
     for k, v in pairs(extra or {}) do set(k, v) end
     for _, kv in pairs(by_key) do out[#out + 1] = kv[1] .. "=" .. kv[2] end

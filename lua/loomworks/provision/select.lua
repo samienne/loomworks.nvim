@@ -353,6 +353,19 @@ function M.resolve(root, opts)
     return sel.path, sel.source, sel
 end
 
+--- The variables a process started from the selected binary must not inherit
+--- (spec §19.16 "Plugin pin"): for the managed lw, LOOMWORKS_LUA and
+--- LOOMWORKS_INSTALL_DIR; nil for a binary the user installed or named
+--- (binary.path / LOOMWORKS_LW / PATH), which keeps the inherited environment.
+--- `binary.source`'s LOOMWORKS_LUA (the selection's `env`) is set after it.
+--- @param sel loomworks.provision.Selection|nil
+--- @return string[]|nil
+function M.child_unset(sel)
+    if type(sel) == "table" and sel.source == "managed" then
+        return vim.deepcopy(require("loomworks.provision.child_env").MANAGED_UNSET)
+    end
+end
+
 --- The Runtime-line note for a selection that chose nothing: each source and
 --- why it gave nothing.
 --- @param sel? loomworks.provision.Selection

@@ -326,6 +326,8 @@ end
 ---   argv        the executable prefix (the selected host binary, e.g. `{ bin }`)
 ---   root        the workspace root
 ---   env         extra environment (the selection's, `binary.source`)
+---   unset       inherited variables to remove (the managed lw's:
+---               loomworks.provision.select.child_unset)
 ---   form        "ordinary"|"no-launch"|"retiring"|"skip"
 ---   instance    the instance id of a retiring / skip relay
 ---   client, role  the `hello`'s
@@ -357,7 +359,7 @@ function M.connect(opts, cb)
     local hello = framing.encode({ kind = framing.KIND.hello, protocol = version.PROTOCOL,
         protocol_min = version.PROTOCOL_MIN, lw_version = version.identity(),
         client = opts.client or "editor", role = opts.role, nonce = nonce() or string.rep("0", 64) })
-    local env = settings.env(opts.root, opts.env)
+    local env = settings.env(opts.root, opts.env, opts.unset)
 
     local r = setmetatable({ form = opts.form, lines = {}, kill_ms = opts.kill_ms }, Relay)
     local stdin, stdout, stderr = uv.new_pipe(false), uv.new_pipe(false), uv.new_pipe(false)

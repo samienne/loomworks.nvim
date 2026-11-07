@@ -351,7 +351,8 @@ end
 
 --- Run `<pinned> release query --channel <c> --json` (async, bounded) with
 --- the editor's data directory as working directory; `cb(res)` on the main
---- loop. opts: release_url, cwd, timeout_ms (tests).
+--- loop, without LOOMWORKS_LUA / LOOMWORKS_INSTALL_DIR. opts: release_url, cwd,
+--- timeout_ms, argv (tests: the whole command line).
 --- @param pinned string the pinned managed lw (present and verified)
 --- @param channel string
 --- @param opts? table
@@ -360,11 +361,17 @@ function M.run(pinned, channel, opts, cb)
     opts = opts or {}
     local cwd = opts.cwd or vim.fn.stdpath("data")
     if not uv.fs_stat(cwd) then cwd = nil end
-    local argv = { pinned }
-    vim.list_extend(argv, M.args(channel))
+    local argv = opts.argv
+    if not argv then
+        argv = { pinned }
+        vim.list_extend(argv, M.args(channel))
+    end
     local timeout = opts.timeout_ms or M.PROCESS_TIMEOUT_MS
     local started = uv.now() -- loop time: the clock vim.system's timer runs on
-    local ok, err = pcall(vim.system, argv,
+    -- The pinned lw is the managed one: no inherited install-folder or source
+    -- override (spec §19.16 "Plugin pin").
+    local child_env = require("loomworks.provision.child_env")
+    local ok, err = child_env.without(child_env.MANAGED_UNSET, function() return vim.system(argv,
         { cwd = cwd, text = true, timeout = timeout, env = M.env(opts) },
         function(r)
             -- vim.system's timeout is status 124 once the bound has passed;
@@ -372,7 +379,7 @@ function M.run(pinned, channel, opts, cb)
             local res = { code = r.code, stdout = r.stdout, stderr = r.stderr,
                 timed_out = r.code == 124 and uv.now() - started >= timeout }
             vim.schedule(function() cb(res) end)
-        end)
+        end) end)
     if not ok then
         vim.schedule(function() cb({ error = "cannot run " .. pinned .. ": " .. tostring(err) }) end)
     end
