@@ -36,6 +36,7 @@ M.plugin = {
     "^loomworks%.fidget$",
     "^loomworks%.reload$",
     "^loomworks%.auto_load$",
+    "^loomworks%.lw_init$",
     -- A bare language-server program resolved from absolute PATH entries
     -- only (the LSP integrations' `rpc.start`).
     "^loomworks%.lsp_server_cmd$",

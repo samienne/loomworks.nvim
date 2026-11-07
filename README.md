@@ -64,8 +64,11 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 By default the plugin loads a workspace when you open Neovim in (or `:cd` to)
 a directory containing `loomworks.json` (or a not-yet-published
 `.nvim/loomworks.user.json`), or any directory below it. `:LoomworksInit
-[path]` initialises one explicitly. To create and edit workspaces from the
-command line, see `lw`'s documentation in
+[path]` loads the workspace at `path` explicitly; where there is none, it runs
+`lw init` there in a terminal window, with the same `lw` the plugin uses for
+the workspace daemon (the plugin-managed one when no `lw` is installed), and
+loads the new workspace when `lw init` succeeds. To create and edit workspaces
+from the command line, see `lw`'s documentation in
 [loomworks](https://github.com/samienne/loomworks).
 
 ## Setup options
@@ -114,7 +117,7 @@ current directory but stops at a git repository's or a linked worktree's root.
 | Command | What it does |
 |---|---|
 | `:LoomworksInfo` | Open the status page |
-| `:LoomworksInit [path]` | Initialise the workspace at `path` (default: cwd) |
+| `:LoomworksInit [path]` | Load the workspace at `path`, or run `lw init` there when it has none (default: cwd) |
 | `:LoomworksDaemon [connect\|status]` | Connect to the workspace daemon (launching it when none runs), or show the runtime line and the `lw` a launch would use |
 | `:LoomworksTrust` | Review a refused working copy, then trust (re-sign), discard or cancel |
 | `:LoomworksCompileCommand [file]` | Not available with the workspace daemon: refuses and says so |
@@ -144,7 +147,7 @@ On the status page (`?` shows them all): `<Tab>`/`<S-Tab>` move, `l`/`h`
 open/close a fold, `<CR>` activates a profile, `b` builds (`<C-b>` serially),
 `c` configures, `R` rebuilds, `C` cleans, `D` deletes, `t` shows a task, `o`
 shows build options, `e` edits a description, `P` cycles publish intent, `N`
-refuses to create a workspace and points at `lw init`, `L` loads, `<C-n>` resets the workspace, `U` discards the
+runs `lw init` in a terminal, `L` loads, `<C-n>` resets the workspace, `U` discards the
 working copy, `T` reviews trust, `K` hovers, `q` closes. `:w` publishes the
 working copy to `loomworks.json`; `:e!` reverts it.
 

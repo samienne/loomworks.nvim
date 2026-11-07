@@ -3,8 +3,8 @@
 -- holds no model, so `lw.build_profile`, `lw.build_target`,
 -- `lw.pick_profile`, `lw.pick_target` and `lw.launch_target` act by calls
 -- naming the rows of `view.Workspace/1` and the records of
--- `Launch/1.targets` by id; `lw.compile_command_for_file` and
--- `lw.create_workspace` are refused. Against an observer whose connection is
+-- `Launch/1.targets` by id; `lw.compile_command_for_file` is refused
+-- (`lw.create_workspace` runs `lw init`: tests/lw_init_spec.lua). Against an observer whose connection is
 -- a recording fake (no daemon, no workspace loaded in the editor).
 
 local observer = require("loomworks.daemon.observer")
@@ -195,16 +195,6 @@ describe("the daemon-mode facade (§19.16 Public API, step 6b-alpha)", function(
         local res = lw.compile_command_for_file("/w/app/main.c")
         assert.equals("refused", res.status)
         assert.equals("not available with the workspace daemon", res.message)
-    end)
-
-    it("create_workspace is refused and points to lw init (D5); nothing written", function()
-        local dir = vim.fn.tempname()
-        vim.fn.mkdir(dir, "p")
-        local ok, err = lw.create_workspace(dir, "x")
-        assert.is_false(ok)
-        assert.truthy(err:find("lw init", 1, true))
-        assert.equals(0, vim.fn.filereadable(dir .. "/loomworks.json"))
-        vim.fn.delete(dir, "rf")
     end)
 
     -- The getters (§19.16 "Public API", D2): plain copies of the view rows

@@ -284,10 +284,13 @@ end
 -- Create workspace
 -- -----------------------------------------------------------------------
 
---- `N` (spec §19.16 "Model writes", step 6b-α): refused, loaded or not,
---- nothing written; the notification names `lw init`.
+--- `N` (spec/plugin.md §13.5): run `lw init` in the workspace root, else in
+--- cwd, from the editor's host binary (loomworks.lw_init); lw decides, the
+--- editor writes nothing.
 function Tree:_create_workspace()
-    vim.notify("loomworks: " .. require("loomworks.daemon.facade").CREATE_REFUSAL, vim.log.levels.ERROR)
+    local lw = require("loomworks")
+    local ok, err = lw.create_workspace(lw.workspace_root())
+    if not ok then vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR) end
 end
 
 -- -----------------------------------------------------------------------

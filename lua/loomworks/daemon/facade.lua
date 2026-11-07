@@ -434,8 +434,4 @@ end
 --- refused, nothing read.
 M.COMPILE_COMMAND_REFUSAL = "not available with the workspace daemon"
 
---- The status page's `N` (§19.16 "Model writes"): refused,
---- nothing written.
-M.CREATE_REFUSAL = "creating a workspace is not available with the workspace daemon — run lw init in a terminal"
-
 return M
