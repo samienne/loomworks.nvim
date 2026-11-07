@@ -312,6 +312,17 @@ describe("initialising a workspace runs lw init (§13.5)", function()
         for _, m in ipairs(notes) do assert.is_nil(m:find("in a terminal", 1, true)) end
     end)
 
+    it("has_workspace: the directory itself, either file; not a directory below one", function()
+        local dir = tmpdir()
+        assert.is_false(lw_init.has_workspace(dir))
+        vim.fn.mkdir(dir .. "/.nvim", "p")
+        vim.fn.writefile({ "{}" }, dir .. "/.nvim/loomworks.user.json")
+        assert.is_true(lw_init.has_workspace(dir))
+        assert.is_true(lw_init.has_workspace(dir .. "/"))
+        vim.fn.mkdir(dir .. "/sub", "p")
+        assert.is_false(lw_init.has_workspace(dir .. "/sub"))
+    end)
+
     describe("the status page's N where a workspace is", function()
         local function setup_dir(loaded_here)
             select_lw("/m/lw", "managed")

@@ -117,17 +117,6 @@ function M.classify_git_file(git_file)
     return "boundary"
 end
 
---- Whether `dir` itself holds a workspace: the published snapshot OR the
---- working copy (a not-yet-published `lw init` has only the latter). No
---- upward search.
---- @param dir string
---- @return boolean
-function M.has_workspace(dir)
-    dir = slashes(dir)
-    return uv.fs_stat(dir .. "/loomworks.json") ~= nil
-        or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") ~= nil
-end
-
 --- Walk up from `start` (default: the process cwd) for the workspace root.
 --- Returns `(root, info)`: `root` is forward-slashed, nil when no workspace
 --- resolves (none on the way up, or a working-tree boundary reached first);
@@ -140,7 +129,10 @@ function M.find(start)
     local dir = slashes(start or uv.cwd())
     local submodule
     while dir ~= "" do
-        if M.has_workspace(dir) then
+        -- A workspace is recognized by the published snapshot OR the working
+        -- copy — a not-yet-published `lw init` has only the latter.
+        if uv.fs_stat(dir .. "/loomworks.json")
+            or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") then
             return dir, { submodule = submodule }
         end
         local git = uv.fs_stat(dir .. "/.git")

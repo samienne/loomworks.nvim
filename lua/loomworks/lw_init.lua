@@ -15,6 +15,17 @@ local M = {}
 --- @type table<string, { win?: integer }>
 M._running = {}
 
+--- True when `dir` itself holds a workspace (spec §13.2: `loomworks.json` or
+--- `.nvim/loomworks.user.json`): the upward search's own check
+--- (loomworks.root_finder, vendored), which stops at `dir` exactly then.
+--- `:LoomworksInit` and `N` share it.
+--- @param dir string
+--- @return boolean
+function M.has_workspace(dir)
+    local d = (dir:gsub("\\", "/"):gsub("/+$", ""))
+    return require("loomworks.root_finder").find(d) == d
+end
+
 --- The command line that runs `bin` with `args` (tests replace it).
 --- @param bin string
 --- @param args string[]

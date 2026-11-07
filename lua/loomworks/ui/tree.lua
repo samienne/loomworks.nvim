@@ -292,7 +292,7 @@ end
 function Tree:_create_workspace()
     local lw = require("loomworks")
     local dir = lw.workspace_root() or vim.fn.getcwd()
-    if require("loomworks.root_finder").has_workspace(dir) then
+    if require("loomworks.lw_init").has_workspace(dir) then
         if lw.loaded_root() == dir then
             vim.notify("loomworks: a workspace already exists at " .. dir, vim.log.levels.INFO)
         else

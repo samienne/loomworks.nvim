@@ -551,7 +551,7 @@ function M.init_command(path)
         local found = require("loomworks.root_finder").find(vim.fn.getcwd())
         dir = resolve_root(found)
     end
-    if require("loomworks.root_finder").has_workspace(dir) then
+    if require("loomworks.lw_init").has_workspace(dir) then
         return M.setup({ root = dir })
     end
     local ok, err = M.create_workspace(dir)
