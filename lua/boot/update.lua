@@ -241,9 +241,13 @@ function M.resolve_unstable_version(fetch_limits)
       best, best_manifest = ver, has_manifest
     end
   end
-  -- The newest release has no manifest.json: this host cannot install it, and
-  -- silently taking an older one would strand it on 0.1.x (§16.29).
-  if best and not best_manifest then return nil, stranded(best) end
+  -- The newest samienne/loomworks release has no manifest.json: this host
+  -- cannot install it, and silently taking an older one would strand it on
+  -- 0.1.x (§16.29). A loomworks.nvim release always carries one once its
+  -- assets are uploaded, so it is never reported as stranded.
+  if best and not best_manifest and origin.release_repo(best) == origin.REPO then
+    return nil, stranded(best)
+  end
   if best then return best end
   return nil, "no releases found on the unstable channel"
 end

@@ -248,6 +248,17 @@ describe("boot.update fetches a version from the repository it was published in"
             assert.equals("0.2.0-beta.9", update.resolve_newest_version({ channel = "unstable" }))
         end)
 
+        it("unstable: a legacy winner without a manifest asset is not reported as stranded", function()
+            served[NEW_API] = list("0.2.0-beta.3")
+            served[OLD_API] = '[{"draft":false,"tag_name":"v0.2.0-beta.4"},'
+                .. '{"draft":false,"tag_name":"v0.1.52","assets":[]}]'
+            local v, err, info = update.resolve_newest_version({ channel = "unstable" })
+            assert.equals("0.2.0-beta.3", v, err)
+            assert.is_nil(info)
+            served[NEW_API] = "[]"
+            assert.equals("0.1.52", update.resolve_newest_version({ channel = "unstable" }))
+        end)
+
         it("self-update reports the same loud failure on stable", function()
             served[NEW_SUMS] = sums("0.2.0")
             served[OLD_LATEST] = manifest("0.1.51")
