@@ -8168,11 +8168,20 @@ end
 --- @return string|nil
 local function effective_config_default(key)
   if key == "release-url" then
+    local env = os.getenv("LOOMWORKS_RELEASE_URL")
+    if env and env ~= "" then
+      return env .. " (LOOMWORKS_RELEASE_URL: an override, the only place releases are fetched from)"
+    end
+    -- The default is not one URL: the newest release is looked up in two
+    -- repositories (spec §16.29), each version then fetched from its own.
     local ok, update = pcall(require, "boot.update")
     if ok and update.DEFAULT_RELEASE_URL then
-      return os.getenv("LOOMWORKS_RELEASE_URL") or update.DEFAULT_RELEASE_URL
+      return update.DEFAULT_RELEASE_URL ..
+        (update.LEGACY_RELEASE_URL and (", then " .. update.LEGACY_RELEASE_URL) or "") ..
+        " (the newest release is looked up there, each version fetched from its own" ..
+        " repository; setting release-url makes it an override, the only place asked)"
     end
-    return os.getenv("LOOMWORKS_RELEASE_URL")
+    return nil
   end
   if key == "channel" then
     -- Precedence mirrors boot.update.resolve_channel (env > config > default).
