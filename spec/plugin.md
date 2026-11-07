@@ -354,13 +354,23 @@ files and detects no toolchains (§19.16 "End state"). The daemon's tasks
 show their progress through fidget.nvim when it is installed (§19.16
 "Tasks in the task runner").
 
-### 13.5 Workspace initialization (`N`)
+### 13.5 Workspace initialization (`:LoomworksInit`, `N`)
 
-The editor does not create a workspace. `N` on the status page writes
-nothing and shows an error notification: `creating a workspace is not
-available with the workspace daemon — run lw init in a terminal` (§19.16
-"Model writes"). `lw init` creates the workspace; the editor then loads it
-as any other (§13.4).
+The editor writes no workspace file itself: `lw init` creates the workspace,
+and the editor runs it. `:LoomworksInit [path]` loads the workspace at `path`
+when `path` holds `loomworks.json` or `.nvim/loomworks.user.json` (with no
+`path`: the root the upward search of §13.2 finds from cwd); otherwise it
+runs `lw init` in `path` (default: cwd). `N` on the status page runs `lw
+init` in the workspace root, else in cwd.
+
+`lw init` is run from the host binary the editor selected (§19.16 "Host
+binary"; the plugin-managed `lw` is downloaded first when the selection wants
+it), in a terminal window, with the environment of every process the editor
+starts from that binary (§19.16 "Plugin pin"). When it exits 0 the editor
+loads the directory as any other workspace (§13.4); any other exit loads
+nothing and leaves `lw`'s output in the terminal. With no host binary
+nothing runs: the error notification is the selection's reason, or the
+download's error.
 
 ### 13.6 Limitations
 
@@ -377,7 +387,7 @@ as any other (§13.4).
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `:LoomworksInit [path]` | Optional directory | Initialize workspace (default: cwd) |
+| `:LoomworksInit [path]` | Optional directory | Load the workspace at `path`, or run `lw init` there when it holds none (§13.5; default: the root found from cwd, else cwd) |
 | `:LoomworksInfo` | None | Open/focus status page |
 | `:LoomworksDaemon [connect\|status]` | Optional subcommand (default: `status`) | `connect`: connect to the workspace daemon through an ordinary relay, which starts the daemon when none is live (§19.16 "Through the relay"); `status`: show the Runtime line and the host binary a launch would use, with its source (§19.16 "Host binary") |
 | `:LoomworksTrust` | None | Review a refused working copy ([loomworks core §17.4](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)): show its summary, then trust (re-sign), discard, or cancel |
@@ -725,11 +735,11 @@ With no workspace loaded (its load failed, or a trust or schema refusal
 unloaded it, as `view.Header/1`'s `state` reports it) every action is
 refused, nothing sent and nothing run — the nuke, trust and the removal of
 the working copy name their command (`lw nuke`, `lw trust`, `lw trust
---discard`). Creating a workspace (the status page's `N`, a new
-`loomworks.json` where none is) is likewise refused, loaded or not, nothing
-written: its error notification names `lw init` ([API.md](protocol/API.md)
-§6 defers `Workspace/1.create` until a server serves a root with no
-`loomworks.json`).
+--discard`). Creating a workspace (the status page's `N`, `:LoomworksInit`
+where no workspace is) is no call and no editor write: the editor runs `lw
+init` from its host binary in a terminal and loads the workspace when it
+exits 0 (§13.5; [API.md](protocol/API.md) §6 defers `Workspace/1.create`
+until a server serves a root with no `loomworks.json`).
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Confirmation"); so is the
@@ -1626,7 +1636,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
 | `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
-| `N`     | create_workspace | Refused, naming `lw init` (core §13.5); nothing written |
+| `N`     | create_workspace | Run `lw init` in a terminal, then load the workspace (§13.5) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
