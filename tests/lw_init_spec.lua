@@ -201,7 +201,7 @@ describe("initialising a workspace runs lw init (§13.5)", function()
         end)
     end)
 
-    it("the status page's N runs lw init (no refusal)", function()
+    it("the status page's N runs lw init where no workspace is (no refusal)", function()
         select_lw("/m/lw", "managed")
         local notes = {}
         stub(vim, "notify", function(m) notes[#notes + 1] = m end)
@@ -212,5 +212,35 @@ describe("initialising a workspace runs lw init (§13.5)", function()
         assert.is_true(vim.wait(20000, function() return #loaded > 0 end, 20))
         assert.equals(norm(dir), norm(report(rep).cwd))
         for _, m in ipairs(notes) do assert.is_nil(m:find("in a terminal", 1, true)) end
+    end)
+
+    describe("the status page's N where a workspace is", function()
+        local function setup_dir(loaded_here)
+            select_lw("/m/lw", "managed")
+            local dir = tmpdir()
+            vim.fn.writefile({ "{}" }, dir .. "/loomworks.json")
+            stub(lw, "workspace_root", function() return dir end)
+            stub(lw, "loaded_root", function() return loaded_here and dir or nil end)
+            return dir
+        end
+
+        it("loads it when it is not loaded, running nothing", function()
+            local dir = setup_dir(false)
+            require("loomworks.ui.tree")._create_workspace({})
+            assert.same({ norm(dir) }, vim.tbl_map(norm, loaded))
+            assert.equals(0, terminals())
+            assert.is_nil(report(rep))
+        end)
+
+        it("says it exists when it is the one loaded, running nothing", function()
+            local notes = {}
+            stub(vim, "notify", function(m) notes[#notes + 1] = m end)
+            local dir = setup_dir(true)
+            require("loomworks.ui.tree")._create_workspace({})
+            assert.same({ "loomworks: a workspace already exists at " .. dir }, notes)
+            assert.same({}, loaded)
+            assert.equals(0, terminals())
+            assert.is_nil(report(rep))
+        end)
     end)
 end)

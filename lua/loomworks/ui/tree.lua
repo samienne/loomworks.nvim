@@ -286,10 +286,23 @@ end
 
 --- `N` (spec/plugin.md §13.5): run `lw init` in the workspace root, else in
 --- cwd, from the editor's host binary (loomworks.lw_init); lw decides, the
---- editor writes nothing.
+--- editor writes nothing. A directory that already holds a workspace runs
+--- nothing: it is loaded (as `:LoomworksInit` does), or, when it is the one
+--- loaded, a notification says it exists.
 function Tree:_create_workspace()
     local lw = require("loomworks")
-    local ok, err = lw.create_workspace(lw.workspace_root())
+    local dir = lw.workspace_root() or vim.fn.getcwd()
+    if require("loomworks.root_finder").has_workspace(dir) then
+        if lw.loaded_root() == dir then
+            vim.notify("loomworks: a workspace already exists at " .. dir, vim.log.levels.INFO)
+        else
+            lw.setup({ root = dir })
+        end
+        return
+    end
+    -- The terminal opens as a split, which the page's float would cover.
+    require("loomworks.ui.status").close()
+    local ok, err = lw.create_workspace(dir)
     if not ok then vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR) end
 end
 

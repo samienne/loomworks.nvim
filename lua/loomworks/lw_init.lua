@@ -9,16 +9,6 @@
 
 local M = {}
 
---- True when `dir` holds a workspace (spec §13.2 "Detection order": either
---- file is sufficient).
---- @param dir string
---- @return boolean
-function M.has_workspace(dir)
-    local uv = vim.uv or vim.loop
-    return uv.fs_stat(dir .. "/loomworks.json") ~= nil
-        or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") ~= nil
-end
-
 --- The command line that runs `bin` with `args` (tests replace it).
 --- @param bin string
 --- @param args string[]
