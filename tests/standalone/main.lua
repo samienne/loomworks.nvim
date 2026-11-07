@@ -1874,6 +1874,18 @@ do
     -- offline: not checked, never a failure
     local t3 = table.concat(bootstrap.status(h, { resolve_newest = function() return nil, "offline" end }).lines, "\n")
     ok(t3:find("not checked - offline", 1, true), "a failed release check reads 'not checked'")
+    -- a release this lw cannot update to (spec §16.29): said as such, never "offline"
+    local stranded_msg = "lw 0.2.0 is released at samienne/loomworks but this lw cannot update to it; "
+      .. "reinstall with the install command in the README: https://github.com/samienne/loomworks#install"
+    local st4 = bootstrap.status(h, { resolve_newest = function()
+      return nil, stranded_msg, { stranded = true, version = "0.2.0" } end })
+    local t4 = table.concat(st4.lines, "\n")
+    ok(t4:find(stranded_msg, 1, true) and not t4:find("not checked - offline", 1, true),
+      "a release this lw cannot update to is named on the status page  (" .. t4 .. ")")
+    local bi, be = bootstrap.install(h, { latest = true, resolve_newest = function()
+      return nil, stranded_msg, { stranded = true, version = "0.2.0" } end })
+    ok(bi == nil and tostring(be):find(stranded_msg, 1, true),
+      "bootstrap install --latest fails with the same message")
     -- json
     local doc = bootstrap.status(h, { resolve_newest = newest_is(V2) }).doc
     local enc = json.encode(doc)
@@ -2908,14 +2920,16 @@ do
   -- Publish order is NOT version order: a stable v0.1.43 cut after the
   -- v0.1.44-beta.1 pre-release sits first in the API list, yet unstable must
   -- still pick the highest version (§16.29) — never move users DOWN. A higher
-  -- draft is still ignored.
-  put(api, '[{"draft":false,"prerelease":false,"tag_name":"v0.1.43"},'
+  -- draft is still ignored. (0.1.x versions count only in loomworks.nvim's list.)
+  put(api, '[]')
+  put(legacy_api, '[{"draft":false,"prerelease":false,"tag_name":"v0.1.43"},'
     .. '{"draft":true,"prerelease":true,"tag_name":"v0.1.45-beta.1"},'
     .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.44-beta.1"},'
     .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.43-beta.16"}]')
   local hv, he = update.resolve_unstable_version()
   eq(hv, "0.1.44-beta.1",
     "unstable picks the highest version, not the first listed" .. (he and (" — " .. he) or ""))
+  put(legacy_api, '[]')
   -- An unsafe tag anywhere in the list still fails the whole query.
   put(api, '[{"draft":false,"tag_name":"v0.1.44"},{"draft":false,"tag_name":"v../../evil"}]')
   local uv, ue = update.resolve_unstable_version()
@@ -2987,6 +3001,20 @@ do
   eq(update.resolve_newest_version({}), "0.0.0-test",
     "stable falls back to loomworks.nvim's latest when loomworks has none")
 
+  -- A stable release in loomworks without a manifest (SHA256SUMS only): the
+  -- loud failure, never the fallback (spec §16.29).
+  local sums_only = sb .. "/sums-only"; paths.mkdirp(sums_only)
+  put(sums_only .. "/SHA256SUMS", ("0"):rep(64) .. "  lw-0.2.0-descriptor.json\n")
+  update.DEFAULT_RELEASE_URL = sums_only
+  local sv, se, si = update.resolve_newest_version({})
+  ok(sv == nil and type(se) == "string" and se:find("lw 0.2.0 is released at samienne/loomworks", 1, true)
+    and se:find("#install", 1, true) and si and si.stranded,
+    "a stable loomworks release without a manifest fails loudly" .. (se and (" — " .. se) or ""))
+  local sres, serr = update.self_update({ channel = "stable" })
+  ok(sres == nil and type(serr) == "string" and serr:find("cannot update to it", 1, true),
+    "self-update fails loudly too" .. (serr and (" — " .. serr) or ""))
+  update.DEFAULT_RELEASE_URL = sb .. "/no-such-mirror"
+
   -- offline / missing manifest is a clean error (the caller degrades silently).
   update.LEGACY_RELEASE_URL = sb .. "/no-such-legacy-mirror"
   ok(select(1, update.resolve_newest_version({})) == nil,
@@ -3011,13 +3039,14 @@ do
   -- releases API at a local JSON naming the fixture version. versioned_base of a
   -- local base is flat, so the whole unstable path stays hermetic (no network).
   local api = sb .. "/releases.json"
-  put(api, '[{"draft":false,"prerelease":true,"tag_name":"v0.0.0-test"}]')
+  -- 0.0.0-test is a legacy-origin version: it counts only in loomworks.nvim's list.
+  put(api, '[]')
   local savedOrigin, savedApi = update.DEFAULT_RELEASE_URL, update.RELEASES_API_URL
   local savedLegacyApi = update.LEGACY_RELEASES_API_URL
   update.DEFAULT_RELEASE_URL = (FX:gsub("/$", ""))
   update.RELEASES_API_URL = api
   update.LEGACY_RELEASES_API_URL = sb .. "/legacy-releases.json"
-  put(sb .. "/legacy-releases.json", '[]')
+  put(sb .. "/legacy-releases.json", '[{"draft":false,"prerelease":true,"tag_name":"v0.0.0-test"}]')
 
   local res, err = update.self_update({ channel = "unstable" })
   ok(res ~= nil, "unstable self_update installs" .. (err and (" — " .. err) or ""))

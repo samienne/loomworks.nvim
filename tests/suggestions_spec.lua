@@ -383,6 +383,22 @@ describe("update-check suggestion provider", function()
             detail = "fetch manifest: curl failed (28)" }, suggestions.last_update_check())
     end)
 
+    it("a release this lw cannot update to is an actionable item, not a skipped check", function()
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
+        update.resolve_channel = function() return "stable" end
+        local msg = "lw 0.2.0 is released at samienne/loomworks but this lw cannot update to it; "
+            .. "reinstall with the install command in the README: https://github.com/samienne/loomworks#install"
+        update.resolve_newest_version = function() return nil, msg, { stranded = true, version = "0.2.0" } end
+        local out = suggestions.update_check_provider({})
+        assert.equals(1, #out)
+        assert.is_nil(out[1].kind) -- a suggestion: counted, with a remedy
+        assert.equals("lw 0.2.0 is released but this lw cannot update to it", out[1].title)
+        assert.equals("reinstall lw with the install command in the README: "
+            .. "https://github.com/samienne/loomworks#install", out[1].remedy)
+        assert.same({ status = "unknown", channel = "stable", current = "0.1.0", newest = "0.2.0",
+            detail = msg }, suggestions.last_update_check())
+    end)
+
     it("uses the quick fetch limits (no long curl hang offline)", function()
         _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
         update.resolve_channel = function() return "stable" end
