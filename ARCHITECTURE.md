@@ -1330,7 +1330,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   failed retirement goes to `stale_note` (never `incompat_note`), and
   `_retire_blocks()` keeps the features available until `retire` is sent.
 - `provision/fetch.lua` (step 5h.3) — `ensure(wanted, opts, cb)`: async
-  download of a `Wanted` record (`{ sha256, version, asset }`) into
+  download of a `Wanted` record (`{ sha256, version, asset }`) from `url`
+  (an override, else lw's per-version origin: `release_repo` mirrors lw's
+  `boot.origin` — 0.0.x/0.1.x on `samienne/loomworks.nvim`, 0.2.0 and later on
+  `samienne/loomworks`) into
   `<dir>/<sha256>.<pid>.<n>.dl` (`uv.fs_copyfile` with `excl` for a local
   mirror, `vim.system` curl — `curl_args`: connect timeout, low-speed limit,
   `--proto-redir =https` from https — with lw's retry rule for http(s)),

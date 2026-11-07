@@ -109,6 +109,26 @@ describe("provision.fetch", function()
         assert.is_nil(fetch.local_path("https://x"))
     end)
 
+    it("takes lw's per-version origin: 0.0.x/0.1.x from loomworks.nvim, 0.2 on from loomworks", function()
+        local none = { getenv = function() return nil end }
+        local function url(v) return fetch.url(want({ version = v }), none) end
+        assert.equals("https://github.com/samienne/loomworks/releases/download/v0.2.0-beta.3/lw-linux-x86_64",
+            url("0.2.0-beta.3"))
+        assert.equals("https://github.com/samienne/loomworks/releases/download/v0.2.0/lw-linux-x86_64",
+            url("0.2.0"))
+        assert.equals("https://github.com/samienne/loomworks/releases/download/v1.0.0/lw-linux-x86_64",
+            url("1.0.0"))
+        assert.equals("https://github.com/samienne/loomworks/releases/download/v0.10.0/lw-linux-x86_64",
+            url("0.10.0"))
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/download/v0.1.50-beta.1/lw-linux-x86_64",
+            url("0.1.50-beta.1"))
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/download/v0.0.9/lw-linux-x86_64",
+            url("0.0.9"))
+        -- An override is one mirror for every version.
+        assert.equals("https://x/y/lw-linux-x86_64",
+            fetch.url(want({ version = "0.2.0-beta.3" }), { release_url = "https://x/y" }))
+    end)
+
     it("refuses unsafe wanted records (never a path or URL fragment)", function()
         assert.is_nil(fetch.check_wanted(want({ version = "../1" })))
         assert.is_nil(fetch.check_wanted(want({ version = "1/2" })))

@@ -202,14 +202,19 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          REPO_SLUG: ${{ github.repository }}
           NVIM_OUTCOME: ${{ steps.nvim.outcome }}
         run: |
           if [ "$NVIM_OUTCOME" != success ]; then
             echo "::warning title=lw pin::Neovim did not install; the pin was not checked"; exit 0
           fi
           ver="$(sed -n 's/^ *version = "\([^"]*\)",$/\1/p' lua/loomworks/provision/pinned.lua)"
-          echo "pinned lw: $ver"
+          # The repository the release is published in (lw's boot.origin rule,
+          # as provision/fetch.lua and scripts/release/pin.sh).
+          case "$ver" in
+            0.0.*|0.1.*) REPO_SLUG=samienne/loomworks.nvim ;;
+            *) REPO_SLUG=samienne/loomworks ;;
+          esac
+          echo "pinned lw: $ver ($REPO_SLUG)"
           mkdir -p pin
           base="https://github.com/$REPO_SLUG/releases/download/v$ver"
           for f in SHA256SUMS SHA256SUMS.sig "lw-$ver-descriptor.json"; do

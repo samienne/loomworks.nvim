@@ -17,8 +17,10 @@
 ---
 --- Source: `<base>/<asset>` for a release-source override (`binary.release_url`,
 --- else `LOOMWORKS_RELEASE_URL`: a local directory, `file://` or an http(s)
---- mirror, flat like lw's own, spec §16.29), else lw's fixed origin
---- `https://github.com/samienne/loomworks.nvim/releases/download/v<version>/<asset>`.
+--- mirror, flat like lw's own, spec §16.29), else lw's fixed origin for that
+--- version, `https://github.com/<repo>/releases/download/v<version>/<asset>`:
+--- `samienne/loomworks` from 0.2.0 on, `samienne/loomworks.nvim` for 0.0.x and
+--- 0.1.x (lw's `boot.origin` rule, mirrored by `M.release_repo`).
 --- http(s) goes through `curl` (from the search path's absolute entries only),
 --- bounded by a connect timeout and a low-speed limit; from an https source a
 --- redirect may only lead to https. The hash, not the transport, is the trust
@@ -46,9 +48,29 @@ local M = {}
 --- @field ctl { cancel: fun() }|nil stops its transfer
 --- @field cancelled boolean|nil `M.cancel` ended it
 
---- lw's fixed release origin (lw's `boot.update.DEFAULT_RELEASE_URL` root):
---- a version's assets live under `/releases/download/v<version>/`.
-M.ORIGIN = "https://github.com/samienne/loomworks.nvim/releases"
+--- lw's fixed release origin, by version (lw's `boot.origin`): every release
+--- from 0.2.0 on (pre-releases included) is published in REPO, every one below
+--- 0.2 in LEGACY_REPO; a version's assets live under
+--- `https://github.com/<repo>/releases/download/v<version>/`. No fallback to
+--- the other repository.
+M.GITHUB = "https://github.com"
+M.REPO = "samienne/loomworks"
+M.LEGACY_REPO = "samienne/loomworks.nvim"
+
+--- Whether `version` is below 0.2 (published in LEGACY_REPO): lw's
+--- `boot.origin.is_legacy`, the same prefix test.
+--- @param version string
+--- @return boolean
+function M.is_legacy(version)
+    return tostring(version):match("^0%.[01]%.") ~= nil
+end
+
+--- The `owner/name` repository `version` is published in.
+--- @param version string
+--- @return string
+function M.release_repo(version)
+    return M.is_legacy(version) and M.LEGACY_REPO or M.REPO
+end
 
 --- Transfer limits and attempts for http(s): a connection must come up
 --- within CONNECT_TIMEOUT s, a transfer slower than LOW_SPEED_BPS bytes/s for
@@ -146,7 +168,7 @@ function M.url(w, opts)
         if root then return root .. "/releases/download/v" .. w.version .. "/" .. w.asset end
         return base .. "/" .. w.asset
     end
-    return M.ORIGIN .. "/download/v" .. w.version .. "/" .. w.asset
+    return M.GITHUB .. "/" .. M.release_repo(w.version) .. "/releases/download/v" .. w.version .. "/" .. w.asset
 end
 
 --- `curl` from the search path's absolute entries (never the current
