@@ -2044,13 +2044,28 @@ default-channel selection under an override is no conflict and warns nothing.)
 On the default origin, newest-release resolution MUST consult
 samienne/loomworks first and samienne/loomworks.nvim as the fallback, so a
 channel crosses over to 0.2 or later once such a release reaches it. **stable**
-resolves the newest full release of samienne/loomworks; only when that
-repository has no full release does it resolve the newest full release of
-samienne/loomworks.nvim, and that absence MUST NOT be an error. **unstable**
-resolves the highest version (by the ordering below) across both repositories'
-releases. Resolution only selects a version: that version's artifacts are
-fetched from the repository it was published in (§16.23) and verified exactly
-as any other.
+resolves the newest full release of samienne/loomworks from its release
+manifest. That repository has **no full release** only when both its newest
+full release's manifest and its SHA256SUMS are not found; then, and only then,
+stable resolves the newest full release of samienne/loomworks.nvim, and that
+absence MUST NOT be an error. When the manifest is not found but the SHA256SUMS
+is, a full release exists that this host cannot install (that repository
+publishes manifests only for a limited window after its first full release):
+resolution MUST fail loudly, naming the release (its version when the
+SHA256SUMS names it, else "0.2+") and saying to reinstall with the install
+command in samienne/loomworks' README, and MUST NOT fall back. Any other failure
+to ask (unreachable, a server error) is an error, never a fallback.
+**unstable** resolves the highest version (by the ordering below) across both
+repositories' release lists, each list counting only the versions published in
+its own repository (§16.23: a tag of 0.2 or later in samienne/loomworks.nvim,
+or below 0.2 in samienne/loomworks, is ignored); it fails if either list cannot
+be read, naming that list's repository. When the highest version is
+samienne/loomworks' and its release lists its assets without a manifest,
+unstable fails loudly as stable does. Every newest-release consumer — self-update,
+install, pin management's newest-release pin and its status page (§16.24), and
+the health update check (§16.31) — reports that loud failure. Resolution only
+selects a version: that version's artifacts are fetched from the repository it
+was published in (§16.23) and verified exactly as any other.
 
 A pre-release version orders **below** its corresponding full release: version
 comparison used for activation, "already newest," and cache reclamation
@@ -2414,7 +2429,10 @@ unaffected. When the check **fails** (offline, server unreachable, HTTP/API
 error, malformed answer), health emits one **informational** item "update check
 skipped — offline or release server unreachable", its `detail` the first line of
 the failure reason — never an error, never counted, so the report does not read
-as "up to date" when nothing was checked. Like every network-tier item it is
+as "up to date" when nothing was checked. The one exception is the loud failure
+of §16.29 — a newer release this host cannot install: it is an **actionable**
+item naming that release, its remedy the reinstall, with `update.status`
+`unknown` and `newest` the release when known. Like every network-tier item it is
 written to the cache (the health run's fresh result replaces the previous one,
 successful or not); the passive count still excludes it (informational).
 
