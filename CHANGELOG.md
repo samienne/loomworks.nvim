@@ -45,12 +45,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 - The plugin provisions its own `lw`: when neither `LOOMWORKS_LW` nor the
   setup option `binary.path` names one and no compatible `lw` is on `PATH`, it
   downloads the release it pins, verifies it against the release's signed
-  checksums, and installs it with its Lua bundle under Neovim's data
-  directory (`loomworks/lw/` and `loomworks/bundle/`). The setup option
-  `binary` also takes `prefer = "managed"` (the downloaded `lw` before one on
-  `PATH`), `download = false`, `release_url` (a mirror), `channel` (`stable`
-  or `unstable`) and `source` (a loomworks source tree, for development)
-  (#414).
+  checksums, and installs it under Neovim's data directory (`loomworks/lw/`).
+  The setup option `binary` also takes `prefer = "managed"` (the downloaded
+  `lw` before one on `PATH`), `download = false`, `release_url` (a mirror),
+  `channel` (`stable` or `unstable`) and `source` (a loomworks source tree,
+  for development) (#414).
 - Remove `log_level`, `user_prefs_root` from your `setup()` call: they are no
   longer read. Calls of `require("loomworks").get_setup_error()` must go (#414).
 
@@ -67,11 +66,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   the workspace daemon - run lw init in a terminal" (#414).
 
 ### Fixed
-- The editor's plugin-managed `lw` could not start: a release `lw` carries
-  no Lua of its own. The plugin now also downloads the release's Lua bundle
-  (`loomworks-lua-<version>.zip`, SHA-256 pinned like the binary), unpacks it
-  itself into `<data>/loomworks/bundle/<sha256>/` and starts every process
-  of the managed `lw` with that folder as `LOOMWORKS_INSTALL_DIR` (#414).
+- The editor's plugin-managed `lw` could not start: a release `lw` before
+  0.2.0-beta.3 carried no Lua of its own. The plugin now pins the
+  self-contained `lw` 0.2.0-beta.3, whose executable carries its own code, and
+  downloads nothing else. A `<data>/loomworks/bundle/` folder left by earlier
+  development builds is no longer used and can be deleted (#414, #423).
 
 ### Removed
 - The setup options `log_level` and `user_prefs_root`, and
