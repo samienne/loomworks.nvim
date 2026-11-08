@@ -54,6 +54,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   longer read. Calls of `require("loomworks").get_setup_error()` must go (#414).
 
 ### Added
+- The plugin-managed `lw` now also covers Linux arm64 (`lw-linux-arm64`) and
+  Intel macOS (`lw-macos-x86_64`), published from lw 0.2.0-beta.5. On a
+  platform without a published `lw` (such as Windows arm64), or with a pinned
+  release that has no build for it, `:checkhealth loomworks` says so and names
+  the supported platforms (#431).
 - `:LoomworksDaemon [connect|status]`: `connect` connects the editor to the
   workspace daemon, starting one when none is running; `status` shows the
   daemon's runtime line and the `lw` a launch would use (#414).

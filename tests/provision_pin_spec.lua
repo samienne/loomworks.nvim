@@ -13,9 +13,14 @@ local sha_a = string.rep("a", 64)
 local sha_b = string.rep("b", 64)
 local sha_c = string.rep("c", 64)
 local sha_z = string.rep("e", 64)
+local sha_la = string.rep("1", 64) -- lw-linux-arm64
+local sha_mx = string.rep("2", 64) -- lw-macos-x86_64
 local fake_pin = {
     version = "0.1.50",
-    assets = { ["lw-linux-x86_64"] = sha_a, ["lw-macos-arm64"] = sha_b, ["lw-windows-x86_64.exe"] = sha_c },
+    assets = {
+        ["lw-linux-x86_64"] = sha_a, ["lw-linux-arm64"] = sha_la, ["lw-macos-arm64"] = sha_b,
+        ["lw-macos-x86_64"] = sha_mx, ["lw-windows-x86_64.exe"] = sha_c,
+    },
 }
 
 local function exe(name) return vim.fn.executable(name) == 1 end
@@ -51,8 +56,12 @@ describe("managed.wanted (the plugin pin)", function()
         assert.equals("lw-windows-x86_64.exe", managed.host_asset("Windows_NT", "AMD64"))
         assert.equals("lw-linux-x86_64", managed.host_asset("Linux", "x86_64"))
         assert.equals("lw-macos-arm64", managed.host_asset("Darwin", "arm64"))
-        local a, why = managed.host_asset("Linux", "aarch64")
-        assert.is_nil(a); assert.truthy(why:find("linux/arm64", 1, true))
+        assert.equals("lw-linux-arm64", managed.host_asset("Linux", "aarch64"))
+        assert.equals("lw-linux-arm64", managed.host_asset("Linux", "arm64"))
+        assert.equals("lw-macos-x86_64", managed.host_asset("Darwin", "x86_64"))
+        local a, why = managed.host_asset("Windows_NT", "ARM64")
+        assert.is_nil(a); assert.truthy(why:find("no published lw for windows/arm64", 1, true))
+        assert.truthy(why:find("published for linux/arm64, linux/x86_64, macos/arm64, macos/x86_64, windows/x86_64", 1, true), why)
         a, why = managed.host_asset("Plan9", "x86_64")
         assert.is_nil(a); assert.truthy(why:find("no published lw", 1, true))
         assert.truthy(managed.host_asset() or true) -- this host: no error
@@ -63,6 +72,22 @@ describe("managed.wanted (the plugin pin)", function()
         assert.same({ sha256 = sha_b, version = "0.1.50", asset = "lw-macos-arm64" }, w)
         w = managed.wanted({ pinned = fake_pin, sysname = "Windows_NT", machine = "x86_64" })
         assert.same({ sha256 = sha_c, version = "0.1.50", asset = "lw-windows-x86_64.exe" }, w)
+        w = managed.wanted({ pinned = fake_pin, sysname = "Linux", machine = "aarch64" })
+        assert.same({ sha256 = sha_la, version = "0.1.50", asset = "lw-linux-arm64" }, w)
+        w = managed.wanted({ pinned = fake_pin, sysname = "Darwin", machine = "x86_64" })
+        assert.same({ sha256 = sha_mx, version = "0.1.50", asset = "lw-macos-x86_64" }, w)
+    end)
+
+    it("wants nothing, with a clear reason, from a pin older than this platform's asset", function()
+        -- A release before 0.2.0-beta.5 publishes no lw-linux-arm64 / lw-macos-x86_64.
+        local old = { version = "0.2.0-beta.4",
+            assets = { ["lw-linux-x86_64"] = sha_a, ["lw-macos-arm64"] = sha_b, ["lw-windows-x86_64.exe"] = sha_c } }
+        for _, host in ipairs({ { "Linux", "aarch64", "lw-linux-arm64" }, { "Darwin", "x86_64", "lw-macos-x86_64" } }) do
+            local w, why = managed.wanted({ pinned = old, sysname = host[1], machine = host[2] })
+            assert.is_nil(w)
+            assert.truthy(why:find("no lw build for this platform in the pinned release v0.2.0-beta.4", 1, true), why)
+            assert.truthy(why:find("has no " .. host[3], 1, true), why)
+        end
     end)
 
     it("wants nothing on an unsupported host, a pin without the asset, an invalid pin", function()
@@ -150,6 +175,7 @@ end)
 
 describe("scripts/release/pin.lua", function()
     local sums_text = sha_a .. "  lw-linux-x86_64\n" .. sha_b .. " *lw-macos-arm64\n"
+        .. sha_la .. "  lw-linux-arm64\n" .. sha_mx .. "  lw-macos-x86_64\n"
         .. sha_c .. "  lw-windows-x86_64.exe\n" .. string.rep("d", 64) .. "  manifest.json\n"
         .. sha_z .. "  loomworks-lua-0.1.50.zip\n"
 
@@ -215,7 +241,8 @@ describe("scripts/release/pin.lua", function()
         local function release(version, d)
             local sha = require("loomworks.provision.sha256")
             local lines = {}
-            for _, a in ipairs({ "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe" }) do
+            for _, a in ipairs({ "lw-linux-x86_64", "lw-linux-arm64", "lw-macos-arm64", "lw-macos-x86_64",
+                "lw-windows-x86_64.exe" }) do
                 put(dir .. "/" .. a, "binary " .. a)
                 lines[#lines + 1] = sha.file(dir .. "/" .. a) .. "  " .. a
             end

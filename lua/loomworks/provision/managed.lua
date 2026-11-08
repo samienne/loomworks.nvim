@@ -34,11 +34,13 @@ local function is_win() return package.config:sub(1, 1) == "\\" end
 M.NOT_YET = "none wanted (the plugin carries no pin)"
 
 --- The published host-binary assets, keyed by "<os>/<arch>": the plugin's
---- own copy of lw's table (boot.pin.HOST_ASSETS is binary-side; a test keeps
---- the two equal). A platform absent here has no plugin-managed lw.
+--- own copy of lw's supported-platform table (loomworks core spec §16.11).
+--- A platform absent here (Windows arm64) has no plugin-managed lw.
 M.HOST_ASSETS = {
     ["linux/x86_64"] = "lw-linux-x86_64",
+    ["linux/arm64"] = "lw-linux-arm64",
     ["macos/arm64"] = "lw-macos-arm64",
+    ["macos/x86_64"] = "lw-macos-x86_64",
     ["windows/x86_64"] = "lw-windows-x86_64.exe",
 }
 
@@ -74,7 +76,10 @@ function M.host_asset(sysname, machine)
     local os_, arch = norm_os(sysname), norm_arch(machine)
     local asset = os_ and M.HOST_ASSETS[os_ .. "/" .. tostring(arch)]
     if not asset then
-        return nil, "none wanted (no published lw for " .. tostring(os_ or sysname) .. "/" .. tostring(arch) .. ")"
+        local known = vim.tbl_keys(M.HOST_ASSETS)
+        table.sort(known)
+        return nil, "none wanted (no published lw for " .. tostring(os_ or sysname) .. "/" .. tostring(arch)
+            .. "; lw is published for " .. table.concat(known, ", ") .. ")"
     end
     return asset
 end
@@ -144,7 +149,12 @@ function M.pinned_wanted(opts)
     local asset, why = M.host_asset(opts.sysname, opts.machine)
     if not asset then return nil, why end
     local sha = pin.assets[asset]
-    if sha == nil then return nil, "none wanted (the plugin pin has no " .. asset .. ")" end
+    -- A pin of a release that predates this platform's asset (lw-linux-arm64
+    -- and lw-macos-x86_64 first appear in 0.2.0-beta.5) wants nothing.
+    if sha == nil then
+        return nil, "none wanted (no lw build for this platform in the pinned release v"
+            .. tostring(pin.version) .. ": it has no " .. asset .. ")"
+    end
     -- The host binary is the whole managed lw (§19.16 "Plugin pin"): any
     -- other entry of the pin (a release bundle) is not used.
     local w, bad = require("loomworks.provision.fetch").check_wanted({ sha256 = sha, version = pin.version, asset = asset })

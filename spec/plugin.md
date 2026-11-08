@@ -1175,8 +1175,12 @@ where those run is "Editor operations" and "Availability" above.
   **Plugin pin**. The plugin carries the release it downloads:
   `lua/loomworks/provision/pinned.lua`, `{ version, assets = { [<host asset>]
   = <sha256> } }` with one hash per published host asset (`lw-linux-x86_64`,
-  `lw-macos-arm64`, `lw-windows-x86_64.exe`; the plugin keeps its own copy of
-  that table). The pinned release is self-contained (its executable carries its
+  `lw-linux-arm64`, `lw-macos-arm64`, `lw-macos-x86_64`,
+  `lw-windows-x86_64.exe`, for the platforms of [loomworks core §16.11](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md);
+  the plugin keeps its own copy of that table, keyed by the host's
+  normalized `<os>/<arch>`, where `aarch64` is `arm64` and `amd64` is
+  `x86_64`). Any other platform (Windows arm64 among them) has no
+  plugin-managed `lw`, and the slot names the platforms that have one. The pinned release is self-contained (its executable carries its
   code, [loomworks core §16.13](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)): the host binary is the whole managed `lw`, and a
   release bundle in `SHA256SUMS` ([loomworks core §16.14](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) is not pinned. It is never edited by hand: `scripts/release/pin.sh` writes it
   from a release's `SHA256SUMS` after verifying `SHA256SUMS.sig` with the
@@ -1206,7 +1210,9 @@ where those run is "Editor operations" and "Availability" above.
   release version, a host asset name and that asset's SHA-256: this host's
   asset of the plugin pin ("Plugin pin" above; a platform with no published
   asset, or a pin without this host's asset, wants none and the slot only says
-  why), or — with `binary.channel` set — a newer compatible release of that
+  why; a pin of a release older than this platform's asset — `lw-linux-arm64`
+  and `lw-macos-x86_64` first appear in lw 0.2.0-beta.5 — says the pinned
+  release has no `lw` build for this platform), or — with `binary.channel` set — a newer compatible release of that
   channel ("Channel upgrades" below). When the selection reaches a wanted managed `lw` that is not
   installed, that decides the search: in daemon mode the observer downloads it
   — asynchronously, the editor is degraded meanwhile and the Runtime note
