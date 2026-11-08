@@ -83,7 +83,7 @@ jobs:
           # every host leg, so one dead label blocks the entire release.
           # Re-add an Intel entry once a label is confirmed to schedule — luvi
           # ships the Darwin-x86_64 binary either way.
-          - os: macos-14
+          - os: macos-latest
             asset: luvi-Darwin-arm64-luajit-regular
             luvi: luvi
             out: lw-macos-arm64
@@ -217,7 +217,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
