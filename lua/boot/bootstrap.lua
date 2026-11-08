@@ -317,15 +317,17 @@ end
 
 --- The newest release on the resolved channel (spec §16.29). `opts.resolve_newest`
 --- is a test seam; `opts.fetch` bounds the probe (the status page).
---- @return string|nil version, string|nil err, string|nil channel
+--- `info` is the resolver's (`{ stranded = true, version? }`: a newer release
+--- this lw cannot update to, err says to reinstall).
+--- @return string|nil version, string|nil err, string|nil channel, table|nil info
 function M.newest(opts)
   opts = opts or {}
   local channel, cerr = update.resolve_channel({ channel = opts.channel })
   if not channel then return nil, cerr end
   local resolve = opts.resolve_newest or update.resolve_newest_version
-  local v, err = resolve({ channel = channel, fetch = opts.fetch })
+  local v, err, info = resolve({ channel = channel, fetch = opts.fetch })
   if v and not pin.valid_version(v) then return nil, "unsafe release version '" .. tostring(v) .. "'", channel end
-  return v, err, channel
+  return v, err, channel, info
 end
 
 --- `lw bootstrap install` — converge the repository to a correct pin (+
@@ -475,12 +477,12 @@ function M.status(start, opts)
   -- ---- release probe (the only network operation) ------------------------------
   local compare = r.version or (r.mode == "none" and opts.host_version) or nil
   local upd = {}
-  local newest, nerr, channel
+  local newest, nerr, channel, ninfo
   if opts.offline then
     nerr = "offline"
     channel = update.resolve_channel({ channel = opts.channel })
   else
-    newest, nerr, channel = M.newest({ channel = opts.channel, fetch = M.STATUS_FETCH,
+    newest, nerr, channel, ninfo = M.newest({ channel = opts.channel, fetch = M.STATUS_FETCH,
       resolve_newest = opts.resolve_newest })
   end
   channel = channel or opts.channel or update.DEFAULT_CHANNEL
@@ -543,6 +545,9 @@ function M.status(start, opts)
       row("release", compare and (compare .. " is the newest on the " .. channel .. " channel")
         or (newest .. " is the newest on the " .. channel .. " channel"))
     end
+  elseif type(ninfo) == "table" and ninfo.stranded then
+    -- A newer lw this one cannot update to (spec §16.29): say so, and how.
+    row("release", tostring(nerr))
   else
     row("release", "not checked - offline or release server unreachable")
   end

@@ -1064,7 +1064,20 @@ function M.update_check_provider(_workspace)
     local channel = update.resolve_channel({})
     if not channel then return {} end -- unknown channel → stay silent
 
-    local newest, err = update.resolve_newest_version({ fetch = M.UPDATE_CHECK_FETCH })
+    local newest, err, rinfo = update.resolve_newest_version({ fetch = M.UPDATE_CHECK_FETCH })
+    if not newest and type(rinfo) == "table" and rinfo.stranded then
+        -- A newer lw exists that this one cannot update to (§16.29): not a
+        -- skipped check, but something to act on - reinstall.
+        local ver = type(rinfo.version) == "string" and rinfo.version or "0.2+"
+        M._update_check = { status = "unknown", channel = channel, current = current,
+            newest = type(rinfo.version) == "string" and rinfo.version or nil, detail = tostring(err) }
+        return { {
+            title = "lw " .. ver .. " is released but this lw cannot update to it",
+            detail = tostring(err),
+            remedy = "reinstall lw with the install command in the README: "
+                .. (update.INSTALL_DOC_URL or "https://github.com/samienne/loomworks#install"),
+        } }
+    end
     if not newest or err then
         local why = tostring(err or "no version"):match("^[^\n]*"):gsub("%s+$", "")
         if #why > 160 then why = why:sub(1, 157) .. "..." end

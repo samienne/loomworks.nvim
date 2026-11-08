@@ -1526,32 +1526,51 @@ channel — `update.resolve_channel(opts)` with precedence `opts.channel`
 config key > `"stable"` (unknown value → error). Only `stable` and `unstable`
 are valid.
 
-- **stable** keeps the existing base, `…/releases/latest/download` of
-  samienne/loomworks.nvim (`boot.origin.LATEST_DOWNLOAD`), which GitHub already
-  resolves to the newest *non-prerelease* — so stable is a
-  no-op change.
-- **unstable** queries the GitHub **releases API**
-  (`https://api.github.com/repos/samienne/loomworks.nvim/releases`,
-  `boot.origin.RELEASES_API`, listed in
-  publish order) via `download.fetch` (which now takes an `Accept` +
-  `User-Agent` header), parses it with `boot.json`, and takes the
+- **stable** reads `manifest.json` from `…/releases/latest/download`, which
+  GitHub resolves to the newest *non-prerelease*: samienne/loomworks first
+  (`boot.origin.LATEST_DOWNLOAD` = `update.DEFAULT_RELEASE_URL`), then
+  samienne/loomworks.nvim (`LEGACY_LATEST_DOWNLOAD` = `LEGACY_RELEASE_URL`).
+  `fetch_latest_manifest` falls back only when samienne/loomworks has no
+  stable release: its manifest AND its `SHA256SUMS` are both not found (HTTP
+  404 or a missing local file, `not_found`). A not-found manifest with a found
+  `SHA256SUMS` is a release this host cannot install: the call fails with
+  `stranded(version)` ("lw <ver> is released at samienne/loomworks but this lw
+  cannot update to it; reinstall with the install command in the README:
+  `update.INSTALL_DOC_URL`"), the version read from the `lw-<ver>-descriptor.json`
+  line of `SHA256SUMS` (else "0.2+"), and info `{ stranded = true, version? }`.
+  Any other failure is returned as is, never a fallback. `self_update` keeps
+  the base the manifest came from; it returns info `{ latest_not_found = true }`
+  when both repositories' manifests are not found (main.lua's "(then …)" hint).
+- **unstable** queries both GitHub **releases APIs**
+  (`boot.origin.RELEASES_API` = `update.RELEASES_API_URL` for
+  samienne/loomworks, `LEGACY_RELEASES_API` = `LEGACY_RELEASES_API_URL` for
+  samienne/loomworks.nvim; either unreadable fails the query, naming its
+  repository) via `download.fetch` (with an `Accept` + `User-Agent` header),
+  parses each with `boot.json`, and takes (`highest_listed`) the
   highest-versioned **non-draft** entry by `paths.version_gt` (pre-releases
   *included*, ranking below their release) - never the first listed, since a
-  stable release cut after a newer pre-release is listed first. Its `tag_name` (leading `v` stripped) is validated
-  with `pin.valid_version` **before** it is interpolated into any URL — a
-  network-derived tag is never trusted into a path (defense in depth, same trust
-  boundary as `lw.pin`). The bundle is then fetched from
+  stable release cut after a newer pre-release is listed first - counting only
+  versions whose `boot.origin.release_repo` is that list's repository. Every
+  `tag_name` (leading `v` stripped) is validated with `pin.valid_version`
+  **before** it is used — a network-derived tag is never trusted into a path
+  (defense in depth, same trust boundary as `lw.pin`). When the winner lists
+  its `assets` without `manifest.json`, it fails with `stranded(version)` as
+  stable does. The bundle is then fetched from
   `versioned_base(version)` (`…/releases/download/v<ver>/`) and verified by the
   identical manifest-signature + artifact-hash chain — the channel changes only
   *which* release, never *how* it is trusted.
+- The stranded info reaches every caller: `resolve_newest_version` returns it
+  as a third value; `bootstrap.newest` passes it on (the status page's release
+  row shows the message, `install --latest` fails with it); the health update
+  check (`suggestions.update_check_provider`) turns it into an actionable item;
+  `self_update` (and so `lw install`) fails with the message.
 - A specific version's assets come from `update.versioned_base(version)`:
   without a release-url override, `boot.origin.download_base(version)` — the
   repository that version was published in (`0.0.*` / `0.1.*` →
   samienne/loomworks.nvim, otherwise samienne/loomworks; no fallback). The
   `lw.sh` / `lw.cmd` templates apply the same prefix test to the pinned version
   for the download URL and `gh attestation verify --repo`. An override is one
-  mirror for all versions. Both channels' newest-release lookups stay on
-  samienne/loomworks.nvim, so moving to 0.2 is always an explicit version or pin.
+  mirror for all versions and the only place the newest release is looked up.
 
 An explicit release-source override (`opts.url` / `LOOMWORKS_RELEASE_URL` /
 `release-url` config) **supersedes** the channel: the mirror is used as-is and

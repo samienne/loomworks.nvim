@@ -46,10 +46,14 @@ describe("boot.origin", function()
         end
     end)
 
-    it("looks up the latest release in the legacy repository only", function()
-        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    it("looks up the latest release in loomworks, with loomworks.nvim as the fallback", function()
+        assert.equals("https://github.com/samienne/loomworks/releases/latest/download",
             origin.LATEST_DOWNLOAD)
-        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases", origin.RELEASES_API)
+        assert.equals("https://api.github.com/repos/samienne/loomworks/releases", origin.RELEASES_API)
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+            origin.LEGACY_LATEST_DOWNLOAD)
+        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases",
+            origin.LEGACY_RELEASES_API)
     end)
 end)
 
@@ -85,11 +89,211 @@ describe("boot.update fetches a version from the repository it was published in"
         end
     end)
 
-    it("looks up the latest release and the releases API in the legacy repository only", function()
-        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    it("looks up the latest release in loomworks first, loomworks.nvim second", function()
+        assert.equals("https://github.com/samienne/loomworks/releases/latest/download",
             update.DEFAULT_RELEASE_URL)
-        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases", update.RELEASES_API_URL)
+        assert.equals("https://api.github.com/repos/samienne/loomworks/releases", update.RELEASES_API_URL)
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+            update.LEGACY_RELEASE_URL)
+        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases",
+            update.LEGACY_RELEASES_API_URL)
         assert.equals(update.DEFAULT_RELEASE_URL, update.release_base())
+    end)
+
+    describe("resolves the newest release (spec 16.29)", function()
+        local download = require("boot.download")
+        local saved_fetch, served, asked
+        local NEW_LATEST = "https://github.com/samienne/loomworks/releases/latest/download/manifest.json"
+        local OLD_LATEST = "https://github.com/samienne/loomworks.nvim/releases/latest/download/manifest.json"
+        local NEW_API = "https://api.github.com/repos/samienne/loomworks/releases"
+        local OLD_API = "https://api.github.com/repos/samienne/loomworks.nvim/releases"
+        local function not_found(url)
+            return "curl failed (22) for " .. url .. ": curl: (22) The requested URL returned error: 404"
+        end
+        local function manifest(v) return '{"schema":1,"version":"' .. v .. '"}' end
+        local function list(...)
+            local out = {}
+            for _, t in ipairs({ ... }) do out[#out + 1] = '{"draft":false,"tag_name":"v' .. t .. '"}' end
+            return "[" .. table.concat(out, ",") .. "]"
+        end
+
+        before_each(function()
+            served, asked = {}, {}
+            saved_fetch = download.fetch
+            download.fetch = function(url)
+                asked[#asked + 1] = url
+                local body = served[url]
+                if type(body) == "string" then return body end
+                return nil, body and body.err or not_found(url)
+            end
+        end)
+
+        after_each(function() download.fetch = saved_fetch end)
+
+        it("stable: takes loomworks' latest release", function()
+            served[NEW_LATEST] = manifest("0.2.0")
+            served[OLD_LATEST] = manifest("0.1.51")
+            assert.equals("0.2.0", update.resolve_newest_version({ channel = "stable" }))
+            assert.same({ NEW_LATEST }, asked)
+        end)
+
+        it("stable: falls back to loomworks.nvim while loomworks has no stable release", function()
+            served[OLD_LATEST] = manifest("0.1.51")
+            local v, err = update.resolve_newest_version({ channel = "stable" })
+            assert.equals("0.1.51", v, err)
+            -- Not found twice in loomworks (no manifest, no SHA256SUMS) = no stable release there.
+            assert.same({ NEW_LATEST,
+                "https://github.com/samienne/loomworks/releases/latest/download/SHA256SUMS", OLD_LATEST }, asked)
+        end)
+
+        it("stable: does not fall back when loomworks is unreachable", function()
+            served[NEW_LATEST] = { err = "curl failed (28) for " .. NEW_LATEST .. ": timed out" }
+            served[OLD_LATEST] = manifest("0.1.51")
+            local v, err = update.resolve_newest_version({ channel = "stable" })
+            assert.is_nil(v)
+            assert.truthy(tostring(err):find("timed out", 1, true))
+            assert.same({ NEW_LATEST }, asked)
+        end)
+
+        it("unstable: takes the highest version across both repositories", function()
+            served[NEW_API] = list("0.2.0-beta.3", "0.2.0-beta.1")
+            served[OLD_API] = list("0.1.51", "0.1.50")
+            assert.equals("0.2.0-beta.3", update.resolve_newest_version({ channel = "unstable" }))
+            served[NEW_API] = list()
+            assert.equals("0.1.51", update.resolve_newest_version({ channel = "unstable" }))
+            served[OLD_API] = list("0.1.52-beta.1", "0.1.51")
+            served[NEW_API] = list("0.2.0-beta.1")
+            assert.equals("0.2.0-beta.1", update.resolve_newest_version({ channel = "unstable" }))
+        end)
+
+        it("unstable: fails when either releases list cannot be read, naming it", function()
+            served[OLD_API] = list("0.1.51")
+            local v, err = update.resolve_newest_version({ channel = "unstable" })
+            assert.is_nil(v)
+            assert.truthy(tostring(err):find("releases of samienne/loomworks:", 1, true), err)
+            served[OLD_API] = nil
+            served[NEW_API] = list("0.2.0-beta.3")
+            v, err = update.resolve_newest_version({ channel = "unstable" })
+            assert.is_nil(v)
+            assert.truthy(tostring(err):find("releases of samienne/loomworks.nvim:", 1, true), err)
+        end)
+
+        it("unstable: a list's versions count only when published in that list's repository", function()
+            -- A plugin tag v0.2.0 in loomworks.nvim is not lw 0.2.0, and a
+            -- 0.1.x tag in loomworks is not a release of this line.
+            served[NEW_API] = list("0.2.0-beta.3", "0.1.99")
+            served[OLD_API] = list("0.2.0", "0.1.51")
+            assert.equals("0.2.0-beta.3", update.resolve_newest_version({ channel = "unstable" }))
+            served[NEW_API] = list("0.1.99")
+            assert.equals("0.1.51", update.resolve_newest_version({ channel = "unstable" }))
+        end)
+
+        local STRANDED = "is released at samienne/loomworks but this lw cannot update to it; "
+            .. "reinstall with the install command in the README: https://github.com/samienne/loomworks#install"
+        local NEW_SUMS = "https://github.com/samienne/loomworks/releases/latest/download/SHA256SUMS"
+        local function sums(v)
+            return ("0"):rep(64) .. "  lw-" .. v .. "-descriptor.json\n" .. ("1"):rep(64) .. "  lw-linux-x64\n"
+        end
+
+        it("stable: fails loudly when loomworks has a stable release without a manifest", function()
+            served[NEW_SUMS] = sums("0.2.0")
+            served[OLD_LATEST] = manifest("0.1.51")
+            local v, err, info = update.resolve_newest_version({ channel = "stable" })
+            assert.is_nil(v)
+            assert.equals("lw 0.2.0 " .. STRANDED, err)
+            assert.same({ stranded = true, version = "0.2.0" }, info)
+            assert.same({ NEW_LATEST, NEW_SUMS }, asked) -- never falls back
+        end)
+
+        it("stable: names 0.2+ when the release's version is not in its SHA256SUMS", function()
+            served[NEW_SUMS] = ("0"):rep(64) .. "  something-else\n"
+            local _, err = update.resolve_newest_version({ channel = "stable" })
+            assert.equals("lw 0.2+ " .. STRANDED, err)
+        end)
+
+        it("stable: does not fall back when the SHA256SUMS probe fails other than not-found", function()
+            served[NEW_SUMS] = { err = "curl failed (22) for " .. NEW_SUMS ..
+                ": curl: (22) The requested URL returned error: 502" }
+            served[OLD_LATEST] = manifest("0.1.51")
+            local v, err = update.resolve_newest_version({ channel = "stable" })
+            assert.is_nil(v)
+            assert.truthy(tostring(err):find("502", 1, true), err)
+            assert.same({ NEW_LATEST, NEW_SUMS }, asked)
+        end)
+
+        it("stable: a server error is a failure, never a fallback", function()
+            served[NEW_LATEST] = { err = "curl failed (22) for " .. NEW_LATEST ..
+                ": curl: (22) The requested URL returned error: 503" }
+            served[OLD_LATEST] = manifest("0.1.51")
+            local v, err = update.resolve_newest_version({ channel = "stable" })
+            assert.is_nil(v)
+            assert.truthy(tostring(err):find("503", 1, true), err)
+            assert.same({ NEW_LATEST }, asked)
+        end)
+
+        it("unstable: fails loudly when the newest loomworks release has no manifest asset", function()
+            served[NEW_API] = '[{"draft":false,"tag_name":"v0.2.0-beta.9",'
+                .. '"assets":[{"name":"SHA256SUMS"},{"name":"lw-linux-x64"}]},'
+                .. '{"draft":false,"tag_name":"v0.2.0-beta.3","assets":[{"name":"manifest.json"}]}]'
+            served[OLD_API] = list("0.1.51")
+            local v, err, info = update.resolve_newest_version({ channel = "unstable" })
+            assert.is_nil(v)
+            assert.equals("lw 0.2.0-beta.9 " .. STRANDED, err)
+            assert.same({ stranded = true, version = "0.2.0-beta.9" }, info)
+            -- With the manifest asset (or no asset data) it resolves as usual.
+            served[NEW_API] = '[{"draft":false,"tag_name":"v0.2.0-beta.9",'
+                .. '"assets":[{"name":"manifest.json"}]}]'
+            assert.equals("0.2.0-beta.9", update.resolve_newest_version({ channel = "unstable" }))
+            served[NEW_API] = list("0.2.0-beta.9")
+            assert.equals("0.2.0-beta.9", update.resolve_newest_version({ channel = "unstable" }))
+        end)
+
+        it("unstable: a legacy winner without a manifest asset is not reported as stranded", function()
+            served[NEW_API] = list("0.2.0-beta.3")
+            served[OLD_API] = '[{"draft":false,"tag_name":"v0.2.0-beta.4"},'
+                .. '{"draft":false,"tag_name":"v0.1.52","assets":[]}]'
+            local v, err, info = update.resolve_newest_version({ channel = "unstable" })
+            assert.equals("0.2.0-beta.3", v, err)
+            assert.is_nil(info)
+            served[NEW_API] = "[]"
+            assert.equals("0.1.52", update.resolve_newest_version({ channel = "unstable" }))
+        end)
+
+        it("self-update reports the same loud failure on stable", function()
+            served[NEW_SUMS] = sums("0.2.0")
+            served[OLD_LATEST] = manifest("0.1.51")
+            local res, err, info = update.self_update({ channel = "stable" })
+            assert.is_nil(res)
+            assert.equals("lw 0.2.0 " .. STRANDED, err)
+            assert.same({ stranded = true, version = "0.2.0" }, info)
+        end)
+
+        it("self-update says when neither repository has a stable release", function()
+            local res, err, info = update.self_update({ channel = "stable" })
+            assert.is_nil(res)
+            assert.truthy(tostring(err):find("404", 1, true), err)
+            assert.same({ latest_not_found = true }, info)
+            -- Another not-found (here: an override's) is not the two-repository lookup.
+            env.LOOMWORKS_RELEASE_URL = "https://mirror.example/flat"
+            res, err, info = update.self_update({ channel = "stable" })
+            assert.is_nil(res)
+            assert.is_nil(info)
+        end)
+
+        it("with an override asks only the override, on either channel", function()
+            env.LOOMWORKS_RELEASE_URL = "https://mirror.example/flat"
+            served["https://mirror.example/flat/manifest.json"] = manifest("0.1.50")
+            for _, channel in ipairs({ "stable", "unstable" }) do
+                asked = {}
+                assert.equals("0.1.50", update.resolve_newest_version({ channel = channel }), channel)
+                assert.same({ "https://mirror.example/flat/manifest.json" }, asked, channel)
+            end
+            -- A missing manifest at the override is an error, never a fallback.
+            served["https://mirror.example/flat/manifest.json"] = nil
+            asked = {}
+            assert.is_nil((update.resolve_newest_version({ channel = "stable" })))
+            assert.same({ "https://mirror.example/flat/manifest.json" }, asked)
+        end)
     end)
 
     it("treats an override as one mirror for all versions", function()

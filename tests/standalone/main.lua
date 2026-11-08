@@ -1084,13 +1084,13 @@ end
 
 print("boot.update — versioned_base URL shapes")
 do
-  eq(update.versioned_base("1.2.3", { url = update.DEFAULT_RELEASE_URL }),
+  eq(update.versioned_base("1.2.3", { url = update.LEGACY_RELEASE_URL }),
     "https://github.com/samienne/loomworks.nvim/releases/download/v1.2.3",
     "GitHub latest-shaped override -> its versioned download path")
-  eq(update.versioned_base("0.1.40", { url = update.DEFAULT_RELEASE_URL }),
+  eq(update.versioned_base("0.1.40", { url = update.LEGACY_RELEASE_URL }),
     "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.40",
     "an override is one mirror for all versions")
-  eq(update.versioned_base("0.2.0", { url = update.DEFAULT_RELEASE_URL }),
+  eq(update.versioned_base("0.2.0", { url = update.LEGACY_RELEASE_URL }),
     "https://github.com/samienne/loomworks.nvim/releases/download/v0.2.0",
     "an override is one mirror for all versions, current ones included")
   -- No override (sandboxed config, env cleared): the version picks the origin.
@@ -1114,10 +1114,14 @@ do
   else
     print("  skip: a LOOMWORKS_RELEASE_URL from the real environment is in effect")
   end
-  eq(update.DEFAULT_RELEASE_URL, "https://github.com/samienne/loomworks.nvim/releases/latest/download",
-    "the latest release is only ever looked up in loomworks.nvim")
-  eq(update.RELEASES_API_URL, "https://api.github.com/repos/samienne/loomworks.nvim/releases",
-    "the releases API is loomworks.nvim's")
+  eq(update.DEFAULT_RELEASE_URL, "https://github.com/samienne/loomworks/releases/latest/download",
+    "the latest release is looked up in loomworks first")
+  eq(update.LEGACY_RELEASE_URL, "https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    "and in loomworks.nvim as the fallback")
+  eq(update.RELEASES_API_URL, "https://api.github.com/repos/samienne/loomworks/releases",
+    "the releases API asked first is loomworks'")
+  eq(update.LEGACY_RELEASES_API_URL, "https://api.github.com/repos/samienne/loomworks.nvim/releases",
+    "the releases API asked second is loomworks.nvim's")
   paths.rm_rf(sb)
   eq(update.versioned_base("1.2.3", { url = "/tmp/mirror" }), "/tmp/mirror",
     "local mirror stays flat")
@@ -1870,6 +1874,18 @@ do
     -- offline: not checked, never a failure
     local t3 = table.concat(bootstrap.status(h, { resolve_newest = function() return nil, "offline" end }).lines, "\n")
     ok(t3:find("not checked - offline", 1, true), "a failed release check reads 'not checked'")
+    -- a release this lw cannot update to (spec §16.29): said as such, never "offline"
+    local stranded_msg = "lw 0.2.0 is released at samienne/loomworks but this lw cannot update to it; "
+      .. "reinstall with the install command in the README: https://github.com/samienne/loomworks#install"
+    local st4 = bootstrap.status(h, { resolve_newest = function()
+      return nil, stranded_msg, { stranded = true, version = "0.2.0" } end })
+    local t4 = table.concat(st4.lines, "\n")
+    ok(t4:find(stranded_msg, 1, true) and not t4:find("not checked - offline", 1, true),
+      "a release this lw cannot update to is named on the status page  (" .. t4 .. ")")
+    local bi, be = bootstrap.install(h, { latest = true, resolve_newest = function()
+      return nil, stranded_msg, { stranded = true, version = "0.2.0" } end })
+    ok(bi == nil and tostring(be):find(stranded_msg, 1, true),
+      "bootstrap install --latest fails with the same message")
     -- json
     local doc = bootstrap.status(h, { resolve_newest = newest_is(V2) }).doc
     local enc = json.encode(doc)
@@ -2891,8 +2907,11 @@ do
   put(api, '[{"draft":true,"tag_name":"v9.9.9"},'
     .. '{"draft":false,"prerelease":true,"tag_name":"v0.2.0-beta.1"},'
     .. '{"draft":false,"prerelease":false,"tag_name":"v0.2.0"}]')
-  local saved = update.RELEASES_API_URL
+  local saved, savedLegacy = update.RELEASES_API_URL, update.LEGACY_RELEASES_API_URL
   update.RELEASES_API_URL = api  -- bare path -> download.fetch reads it locally
+  local legacy_api = sb .. "/legacy-releases.json"
+  put(legacy_api, '[]')
+  update.LEGACY_RELEASES_API_URL = legacy_api
   local ver, e = update.resolve_unstable_version()
   eq(ver, "0.2.0",
     "highest NON-draft version (draft skipped; a pre-release orders below its release)"
@@ -2901,14 +2920,16 @@ do
   -- Publish order is NOT version order: a stable v0.1.43 cut after the
   -- v0.1.44-beta.1 pre-release sits first in the API list, yet unstable must
   -- still pick the highest version (§16.29) — never move users DOWN. A higher
-  -- draft is still ignored.
-  put(api, '[{"draft":false,"prerelease":false,"tag_name":"v0.1.43"},'
+  -- draft is still ignored. (0.1.x versions count only in loomworks.nvim's list.)
+  put(api, '[]')
+  put(legacy_api, '[{"draft":false,"prerelease":false,"tag_name":"v0.1.43"},'
     .. '{"draft":true,"prerelease":true,"tag_name":"v0.1.45-beta.1"},'
     .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.44-beta.1"},'
     .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.43-beta.16"}]')
   local hv, he = update.resolve_unstable_version()
   eq(hv, "0.1.44-beta.1",
     "unstable picks the highest version, not the first listed" .. (he and (" — " .. he) or ""))
+  put(legacy_api, '[]')
   -- An unsafe tag anywhere in the list still fails the whole query.
   put(api, '[{"draft":false,"tag_name":"v0.1.44"},{"draft":false,"tag_name":"v../../evil"}]')
   local uv, ue = update.resolve_unstable_version()
@@ -2920,10 +2941,24 @@ do
   ok(bad == nil and type(be) == "string" and be:find("unsafe", 1, true) ~= nil,
     "a traversing/malformed API tag is rejected before any URL is built")
 
+  -- Both repositories are asked (spec §16.29): the highest of either list wins.
+  put(api, '[{"draft":false,"prerelease":true,"tag_name":"v0.2.0-beta.3"}]')
+  put(legacy_api, '[{"draft":false,"tag_name":"v0.1.51"}]')
+  eq(update.resolve_unstable_version(), "0.2.0-beta.3", "a newer release in loomworks wins")
+  put(api, '[]')
+  eq(update.resolve_unstable_version(), "0.1.51", "an empty loomworks list leaves loomworks.nvim's")
+  put(legacy_api, '[{"draft":false,"tag_name":"v../../evil"}]')
+  ok(select(1, update.resolve_unstable_version()) == nil, "an unsafe legacy tag fails the query too")
+  update.LEGACY_RELEASES_API_URL = sb .. "/no-such-list.json"
+  put(api, '[{"draft":false,"tag_name":"v0.2.0"}]')
+  ok(select(1, update.resolve_unstable_version()) == nil, "an unreadable legacy list fails the query")
+  update.LEGACY_RELEASES_API_URL = legacy_api
+  put(legacy_api, '[]')
+
   put(api, '[]')
   ok(select(1, update.resolve_unstable_version()) == nil, "an empty release list is a clean error")
 
-  update.RELEASES_API_URL = saved
+  update.RELEASES_API_URL, update.LEGACY_RELEASES_API_URL = saved, savedLegacy
   paths.rm_rf(sb)
 end
 
@@ -2937,7 +2972,11 @@ do
   local function put(p, body) local f = assert(io.open(p, "wb")); f:write(body); f:close() end
 
   local savedOrigin, savedApi = update.DEFAULT_RELEASE_URL, update.RELEASES_API_URL
+  local savedLegacy, savedLegacyApi = update.LEGACY_RELEASE_URL, update.LEGACY_RELEASES_API_URL
   update.DEFAULT_RELEASE_URL = (FX:gsub("/$", ""))  -- stable base = flat fixtures mirror
+  update.LEGACY_RELEASE_URL = sb .. "/no-such-legacy-mirror"
+  update.LEGACY_RELEASES_API_URL = sb .. "/legacy-releases.json"
+  put(sb .. "/legacy-releases.json", '[]')
 
   -- stable: the version is whatever the base manifest.json names (no bundle fetch).
   eq(update.resolve_newest_version({}), "0.0.0-test",
@@ -2956,13 +2995,34 @@ do
   eq(update.resolve_newest_version({ channel = "unstable", url = (FX:gsub("/$", "")) }),
     "0.0.0-test", "an override peeks the mirror manifest, not the API")
 
-  -- offline / missing manifest is a clean error (the caller degrades silently).
+  -- stable with no stable release in loomworks: loomworks.nvim's latest.
   update.DEFAULT_RELEASE_URL = sb .. "/no-such-mirror"
+  update.LEGACY_RELEASE_URL = (FX:gsub("/$", ""))
+  eq(update.resolve_newest_version({}), "0.0.0-test",
+    "stable falls back to loomworks.nvim's latest when loomworks has none")
+
+  -- A stable release in loomworks without a manifest (SHA256SUMS only): the
+  -- loud failure, never the fallback (spec §16.29).
+  local sums_only = sb .. "/sums-only"; paths.mkdirp(sums_only)
+  put(sums_only .. "/SHA256SUMS", ("0"):rep(64) .. "  lw-0.2.0-descriptor.json\n")
+  update.DEFAULT_RELEASE_URL = sums_only
+  local sv, se, si = update.resolve_newest_version({})
+  ok(sv == nil and type(se) == "string" and se:find("lw 0.2.0 is released at samienne/loomworks", 1, true)
+    and se:find("#install", 1, true) and si and si.stranded,
+    "a stable loomworks release without a manifest fails loudly" .. (se and (" — " .. se) or ""))
+  local sres, serr = update.self_update({ channel = "stable" })
+  ok(sres == nil and type(serr) == "string" and serr:find("cannot update to it", 1, true),
+    "self-update fails loudly too" .. (serr and (" — " .. serr) or ""))
+  update.DEFAULT_RELEASE_URL = sb .. "/no-such-mirror"
+
+  -- offline / missing manifest is a clean error (the caller degrades silently).
+  update.LEGACY_RELEASE_URL = sb .. "/no-such-legacy-mirror"
   ok(select(1, update.resolve_newest_version({})) == nil,
     "a missing manifest is a clean error, not a crash")
 
   update.DEFAULT_RELEASE_URL = savedOrigin
   update.RELEASES_API_URL = savedApi
+  update.LEGACY_RELEASE_URL, update.LEGACY_RELEASES_API_URL = savedLegacy, savedLegacyApi
   paths.rm_rf(sb)
 end
 
@@ -2979,10 +3039,14 @@ do
   -- releases API at a local JSON naming the fixture version. versioned_base of a
   -- local base is flat, so the whole unstable path stays hermetic (no network).
   local api = sb .. "/releases.json"
-  put(api, '[{"draft":false,"prerelease":true,"tag_name":"v0.0.0-test"}]')
+  -- 0.0.0-test is a legacy-origin version: it counts only in loomworks.nvim's list.
+  put(api, '[]')
   local savedOrigin, savedApi = update.DEFAULT_RELEASE_URL, update.RELEASES_API_URL
+  local savedLegacyApi = update.LEGACY_RELEASES_API_URL
   update.DEFAULT_RELEASE_URL = (FX:gsub("/$", ""))
   update.RELEASES_API_URL = api
+  update.LEGACY_RELEASES_API_URL = sb .. "/legacy-releases.json"
+  put(sb .. "/legacy-releases.json", '[{"draft":false,"prerelease":true,"tag_name":"v0.0.0-test"}]')
 
   local res, err = update.self_update({ channel = "unstable" })
   ok(res ~= nil, "unstable self_update installs" .. (err and (" — " .. err) or ""))
@@ -3002,6 +3066,29 @@ do
 
   update.DEFAULT_RELEASE_URL = savedOrigin
   update.RELEASES_API_URL = savedApi
+  update.LEGACY_RELEASES_API_URL = savedLegacyApi
+  paths.rm_rf(sb)
+end
+
+print("boot.update — stable self_update falls back to loomworks.nvim while loomworks has no stable release")
+do
+  local sb = root .. "/tests/.tmp-stable-fallback"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
+  uv.os_setenv("LOOMWORKS_CHANNEL", "")
+  local savedOrigin, savedLegacy = update.DEFAULT_RELEASE_URL, update.LEGACY_RELEASE_URL
+  update.DEFAULT_RELEASE_URL = sb .. "/no-stable-release"   -- nothing there: 404
+  update.LEGACY_RELEASE_URL = (FX:gsub("/$", ""))
+  local res, err = update.self_update({ channel = "stable" })
+  ok(res ~= nil, "stable self_update installs the legacy latest" .. (err and (" — " .. err) or ""))
+  if res then eq(res.version, "0.0.0-test", "the version loomworks.nvim's latest names") end
+  -- loomworks' own latest wins once it has one (the legacy one is never asked).
+  update.DEFAULT_RELEASE_URL = (FX:gsub("/$", ""))
+  update.LEGACY_RELEASE_URL = sb .. "/never-asked"
+  local res2, err2 = update.self_update({ channel = "stable", force = true })
+  ok(res2 ~= nil, "stable self_update installs loomworks' latest" .. (err2 and (" — " .. err2) or ""))
+  update.DEFAULT_RELEASE_URL, update.LEGACY_RELEASE_URL = savedOrigin, savedLegacy
   paths.rm_rf(sb)
 end
 
@@ -3014,8 +3101,9 @@ do
   -- Override points at the fixtures mirror; the API URL is a path that does NOT
   -- exist, so a (wrong) channel query would make the install fail loudly.
   uv.os_setenv("LOOMWORKS_RELEASE_URL", (FX:gsub("/$", "")))
-  local savedApi = update.RELEASES_API_URL
+  local savedApi, savedLegacyApi = update.RELEASES_API_URL, update.LEGACY_RELEASES_API_URL
   update.RELEASES_API_URL = sb .. "/nonexistent-releases.json"
+  update.LEGACY_RELEASES_API_URL = sb .. "/nonexistent-legacy-releases.json"
 
   local res, err = update.self_update({ channel = "unstable" })
   ok(res ~= nil, "override + unstable installs from the mirror, API untouched" ..
@@ -3032,7 +3120,7 @@ do
   if res2 then eq(res2.channel_overridden, nil,
     "stable + override does not flag an ignored channel (no conflict)") end
 
-  update.RELEASES_API_URL = savedApi
+  update.RELEASES_API_URL, update.LEGACY_RELEASES_API_URL = savedApi, savedLegacyApi
   uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
   paths.rm_rf(sb)
 end

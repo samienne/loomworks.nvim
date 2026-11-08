@@ -370,8 +370,12 @@ elseif host_command == "self-update" then
     -- releases yet, so say where it looked and how to redirect it rather than
     -- leaving a bare curl error.
     if tostring(err):find("404", 1, true) then
-      io.stderr:write("    Releases are fetched from: " ..
-        require("boot.update").DEFAULT_RELEASE_URL .. "\n" ..
+      local upd = require("boot.update")
+      -- "(then …)" only when the 404 is the stable two-repository lookup's: no
+      -- other fetch falls back to the legacy repository.
+      local legacy = info and info.latest_not_found and upd.LEGACY_RELEASE_URL
+      io.stderr:write("    Releases are fetched from: " .. upd.DEFAULT_RELEASE_URL ..
+        (legacy and (" (then " .. legacy .. ")") or "") .. "\n" ..
         "    Point it elsewhere with `lw settings set release-url <url>` or\n" ..
         "    LOOMWORKS_RELEASE_URL (a local directory works as an offline mirror).\n")
     end

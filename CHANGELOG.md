@@ -30,8 +30,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 Bridge release: lw now fetches 0.2 and later releases from samienne/loomworks,
 where lw is published from 0.2 on, so a pin of 0.2 or later works under this
-host. `lw self-update` still stays within 0.1.x; moving to 0.2 takes an
-explicit pin or a new install.
+host, and `lw self-update` crosses over: once a 0.2 release reaches your update
+channel, it installs it and replaces this `lw` with the self-contained 0.2 one
+(not with `--no-host`, for a pinned host or where `lw` cannot be written: then
+the 0.2 bundle runs under this host). Should a later 0.2 release be one this
+`lw` cannot install, it says so and how to reinstall, instead of staying on
+0.1.x.
 
 ### Upgrade notes
 - The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8
@@ -57,12 +61,24 @@ explicit pin or a new install.
   release from the repository it was published in: 0.0.x/0.1.x from
   samienne/loomworks.nvim, 0.2 and later from samienne/loomworks, in
   `lw self-update`, `lw bootstrap install` / `upgrade`, pinned provisioning and
-  the `lw.sh` / `lw.cmd` launchers. The newest release (both channels) is still
-  looked up in samienne/loomworks.nvim, so `lw self-update` stays within 0.1.x;
-  moving to 0.2 takes an explicit version or pin. `LOOMWORKS_RELEASE_URL` /
+  the `lw.sh` / `lw.cmd` launchers. `LOOMWORKS_RELEASE_URL` /
   `release-url` is still one mirror for all versions. `lw bootstrap` and
   `lw health` report earlier launchers as broken only for a pin of 0.2 or
   later (#389).
+- `lw self-update`, `lw install`, `lw bootstrap install --latest` / `upgrade`,
+  the `lw bootstrap` status page and the `lw health` update check look up the
+  newest release in samienne/loomworks first. The stable channel takes its
+  latest release, and samienne/loomworks.nvim's while samienne/loomworks has
+  no stable release; the unstable channel takes the highest version of both.
+  So `lw self-update` on unstable now installs 0.2.0-beta.3 or later and, where
+  it can (not with `--no-host`, for a pinned host or an `lw` it cannot write),
+  replaces `lw` with the 0.2 executable; otherwise the 0.2 bundle runs under
+  this `lw`. Stable stays on 0.1.x until 0.2 has a stable release. When the
+  newest release is one this `lw` cannot install, they all fail with
+  "lw <version> is released at samienne/loomworks but this lw cannot update to
+  it" and point at the install command in that repository's README (in
+  `lw health`, an item to act on), never quietly staying on 0.1.x. A
+  release-url override is still the only place asked (#428).
 - Every usage error now exits 2 (it was 1 for many of them): an unknown,
   repeated or misplaced option, a missing or malformed value (`--timeout 0`,
   an invalid launch name, an unknown `lw config set` parameter or health

@@ -26,16 +26,20 @@ end
 -- Where releases are fetched from. Overridable via LOOMWORKS_RELEASE_URL or
 -- the `release-url` config key; a local directory works as an offline mirror.
 -- `/releases/latest/download` already resolves to the newest NON-prerelease on
--- GitHub, so this base IS the `stable` channel (§16.29). Latest queries go to
--- the legacy repository only; a SPECIFIC version's assets come from the
--- repository that version was published in (boot.origin, see versioned_base).
+-- GitHub, so this base IS the `stable` channel (§16.29): the current
+-- repository's, falling back to the legacy repository's (LEGACY_RELEASE_URL)
+-- only while the current one has no stable release (see fetch_latest_manifest).
+-- A SPECIFIC version's assets come from the repository that version was
+-- published in (boot.origin, see versioned_base).
 M.DEFAULT_RELEASE_URL = origin.LATEST_DOWNLOAD
+M.LEGACY_RELEASE_URL = origin.LEGACY_LATEST_DOWNLOAD
 
--- The releases API for the default origin. Consulted ONLY to resolve the
--- `unstable` channel (§16.29): the newest release INCLUDING pre-releases. Never
--- queried for `stable`, nor when a release-source override / mirror is set —
--- the channel governs only the default origin.
+-- The releases APIs of both repositories. Consulted ONLY to resolve the
+-- `unstable` channel (§16.29): the highest release of both lists, INCLUDING
+-- pre-releases. Never queried for `stable`, nor when a release-source override
+-- / mirror is set — the channel governs only the default origin.
 M.RELEASES_API_URL = origin.RELEASES_API
+M.LEGACY_RELEASES_API_URL = origin.LEGACY_RELEASES_API
 
 -- The update channels this host knows (§16.29). `stable` (default) is unchanged
 -- behavior; `unstable` follows pre-releases too. Both verify identically.
@@ -65,6 +69,52 @@ function M.url_override(opts)
     or paths.read_config()["release-url"]
 end
 local url_override = M.url_override
+
+--- Is `err` (from download.fetch) a "nothing there" answer — an HTTP 404 or a
+--- missing local file — rather than a failure to ask?
+local function not_found(err)
+  err = tostring(err)
+  return err:find("returned error:%s*404") ~= nil or err:match("^cannot read '") ~= nil
+end
+
+-- Where a host of this line that cannot install a newer lw is told to go.
+M.INSTALL_DOC_URL = origin.GITHUB .. "/" .. origin.REPO .. "#install"
+
+--- The loud failure (§16.29) when samienne/loomworks publishes a release this
+--- host cannot install (no manifest.json: lw from there is updated otherwise).
+--- @param version? string the release's version, when cheaply known
+--- @return string err, { stranded: true, version?: string } info
+local function stranded(version)
+  return "lw " .. (version or "0.2+") .. " is released at " .. origin.REPO ..
+    " but this lw cannot update to it; reinstall with the install command in the README: " ..
+    M.INSTALL_DOC_URL, { stranded = true, version = version }
+end
+
+--- Fetch the `latest` manifest.json (§16.29 stable, or an override mirror).
+--- Returns bytes, err, the base it came from, and info. Without an override the
+--- current repository is asked first. When its manifest is not found, its
+--- SHA256SUMS tells "no stable release" (also not found: only then is the
+--- legacy repository asked; info.latest_not_found when that is not found too)
+--- from "a stable release this host cannot install" (found: the loud failure,
+--- info.stranded, never a fallback). Any other failure is returned as is:
+--- falling back then would quietly resolve an older release.
+--- @return string|nil bytes, string|nil err, string base, table|nil info
+local function fetch_latest_manifest(opts, fetch_limits)
+  local base = release_base(opts)
+  local body, err = download.fetch(base .. "/manifest.json", fetch_limits)
+  if body or url_override(opts) or not not_found(err) then return body, err, base end
+  local sums, serr = download.fetch(base .. "/SHA256SUMS", fetch_limits)
+  if sums then
+    -- The release's version, when its SHA256SUMS names its descriptor.
+    local ver = sums:match("lw%-([%w.+-]-)%-descriptor%.json")
+    local msg, info = stranded(ver and pin.valid_version(ver) and ver or nil)
+    return nil, msg, base, info
+  end
+  if not not_found(serr) then return nil, serr, base end
+  base = (M.LEGACY_RELEASE_URL:gsub("/+$", ""))
+  body, err = download.fetch(base .. "/manifest.json", fetch_limits)
+  return body, err, base, (not body and not_found(err)) and { latest_not_found = true } or nil
+end
 
 --- Resolve the active update channel (§16.29) with precedence: explicit
 --- opts.channel > LOOMWORKS_CHANNEL env > `channel` config key > default
@@ -120,11 +170,54 @@ function M.newer_bundle_note(installed, target)
     .. " it is replaced once a release newer than it reaches this channel"
 end
 
+--- The highest NON-DRAFT version one releases API lists among those published
+--- in `repo` (boot.origin's by-version rule: a plugin tag v0.2.0 in the legacy
+--- repository is not lw 0.2.0, nor a 0.1.x tag in the current one lw of this
+--- line): version, has_manifest (false only when the entry lists its assets
+--- and manifest.json is not among them), or nil when it lists none, or nil,
+--- nil, err.
+local function highest_listed(api_url, repo, fopts)
+  local body, e = download.fetch(api_url, fopts)
+  if not body then return nil, nil, "fetch releases of " .. repo .. ": " .. tostring(e) end
+  local releases, derr = json.decode(body)
+  if type(releases) ~= "table" then
+    return nil, nil, "releases API of " .. repo .. ": " .. (derr or "unexpected response")
+  end
+  -- The API lists releases in PUBLISH order, not version order (a stable
+  -- release cut after a newer pre-release is listed first), so take the
+  -- HIGHEST non-draft version by the §16.29 ordering (a pre-release ranks
+  -- below its release). Every candidate tag is validated first: one unsafe
+  -- tag fails the whole query.
+  local best, best_manifest
+  for _, rel in ipairs(releases) do
+    if type(rel) == "table" and rel.draft ~= true and type(rel.tag_name) == "string" then
+      local ver = (rel.tag_name:gsub("^v", ""))
+      if not pin.valid_version(ver) then
+        return nil, nil, "releases API of " .. repo .. " returned an unsafe version '" ..
+          tostring(rel.tag_name) .. "'"
+      end
+      if origin.release_repo(ver) == repo and (not best or paths.version_gt(ver, best)) then
+        best, best_manifest = ver, true
+        if type(rel.assets) == "table" then
+          best_manifest = false
+          for _, a in ipairs(rel.assets) do
+            if type(a) == "table" and a.name == "manifest.json" then best_manifest = true end
+          end
+        end
+      end
+    end
+  end
+  return best, best_manifest
+end
+
 --- Resolve the newest release version for the `unstable` channel (§16.29) by
---- querying the releases API. The highest-versioned NON-DRAFT entry wins (by
+--- querying both repositories' releases APIs (current, then legacy; both must
+--- answer). The highest-versioned NON-DRAFT entry of either wins (by
 --- version, never list order; a pre-release ranks below its release) —
 --- pre-releases are INCLUDED (that is what `unstable` means). Returns the version (leading `v`
---- stripped) or nil, err.
+--- stripped) or nil, err — or nil, err, { stranded = true, version } when the
+--- winner lists its assets without a manifest.json (§16.29's loud failure).
+--- Each list counts only the versions published in its own repository.
 ---
 --- SECURITY: the tag is network-derived, so it is validated with
 --- pin.valid_version BEFORE it can reach any URL or path (defense in depth,
@@ -139,27 +232,21 @@ function M.resolve_unstable_version(fetch_limits)
     headers = { "Accept: application/vnd.github+json", "User-Agent: loomworks-lw" },
   }
   for k, v in pairs(fetch_limits or {}) do fopts[k] = v end
-  local body, e = download.fetch(M.RELEASES_API_URL, fopts)
-  if not body then return nil, "fetch releases: " .. tostring(e) end
-  local releases, derr = json.decode(body)
-  if type(releases) ~= "table" then
-    return nil, "releases API: " .. (derr or "unexpected response")
-  end
-  -- The API lists releases in PUBLISH order, not version order (a stable
-  -- release cut after a newer pre-release is listed first), so take the
-  -- HIGHEST non-draft version by the §16.29 ordering (a pre-release ranks
-  -- below its release). Every candidate tag is validated first: one unsafe
-  -- tag fails the whole query.
-  local best
-  for _, rel in ipairs(releases) do
-    if type(rel) == "table" and rel.draft ~= true and type(rel.tag_name) == "string" then
-      local ver = (rel.tag_name:gsub("^v", ""))
-      if not pin.valid_version(ver) then
-        return nil, "releases API returned an unsafe version '" ..
-          tostring(rel.tag_name) .. "'"
-      end
-      if not best or paths.version_gt(ver, best) then best = ver end
+  local best, best_manifest
+  for _, list in ipairs({ { M.RELEASES_API_URL, origin.REPO },
+                          { M.LEGACY_RELEASES_API_URL, origin.LEGACY_REPO } }) do
+    local ver, has_manifest, err = highest_listed(list[1], list[2], fopts)
+    if err then return nil, err end
+    if ver and (not best or paths.version_gt(ver, best)) then
+      best, best_manifest = ver, has_manifest
     end
+  end
+  -- The newest samienne/loomworks release has no manifest.json: this host
+  -- cannot install it, and silently taking an older one would strand it on
+  -- 0.1.x (§16.29). A loomworks.nvim release always carries one once its
+  -- assets are uploaded, so it is never reported as stranded.
+  if best and not best_manifest and origin.release_repo(best) == origin.REPO then
+    return nil, stranded(best)
   end
   if best then return best end
   return nil, "no releases found on the unstable channel"
@@ -182,7 +269,9 @@ end
 --- `opts.fetch` (curl limits, see `download.fetch`) bounds the one fetch; the
 --- health check passes quick timeouts so an unreachable network cannot stall
 --- `lw health` (§16.31). A local/mirror base is a file read and ignores it.
---- @return string|nil version, string|nil err
+--- A newest release this host cannot install (§16.29) returns nil, err, and
+--- { stranded = true, version? } — the caller's cue to say "reinstall".
+--- @return string|nil version, string|nil err, { stranded: boolean, version?: string }|nil info
 function M.resolve_newest_version(opts)
   opts = opts or {}
   local channel, cerr = M.resolve_channel(opts)
@@ -192,11 +281,13 @@ function M.resolve_newest_version(opts)
   if channel == "unstable" and not url_override(opts) then
     return M.resolve_unstable_version(opts.fetch)
   end
-  -- `stable`, or an override mirror: the version is whatever the base's
+  -- `stable`, or an override mirror: the version is whatever the `latest`
   -- manifest.json names — reachable without downloading the bundle.
-  local base = release_base(opts)
-  local mbytes, e = download.fetch(base .. "/manifest.json", opts.fetch)
-  if not mbytes then return nil, "fetch manifest: " .. tostring(e) end
+  local mbytes, e, _, info = fetch_latest_manifest(opts, opts.fetch)
+  if not mbytes then
+    if info and info.stranded then return nil, e, info end
+    return nil, "fetch manifest: " .. tostring(e)
+  end
   local manifest, de = json.decode(mbytes)
   if type(manifest) ~= "table" or type(manifest.version) ~= "string" then
     return nil, "manifest: " .. (de or "no version")
@@ -498,11 +589,14 @@ end
 --- override superseded a non-default channel (nil otherwise) — for the caller
 --- to surface as a warning. `info` is set only when the (verified) release
 --- needs a newer host than this one — { version, host_incompatible = true } —
---- so the caller can update the host binary first (§16.32).
+--- so the caller can update the host binary first (§16.32) — or, from the
+--- newest-release lookup (§16.29), { stranded = true, version? } when the
+--- newest release cannot be installed by this host (err says to reinstall), or
+--- { latest_not_found = true } when neither repository has a stable release.
 --- @param opts? { url?: string, force?: boolean, channel?: string }
 --- @return { version: string, updated: boolean, dir: string, channel_overridden?: string }|nil result
 --- @return string|nil err
---- @return { version: string, host_incompatible: boolean }|nil info
+--- @return { version?: string, host_incompatible?: boolean, stranded?: boolean, latest_not_found?: boolean }|nil info
 function M.self_update(opts)
   opts = opts or {}
   local channel, cerr = M.resolve_channel(opts)
@@ -520,15 +614,21 @@ function M.self_update(opts)
   -- `unstable` on the default origin resolves the newest release (pre-releases
   -- included) via the API, then fetches that version's assets from its versioned
   -- path. A mirror/override supersedes the channel (§16.29): it is used as-is and
-  -- the API is never called. `stable` keeps the /latest/download base unchanged.
+  -- the API is never called. `stable` reads the `latest` manifest (current
+  -- repository, else legacy) and keeps the base it came from.
+  local mbytes, e1, latest_info
   if channel == "unstable" and not url_override(opts) then
-    local ver, verr = M.resolve_unstable_version()
-    if not ver then return nil, verr end
+    local ver, verr, vinfo = M.resolve_unstable_version()
+    if not ver then return nil, verr, vinfo end
     base = M.versioned_base(ver, opts)
+    mbytes, e1 = download.fetch(base .. "/manifest.json")
+  else
+    mbytes, e1, base, latest_info = fetch_latest_manifest(opts)
   end
-
-  local mbytes, e1 = download.fetch(base .. "/manifest.json")
-  if not mbytes then return nil, "fetch manifest: " .. e1 end
+  if not mbytes then
+    if latest_info and latest_info.stranded then return nil, e1, latest_info end
+    return nil, "fetch manifest: " .. e1, latest_info
+  end
   local sig, e2 = download.fetch(base .. "/manifest.json.sig")
   if not sig then return nil, "fetch signature: " .. e2 end
 
