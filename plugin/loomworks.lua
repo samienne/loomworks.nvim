@@ -139,7 +139,9 @@ vim.api.nvim_create_user_command("LoomworksLog", function()
     vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
     return
   end
-  local path = root .. "/.nvim/loomworks.log"
+  -- lw 0.2.0's workspace log, else an earlier release's (spec §13.2).
+  local path = root .. "/.lw/workspace.log"
+  if not vim.uv.fs_stat(path) then path = root .. "/.nvim/loomworks.log" end
   if not vim.uv.fs_stat(path) then
     vim.notify("loomworks: no log file yet", vim.log.levels.INFO)
     return
@@ -166,7 +168,7 @@ vim.api.nvim_create_user_command("LoomworksLog", function()
     row = math.floor((vim.o.lines - height) / 2),
     style = "minimal",
     border = "rounded",
-    title = " loomworks.log ",
+    title = " " .. vim.fn.fnamemodify(path, ":t") .. " ",
     title_pos = "center",
   })
 

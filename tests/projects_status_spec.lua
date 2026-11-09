@@ -170,7 +170,7 @@ describe("Target rendering", function()
 
     it("integrates into render_unit_details when the unit has targets", function()
         local tree = make_mock_tree()
-        helpers.render_unit_details(tree, "/root/.nvim/build/App/Debug", {
+        helpers.render_unit_details(tree, "/root/.lw/build/App/Debug", {
             app = { type = "executable", dependencies = { "lib" } },
             lib = { type = "static_library" },
         }, nil)

@@ -171,7 +171,7 @@ describe("ui.model_calls", function()
             run("Maintenance/1.execute_deletion", { target = { unit = PROW.units[1] } })
             run("Maintenance/1.execute_deletion", { target = { build_dir = { id = "3:1", key = "gone/Debug" } } })
             run("Maintenance/1.execute_deletion", { target = { project = { id = "4:1", key = "app" } } })
-            run("Maintenance/1.execute_deletion", { target = { stray_dir = "C:/W/.nvim/Build/X" } })
+            run("Maintenance/1.execute_deletion", { target = { stray_dir = "C:/W/.lw/Build/X" } })
             run("Maintenance/1.execute_deletion", { target = { orphans = true } })
             run("Maintenance/1.nuke", { root = "/elsewhere" })
             assert.same({
@@ -179,7 +179,7 @@ describe("ui.model_calls", function()
                 { "Maintenance/1.execute_deletion", { target = { unit = { id = "2:1" } } } },
                 { "Maintenance/1.execute_deletion", { target = { build_dir = { id = "3:1" } } } },
                 { "Maintenance/1.execute_deletion", { target = { project = { id = "4:1" } } } },
-                { "Maintenance/1.execute_deletion", { target = { stray_dir = "C:/W/.nvim/Build/X" } } },
+                { "Maintenance/1.execute_deletion", { target = { stray_dir = "C:/W/.lw/Build/X" } } },
                 { "Maintenance/1.execute_deletion", { target = { orphans = true } } },
                 { "Maintenance/1.nuke", {} },
             }, sent)

@@ -64,5 +64,32 @@ describe("plugin/*.lua", function()
             assert.truthy(text:find("loomworks runtime: ", 1, true), text)
             assert.truthy(text:find("\nhost lw: ", 1, true), text)
         end)
+
+        -- spec §13.2 "Workspace state directory": lw 0.2.0's `.lw/workspace.log`
+        -- first, else an earlier release's `.nvim/loomworks.log`.
+        it(":LoomworksLog opens .lw/workspace.log, else the legacy .nvim/loomworks.log", function()
+            dofile(src)
+            local lw = require("loomworks")
+            local saved_root = lw.loaded_root
+            local root = vim.fs.normalize(tmp)
+            lw.loaded_root = function() return root end
+            vim.fn.mkdir(root .. "/.lw", "p")
+            vim.fn.mkdir(root .. "/.nvim", "p")
+            vim.fn.writefile({ "new log" }, root .. "/.lw/workspace.log")
+            vim.fn.writefile({ "legacy log" }, root .. "/.nvim/loomworks.log")
+            local function shown()
+                vim.cmd("LoomworksLog")
+                local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+                vim.api.nvim_win_close(0, true)
+                return table.concat(lines, "\n")
+            end
+            local ok, err = pcall(function()
+                assert.equals("new log", shown())
+                vim.fn.delete(root .. "/.lw/workspace.log")
+                assert.equals("legacy log", shown())
+            end)
+            lw.loaded_root = saved_root
+            assert(ok, err)
+        end)
     end)
 end)

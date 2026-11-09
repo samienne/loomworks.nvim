@@ -62,15 +62,18 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         assert.equals(0, lsp._gate_queue_len())
     end)
 
-    it("holds a buffer detected inside a loomworks workspace before setup(root)", function()
+    -- The working copy under lw 0.2.0's `.lw/` name and an earlier release's
+    -- `.nvim/` one both mark a workspace (spec §13.2).
+    for _, marker in ipairs({ ".lw/user.json", ".nvim/loomworks.user.json" }) do
+    it("holds a buffer detected inside a loomworks workspace before setup(root) (" .. marker .. ")", function()
         -- Session-restored buffers can resolve root_dir BEFORE auto-load tells
         -- loomworks the root: no loaded workspace, workspace_root() nil. The gate
         -- must still hold a buffer whose path sits under a loomworks marker.
         lw.get_workspace = function() return nil end
         lw.workspace_root = function() return nil end
         local dir = vim.fs.normalize(vim.fn.tempname())
-        vim.fn.mkdir(dir .. "/.nvim", "p")
-        local f = assert(io.open(dir .. "/.nvim/loomworks.user.json", "w"))
+        vim.fn.mkdir(vim.fs.dirname(dir .. "/" .. marker), "p")
+        local f = assert(io.open(dir .. "/" .. marker, "w"))
         f:write("{}"); f:close()
 
         local buf = make_buf(dir .. "/src/main.cpp")
@@ -84,6 +87,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         assert.is_true(resolved)
         pcall(vim.fn.delete, dir, "rf")
     end)
+    end
 
     it("resolves immediately when there is no known workspace root", function()
         lw.workspace_root = function() return nil end

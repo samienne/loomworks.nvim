@@ -64,7 +64,7 @@
  29|          ○ ▼ Lib [cmake] → Debug (unconfigured)
    hl 10-14 Comment; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-39 LoomworksVariant; 39-54 Comment
    w  enter_label=Open task output fold_key=profile_proj:debug:Lib on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
- 30|                Build dir: /root/.nvim/build/Lib/Debug
+ 30|                Build dir: /root/.lw/build/Lib/Debug
    hl 0--1 Comment
  31|
  32|  ○ ▼ release [incomplete] (unconfigured)
@@ -86,12 +86,12 @@
  38|          ○ ▼ App [cmake] → Release (unconfigured)
    hl 10-14 Comment; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-41 LoomworksVariant; 41-56 Comment
    w  enter_label=Open task output fold_key=profile_proj:release:App on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
- 39|                Build dir: /root/.nvim/build/App/Release
+ 39|                Build dir: /root/.lw/build/App/Release
    hl 0--1 Comment
  40|          ○ ▼ Lib [cmake] → Nope (unconfigured)
    hl 10-14 Comment; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-38 LoomworksVariant; 38-53 Comment
    w  enter_label=Open task output fold_key=profile_proj:release:Lib on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
- 41|                Build dir: /root/.nvim/build/Lib/Nope
+ 41|                Build dir: /root/.lw/build/Lib/Nope
    hl 0--1 Comment
  42|
  43|  ○ ▼ vanished [stale] (empty)
@@ -110,7 +110,7 @@
  49|  Orphaned Build Dirs  [D] delete
    hl 2-23 Title; 23-33 Comment
  50|
- 51|  .nvim/build/Old/Debug
+ 51|  .lw/build/Old/Debug
    hl 0--1 Comment
    w  on_delete()
  52|  ▸ Clean all

@@ -45,8 +45,14 @@ function M.check_cwd()
     local config_exists, user_exists, cache_exists = false, false, false
     if cwd_root then
         config_exists = vim.uv.fs_stat(cwd_root .. "/loomworks.json") ~= nil
-        user_exists = vim.uv.fs_stat(cwd_root .. "/.nvim/loomworks.user.json") ~= nil
-        cache_exists = vim.uv.fs_stat(cwd_root .. "/.nvim/loomworks.cache.json") ~= nil
+        -- lw 0.2.0's `.lw/` names first, then those of an earlier release
+        -- (spec §13.2 "Workspace state directory").
+        local function either(new, legacy)
+            return vim.uv.fs_stat(cwd_root .. "/" .. new) ~= nil
+                or vim.uv.fs_stat(cwd_root .. "/" .. legacy) ~= nil
+        end
+        user_exists = either(".lw/user.json", ".nvim/loomworks.user.json")
+        cache_exists = either(".lw/cache.json", ".nvim/loomworks.cache.json")
     end
 
     -- (In `daemon` mode the root the editor observes the daemon of: it holds

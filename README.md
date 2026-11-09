@@ -7,8 +7,9 @@ and turns their build variants into resolved, buildable **profiles**. It never
 modifies your project files, and collaborators don't need to know it exists.
 
 The workspace itself is run by `lw`, loomworks' command-line tool, as a
-**workspace daemon**: it owns the workspace files (`loomworks.json`,
-`.nvim/loomworks.user.json`, `.nvim/loomworks.cache.json`), detects
+**workspace daemon**: it owns the workspace files (`loomworks.json`, and its own state under `.lw/`:
+`.lw/user.json`, `.lw/cache.json`, …; `lw` releases before 0.2.0 used
+`.nvim/loomworks.user.json` and so on, which `lw` 0.2.0 migrates), detects
 toolchains, and configures, builds, cleans, launches and tests. This plugin
 connects to that daemon and gives it an editor front end:
 
@@ -62,8 +63,9 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 ```
 
 By default the plugin loads a workspace when you open Neovim in (or `:cd` to)
-a directory containing `loomworks.json` (or a not-yet-published
-`.nvim/loomworks.user.json`), or any directory below it. `:LoomworksInit
+a directory containing `loomworks.json` (or a not-yet-published working copy,
+`.lw/user.json` or an earlier release's `.nvim/loomworks.user.json`), or any
+directory below it. `:LoomworksInit
 [path]` loads the workspace at `path` explicitly; where there is none, it runs
 `lw init` there in a terminal window, with the same `lw` the plugin uses for
 the workspace daemon (the plugin-managed one when no `lw` is installed), and

@@ -557,7 +557,7 @@ end
 function M.start(target, mode)
     -- Refuse incomplete profiles upfront. Going further would have
     -- the build chain run with a nil tool_data and produce malformed
-    -- on-disk artefacts (`.nvim/build/<project>/<bare-name>` shape).
+    -- on-disk artefacts (`.lw/build/<project>/<bare-name>` shape).
     -- Module-agnostic — Profile:assert_buildable iterates module
     -- capability flags via Profile:is_complete.
     local profile = target._profile

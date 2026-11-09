@@ -547,9 +547,12 @@ local function detect_workspace_root(bufnr)
     if not name or name == "" then return nil end
     local uv = vim.uv
     for cur in vim.fs.parents(name) do
-        -- The §9.7 markers — the same two that make a directory a workspace
-        -- root for auto-load (root_finder). A cache file alone is not one.
+        -- The §9.7 markers — the ones that make a directory a workspace root
+        -- for auto-load (§13.2): the published snapshot, or the working copy
+        -- under lw 0.2.0's `.lw/` or an earlier release's `.nvim/` name. A
+        -- cache file alone is not one.
         if uv.fs_stat(cur .. "/loomworks.json")
+            or uv.fs_stat(cur .. "/.lw/user.json")
             or uv.fs_stat(cur .. "/.nvim/loomworks.user.json") then
             return cur
         end
