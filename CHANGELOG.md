@@ -69,6 +69,13 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   daemon's runtime line and the `lw` a launch would use (#414).
 
 ### Changed
+- The plugin finds workspaces in lw 0.2.0's layout, where a workspace's own
+  files live under `.lw/` (`.lw/user.json`, `.lw/cache.json`,
+  `.lw/workspace.log`, `.lw/build/`) instead of `.nvim/loomworks.*`, as well as
+  workspaces of earlier releases: auto-load's cache check, the language-server
+  hold and `:LoomworksLog` look for the `.lw/` name first. Moving the files is
+  lw's (it copies them on first use); the plugin never does. The orphaned-items
+  section now shows a build directory relative to the workspace root (#433).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
