@@ -235,7 +235,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         local path = root .. "/.lw/user.json"
         local r = call("Workspace/1.delete_user_prefs", {})
         assert.equals("confirm", r.outcome, vim.inspect(r))
-        assert.truthy(r.lines[1]:find("loomworks.user.json", 1, true), r.lines[1])
+        assert.truthy(r.lines[1]:find("/.lw/user.json", 1, true), r.lines[1])
         -- The working copy changes after it was shown: the plan is refused.
         local plan = r.plan
         local signed = H.signed_user(root, { _meta = { version = 2 },
@@ -253,7 +253,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         require("loomworks.ui.tree").new():_confirm_delete_user_prefs()
         assert.is_true(vim.wait(30000, function() return shown ~= nil end, 20))
         dialog.show = orig_show
-        assert.truthy(table.concat(shown.lines, "\n"):find("loomworks.user.json", 1, true))
+        assert.truthy(table.concat(shown.lines, "\n"):find("/.lw/user.json", 1, true))
         shown.keys.y({ close = function() end })
         assert.is_true(vim.wait(30000, function() return vim.fn.filereadable(path) == 0 end, 20), vim.inspect(notes))
     end)
