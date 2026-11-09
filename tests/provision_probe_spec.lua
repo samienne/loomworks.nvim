@@ -199,7 +199,7 @@ describe("probe.run (async, bounded, cached per binary)", function()
 end)
 
 describe("selection over probe verdicts (§19.16)", function()
-    local incompatible = { verdict = "incompatible", problems = { "transport 1..2 does not overlap ours 10..11" }, degraded = {} }
+    local incompatible = { verdict = "incompatible", problems = { "transport 2..3 does not overlap ours 1..1" }, degraded = {} }
     local unknown = { verdict = "unknown", problems = { "timeout" }, degraded = {} }
     local compatible = { verdict = "compatible", problems = {}, degraded = {} }
 

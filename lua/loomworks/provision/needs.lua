@@ -23,6 +23,11 @@
 
 local M = {}
 
+--- The highest transport of the pre-0.2.0 pre-releases (loomworks
+--- PROTOCOL.md §6): the transport restarted at 1, so such a binary shares no
+--- version with this client. Only used to word the reason.
+M.PRE_RESTART_MAX = 11
+
 --- The interfaces the editor client uses: observer.ROOT, then its features.
 --- @return { object: string, iface: string, v: integer, feature?: string }[]
 function M.needed()
@@ -38,9 +43,11 @@ end
 --- @field degraded string[] a feature interface not offered: only that feature degrades
 
 --- Sort a descriptor's problems by weight (spec §19.16 "Pre-launch probe").
---- `opts.interfaces == false` skips the interface checks: a daemon observed
---- over transport 10 offers no interfaces at all (it is observed through the
---- protocol-10 broadcasts), so it lacks none (loomworks.daemon.editor_retire).
+--- `opts.interfaces == false` skips the interface checks: a connected daemon
+--- whose interfaces are not known (no agreed transport, or a welcome without
+--- objects) is judged by its transport only (loomworks.daemon.editor_retire).
+--- A pre-0.2.0 binary (transports up to 11) shares no version with 1 and is
+--- named as such.
 --- @param d any a decoded binary descriptor
 --- @param opts? { interfaces?: boolean }
 --- @return loomworks.provision.NeedsProblems
@@ -56,8 +63,12 @@ function M.problems(d, opts)
     local version = require("loomworks.daemon.client.version")
     local t = type(d.transport) == "table" and d.transport or {}
     if not version.negotiate(t.max, t.min) then
-        out.fatal[#out.fatal + 1] = string.format("transport %s..%s does not overlap ours %d..%d",
-            tostring(t.min), tostring(t.max), version.PROTOCOL_MIN, version.PROTOCOL)
+        local line = string.format("transport %s..%s does not overlap ours %d..%d",
+            tostring(t.min or t.max), tostring(t.max), version.PROTOCOL_MIN, version.PROTOCOL)
+        if type(t.max) == "number" and t.max > version.PROTOCOL and t.max <= M.PRE_RESTART_MAX then
+            line = line .. " (a pre-0.2.0 lw: update it to 0.2.0 or newer)"
+        end
+        out.fatal[#out.fatal + 1] = line
     end
     if opts and opts.interfaces == false then return out end
     local offered = require("loomworks.daemon.observer").offered_versions

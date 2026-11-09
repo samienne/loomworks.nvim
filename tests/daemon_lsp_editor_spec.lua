@@ -386,9 +386,6 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             -- The describe not answered yet (nothing settled): waiting.
             obs._feat[LSP_FEATURE], obs._why[LSP_FEATURE] = nil, nil
             assert.equals("waiting", (source.daemon_phase()))
-            -- Protocol 10.
-            obs.mode = "v0"
-            assert.equals("unavailable", (source.daemon_phase()))
             -- No host binary.
             obs.mode, obs.state = "interfaces", "no-binary"
             phase, d = source.daemon_phase()

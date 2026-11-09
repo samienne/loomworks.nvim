@@ -45,7 +45,7 @@ local function refused() return { outcome = "refused", message = "stub", exit_co
 --- live daemon (`w.handle`) offering `w.objects` (`o.views == false`: the
 --- root only) with stub answers; `w:emit` sends an interface signal to the
 --- connections subscribed to it (per-object `seq`), `w:task` a task frame to
---- those subscribed to `/tasks` (or of transport 10), `w:drop()` stops the
+--- those subscribed to `/tasks`, `w:drop()` stops the
 --- daemon (every connection closes).
 local function new_world(o)
     o = o or {}
@@ -118,9 +118,9 @@ local function new_world(o)
         local proto = w.protocol or version.PROTOCOL
         local c = { subs = {}, seq = {}, calls = {}, requests = {}, role = copts.role,
             on_message = copts.on_message, on_close = copts.on_close,
-            challenge = { protocol = proto, protocol_min = math.min(proto, version.PROTOCOL_MIN),
+            challenge = { protocol = proto, protocol_min = o.protocol_min or proto,
                 lw_version = w.lw_version, session_generation = w.generation },
-            welcome = { seq = 0, retiring = w.retiring, objects = proto >= 11 and vim.deepcopy(w.objects) or nil } }
+            welcome = { seq = 0, retiring = w.retiring, objects = vim.deepcopy(w.objects) } }
         function c.call(self, object, iface, v, method, args, ccb, env)
             local call = { object = object, iface = iface, v = v, method = method, args = args, env = env }
             self.calls[#self.calls + 1] = call
@@ -179,11 +179,10 @@ local function new_world(o)
         end
     end
 
-    --- A task frame (PROTOCOL §14.2) to each connection of transport 10 or
-    --- subscribed to `/tasks`.
+    --- A task frame (PROTOCOL §14.2) to each connection subscribed to `/tasks`.
     function w.task(frame)
         for _, c in ipairs(vim.list_slice(w.conns)) do
-            local subbed = (c.challenge.protocol or 0) < 11
+            local subbed = false
             for _, s in ipairs(c.subs) do if s.object == "/tasks" then subbed = true end end
             if subbed then c.on_message(vim.deepcopy(frame)) end
         end
@@ -221,6 +220,17 @@ describe("the editor client's version check (§19.9)", function()
         assert.is_false(ok); assert.equals("protocol", what)
         assert.is_false((cv.compatible({ protocol = cv.PROTOCOL_MIN - 1 })))
         assert.is_false((cv.compatible(nil)))
+    end)
+
+    it("speaks transport 1 only: a pre-0.2.0 daemon (transports up to 11) is incompatible", function()
+        assert.equals(1, cv.PROTOCOL)
+        assert.equals(1, cv.PROTOCOL_MIN)
+        assert.equals(1, cv.negotiate(1, 1))
+        assert.equals(1, cv.negotiate(3, 1))
+        assert.is_nil(cv.negotiate(11, 10))
+        assert.is_nil(cv.negotiate(11))
+        local ok, what = cv.compatible({ protocol = 11, protocol_min = 10 })
+        assert.is_false(ok); assert.equals("protocol", what)
     end)
 
     it("announces the plugin's own version, from its CHANGELOG", function()
@@ -311,14 +321,13 @@ describe("the observer (§19.16)", function()
         assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 0 end, 10))
     end)
 
-    it("against a daemon of protocol 10 it observes the v0 broadcasts", function()
-        W = new_world({ root = ws.root, protocol = 10 })
+    it("does not observe a pre-0.2.0 daemon (transports 10..11)", function()
+        W = new_world({ root = ws.root, protocol = 11, protocol_min = 10 })
         obs = attach()
-        connected()
-        assert.equals("v0", obs.mode)
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        assert.truthy(obs:runtime_line():find("not observing it", 1, true), obs:runtime_line())
+        assert.is_nil(obs.mode)
         assert.same({}, W.subs_of())
-        W.task({ kind = "task", task_id = "tk-1", phase = "start", meta = { name = "dev", kind = "build" } })
-        assert.is_true(vim.wait(5000, function() return #require("loomworks").get_daemon_tasks() == 1 end, 10))
     end)
 
     it("a missing interface is one per-feature note; the connection stays (§19.16 Interface client)", function()
@@ -528,9 +537,9 @@ describe("the observer (§19.16)", function()
         assert.equals(1, seen)
     end)
 
-    it("a transport-11 daemon offering neither view and sending v0 broadcasts (step 5g.1) gets no note", function()
+    it("a daemon offering neither view whose describe states no `delivery` gets no note", function()
         W = new_world({ root = ws.root, views = false })
-        -- A 5g.1 daemon's describe has no `delivery` (it also broadcasts).
+        -- No `delivery` in the describe (PROTOCOL.md §10.1 `delivery?`).
         W.delivery = nil
         obs = attach()
         connected()
@@ -1033,7 +1042,7 @@ describe("the observer (§19.16)", function()
 
     describe("pre-launch probe (step 5h.5)", function()
         local binsel = require("loomworks.provision.select")
-        local bad = { verdict = "incompatible", problems = { "transport 1..2 does not overlap ours" }, degraded = {} }
+        local bad = { verdict = "incompatible", problems = { "transport 2..3 does not overlap ours" }, degraded = {} }
 
         --- An observer over the real selection with PATH /p/lw, managed /m/lw
         --- (and LOOMWORKS_LW when `explicit`); probes complete on `finish()`.
@@ -1235,7 +1244,7 @@ describe("the observer (§19.16)", function()
         -- Retiring (a version change): the observer disconnects; one
         -- ordinary relay follows it.
         f.retiring = true
-        obs:_on_message({ kind = "retiring" })
+        obs:_on_message({ kind = "signal", object = "/", iface = "loomworks.Root", v = 1, name = "retiring", args = {} })
         assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), obs:runtime_line())
         assert.same({ "ordinary", "ordinary" }, fr.spawns)
         vim.wait(200)
@@ -1289,7 +1298,7 @@ describe("the observer (§19.16)", function()
 
     it("a `retiring` with no connection does not mark the next drop as a retirement", function()
         obs = attach({ inspect = function() return { kind = "hung", lock = { pid = 5 } } end, manual = true })
-        obs:_on_message({ kind = "retiring" })
+        obs:_on_message({ kind = "signal", object = "/", iface = "loomworks.Root", v = 1, name = "retiring", args = {} })
         assert.is_nil(obs._retired_note)
     end)
 

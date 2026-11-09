@@ -24,7 +24,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
     local saved = {}
 
     local function fake_observer(feat)
-        local conn = { transport = 11, closed = false }
+        local conn = { transport = 1, closed = false }
         function conn.call(_, object, iface, v, method, args, cb, env)
             sent[#sent + 1] = { object = object, iface = iface, v = v, method = method, args = args, cb = cb,
                 env = env }

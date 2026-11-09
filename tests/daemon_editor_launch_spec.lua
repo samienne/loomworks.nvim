@@ -25,7 +25,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
     local saved = {}
 
     local function fake_observer(feat)
-        local conn = { transport = 11, closed = false }
+        local conn = { transport = 1, closed = false }
         function conn.call(_, object, iface, v, method, args, cb, env)
             sent[#sent + 1] = { object = object, iface = iface, v = v, method = method, args = args, cb = cb,
                 env = env }
@@ -605,7 +605,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         device_launched()
         assert.equals("device_log", sent[4].method)
         -- A reconnect's new connection: the old one's task is not its.
-        local fresh = { transport = 11, closed = false }
+        local fresh = { transport = 1, closed = false }
         local on_fresh = {}
         function fresh.call(_, object, iface, v, method, args, cb)
             on_fresh[#on_fresh + 1] = { object = object, method = method, args = args, cb = cb }
@@ -1088,7 +1088,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
     end)
 
     local function connect(feat)
-        local conn = { transport = 11, closed = false }
+        local conn = { transport = 1, closed = false }
         function conn.call(_, object, iface, v, method, args, cb)
             sent[#sent + 1] = { object = object, iface = iface, method = method, args = args, cb = cb }
         end
