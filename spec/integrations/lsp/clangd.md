@@ -38,7 +38,7 @@ from another toolchain.
 The `compile_commands_dir` a module supplies may be a loomworks-generated
 directory rather than the build directory. The cmake module **always**
 points clangd at its own generated `compile_commands.json` directory (under
-`.nvim/cache/cc/`), for every generator — Ninja and Makefiles included, not
+`.lw/cache/cc/`; `.nvim/cache/cc/` before lw 0.2.0), for every generator — Ninja and Makefiles included, not
 only Visual Studio / Xcode — unless the configuration sets
 `compile_commands_generated = false` (or redirects via
 `compile_commands_from`), in which case clangd points at the build
