@@ -134,11 +134,15 @@ describe("auto_load", function()
             vim.fn.writefile({ "{}" }, root .. "/loomworks.json")
             auto_load.decide = function(opts) seen = opts; return "skip" end
             lw._auto_load_mode = function() return "cached_only" end
+            -- The suite's runtimepath names this tree as ".": keep it findable
+            -- from the scratch directory.
+            vim.opt.rtp:prepend(saved.cwd)
             vim.cmd.cd(vim.fn.fnameescape(root))
         end)
 
         after_each(function()
             vim.cmd.cd(vim.fn.fnameescape(saved.cwd))
+            vim.opt.rtp:remove(saved.cwd)
             auto_load.decide = saved.decide
             lw._auto_load_mode = saved.mode
             vim.fn.delete(root, "rf")
