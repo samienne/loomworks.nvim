@@ -49,7 +49,10 @@ return function(tree, ctx)
 
     local ws_root = ctx.root or ""
     for _, orphan in ipairs(orphans) do
-        local display = ".nvim/" .. orphan.key
+        -- Its build directory relative to the root, as stray dirs show;
+        -- the cache key (shown as given) when it has none.
+        local display = orphan.build_dir and rel_display(ws_root, orphan.build_dir)
+            or orphan.key
         tree:item(display, {
             hl = "Comment",
             on_delete = helpers.actionable(ctx, orphan) and actions.delete_orphaned_config(orphan, ctx.ws) or nil,

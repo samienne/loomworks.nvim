@@ -88,7 +88,7 @@
         ],
         "units": [
           {
-            "build_dir": "/root/.nvim/build/App/ninja-gcc-12/Debug",
+            "build_dir": "/root/.lw/build/App/ninja-gcc-12/Debug",
             "configuration": "Debug",
             "launcher_changed": false,
             "missing": false,

@@ -3,7 +3,7 @@
 -- Writes to <report>, one `key=value` per line: its working directory (`cwd`),
 -- its lw arguments (`args`, space-separated) and its LOOMWORKS_LUA and
 -- LOOMWORKS_INSTALL_DIR ("-" when unset). With <exit> 0 it creates
--- `.nvim/loomworks.user.json` in its working directory, as `lw init` does.
+-- `.lw/user.json` in its working directory, as `lw init` does.
 -- Exits <exit>.
 local uv = vim.uv or vim.loop
 local report, code = arg[1], tonumber(arg[2]) or 0
@@ -18,8 +18,8 @@ for _, n in ipairs({ "LOOMWORKS_LUA", "LOOMWORKS_INSTALL_DIR" }) do
 end
 f:close()
 if code == 0 then
-    vim.fn.mkdir(cwd .. "/.nvim", "p")
-    local w = assert(io.open(cwd .. "/.nvim/loomworks.user.json", "w"))
+    vim.fn.mkdir(cwd .. "/.lw", "p")
+    local w = assert(io.open(cwd .. "/.lw/user.json", "w"))
     w:write("{}\n")
     w:close()
     print("initialized workspace at " .. cwd)

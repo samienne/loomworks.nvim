@@ -119,4 +119,51 @@ describe("auto_load", function()
             }))
         end)
     end)
+
+    -- spec §13.2 "Workspace state directory": the working copy and the build
+    -- cache count under lw 0.2.0's `.lw/` names and an earlier release's
+    -- `.nvim/loomworks.*` ones.
+    describe("check_cwd", function()
+        local lw = require("loomworks")
+        local saved, root, seen
+
+        before_each(function()
+            saved = { cwd = vim.fn.getcwd(), decide = auto_load.decide, mode = lw._auto_load_mode }
+            root = vim.fs.normalize(vim.fn.tempname())
+            vim.fn.mkdir(root, "p")
+            vim.fn.writefile({ "{}" }, root .. "/loomworks.json")
+            auto_load.decide = function(opts) seen = opts; return "skip" end
+            lw._auto_load_mode = function() return "cached_only" end
+            -- The suite's runtimepath names this tree as ".": keep it findable
+            -- from the scratch directory.
+            vim.opt.rtp:prepend(saved.cwd)
+            vim.cmd.cd(vim.fn.fnameescape(root))
+        end)
+
+        after_each(function()
+            vim.cmd.cd(vim.fn.fnameescape(saved.cwd))
+            vim.opt.rtp:remove(saved.cwd)
+            auto_load.decide = saved.decide
+            lw._auto_load_mode = saved.mode
+            vim.fn.delete(root, "rf")
+        end)
+
+        for _, case in ipairs({
+            { dir = ".lw", user = "user.json", cache = "cache.json" },
+            { dir = ".nvim", user = "loomworks.user.json", cache = "loomworks.cache.json" },
+        }) do
+            it("sees the working copy and the cache under " .. case.dir .. "/", function()
+                vim.fn.mkdir(root .. "/" .. case.dir, "p")
+                auto_load.check_cwd()
+                assert.is_false(seen.user_exists)
+                assert.is_false(seen.cache_exists)
+                vim.fn.writefile({ "{}" }, root .. "/" .. case.dir .. "/" .. case.user)
+                vim.fn.writefile({ "{}" }, root .. "/" .. case.dir .. "/" .. case.cache)
+                auto_load.check_cwd()
+                assert.is_true(seen.config_exists)
+                assert.is_true(seen.user_exists)
+                assert.is_true(seen.cache_exists)
+            end)
+        end
+    end)
 end)

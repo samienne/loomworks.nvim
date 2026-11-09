@@ -59,7 +59,7 @@ local function devices_workspace()
         projects = { app = cfg.projects.app }, active_profile = "dev",
         default_target = { dev = { project = "app", device_target = "app", device_target_label = "app app" } } }
     local signed = H.signed_user(root, user)
-    f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb")); f:write(signed); f:close()
+    f = assert(io.open(root .. "/.lw/user.json", "wb")); f:write(signed); f:close()
     return root
 end
 
@@ -271,7 +271,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         end, 20))
         local chosen = set_device(rec(device_source.list(nil), "SER1"))
         assert.equals("ok", chosen.outcome, vim.inspect(chosen))
-        assert.truthy(read(root .. "/.nvim/loomworks.user.json"):find('"SER1"', 1, true))
+        assert.truthy(read(root .. "/.lw/user.json"):find('"SER1"', 1, true))
         assert.is_true(vim.wait(30000, function()
             local d = rec(device_source.list(nil), "SER1")
             return d.profiles ~= nil and d.profiles[1] == "dev" and profile_row().device ~= nil
@@ -437,7 +437,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_nil(task_of("install"))
         assert.same({}, errors())
         assert.is_false(session_tracker.is_running())
-        assert.is_nil(read(root .. "/.nvim/loomworks.user.json"):find('"SER1"', 1, true))
+        assert.is_nil(read(root .. "/.lw/user.json"):find('"SER1"', 1, true))
     end)
 
     -- Step 5n C3 (API.md §9.5): the run's device log through the real

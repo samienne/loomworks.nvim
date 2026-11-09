@@ -46,7 +46,7 @@
  23|          ✓ ▼ App [cmake] → Debug (built)
    hl 10-14 DiagnosticOk; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-39 LoomworksVariant; 39-47 Comment
    w  enter_label=Open task output fold_key=profile_proj:debug:ninja-gcc-12:App on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
- 24|                Build dir: /root/.nvim/build/App/ninja-gcc-12/Debug
+ 24|                Build dir: /root/.lw/build/App/ninja-gcc-12/Debug
    hl 0--1 Comment
  25|
  26|  ▸ Create new profile

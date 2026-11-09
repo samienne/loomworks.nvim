@@ -50,7 +50,7 @@ end
 --- state-changing request. The edit by itself causes no check (§19.13
 --- "Freshness of views"): a waiter reads the view again (`until_fresh`).
 local function edit_user(root, fn)
-    local path = root .. "/.nvim/loomworks.user.json"
+    local path = root .. "/.lw/user.json"
     local text = read(path)
     assert.is_not_nil(text)
     local user = vim.json.decode(text)
@@ -251,7 +251,7 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
     -- configuration's `module_config`, and Configuration:_apply copies every
     -- non-generic key — `module_config` included — into its own
     -- `module_config`, so it lands at `module_config.module_config.build_dir`
-    -- and shell.resolve_build_dir falls back to `<root>/.nvim/build/app/Debug`.
+    -- and shell.resolve_build_dir falls back to `<root>/.lw/build/app/Debug`.
     -- Enable once fixed.
     it("3b. the unit's build dir is the shell project's build_dir template's", function()
         assert.equals(norm(root .. "/out/Debug"), norm(row().units[1].build_dir), vim.inspect(row().units[1]))

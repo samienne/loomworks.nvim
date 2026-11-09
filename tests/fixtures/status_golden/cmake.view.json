@@ -120,7 +120,7 @@
     "orphaned": {
       "configurations": [
         {
-          "build_dir": "/root/build/Old/Debug",
+          "build_dir": "/root/.lw/build/Old/Debug",
           "id": "o10",
           "key": "build/Old/Debug"
         }
@@ -160,7 +160,7 @@
             "unit_id": "o8"
           },
           {
-            "build_dir": "/root/.nvim/build/Lib/Debug",
+            "build_dir": "/root/.lw/build/Lib/Debug",
             "configuration": "Debug",
             "launcher_changed": false,
             "missing": false,
@@ -192,7 +192,7 @@
         "tools": {},
         "units": [
           {
-            "build_dir": "/root/.nvim/build/App/Release",
+            "build_dir": "/root/.lw/build/App/Release",
             "configuration": "Release",
             "launcher_changed": false,
             "missing": false,
@@ -203,7 +203,7 @@
             "unit_id": "o4"
           },
           {
-            "build_dir": "/root/.nvim/build/Lib/Nope",
+            "build_dir": "/root/.lw/build/Lib/Nope",
             "configuration": "Nope",
             "launcher_changed": false,
             "missing": false,

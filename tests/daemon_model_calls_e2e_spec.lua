@@ -46,7 +46,7 @@ local function shell_fixture(extra)
     if extra then extra(cfg, user) end
     f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
     local signed = H.signed_user(root, user)
-    f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb")); f:write(signed); f:close()
+    f = assert(io.open(root .. "/.lw/user.json", "wb")); f:write(signed); f:close()
     return root
 end
 
@@ -232,10 +232,10 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
 
     it("delete_user_prefs confirms with a plan; a changed working copy is refused; accepted it deletes", function()
         serve()
-        local path = root .. "/.nvim/loomworks.user.json"
+        local path = root .. "/.lw/user.json"
         local r = call("Workspace/1.delete_user_prefs", {})
         assert.equals("confirm", r.outcome, vim.inspect(r))
-        assert.truthy(r.lines[1]:find("loomworks.user.json", 1, true), r.lines[1])
+        assert.truthy(r.lines[1]:find("/.lw/user.json", 1, true), r.lines[1])
         -- The working copy changes after it was shown: the plan is refused.
         local plan = r.plan
         local signed = H.signed_user(root, { _meta = { version = 2 },
@@ -253,7 +253,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         require("loomworks.ui.tree").new():_confirm_delete_user_prefs()
         assert.is_true(vim.wait(30000, function() return shown ~= nil end, 20))
         dialog.show = orig_show
-        assert.truthy(table.concat(shown.lines, "\n"):find("loomworks.user.json", 1, true))
+        assert.truthy(table.concat(shown.lines, "\n"):find("/.lw/user.json", 1, true))
         shown.keys.y({ close = function() end })
         assert.is_true(vim.wait(30000, function() return vim.fn.filereadable(path) == 0 end, 20), vim.inspect(notes))
     end)
@@ -449,7 +449,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     --- The working copy's declaration of project `key` (the signed file is
     --- JSON).
     local function user_project(key)
-        local text = table.concat(vim.fn.readfile(root .. "/.nvim/loomworks.user.json"), "\n")
+        local text = table.concat(vim.fn.readfile(root .. "/.lw/user.json"), "\n")
         return vim.json.decode(text).projects[key]
     end
 
@@ -723,11 +723,11 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         local cfg = vim.json.decode(f:read("*a")); f:close()
         cfg.projects.gone, cfg.configuration_sets.g = nil, nil
         f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
-        local user = vim.json.decode(table.concat(vim.fn.readfile(root .. "/.nvim/loomworks.user.json"), "\n"))
+        local user = vim.json.decode(table.concat(vim.fn.readfile(root .. "/.lw/user.json"), "\n"))
         user._sig, user.profiles.g = nil, nil
         if user.active_profile == "g" then user.active_profile = nil end
         local signed = H.signed_user(root, user)
-        f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb")); f:write(signed); f:close()
+        f = assert(io.open(root .. "/.lw/user.json", "wb")); f:write(signed); f:close()
         serve()
         local orow
         until_view(function(v)

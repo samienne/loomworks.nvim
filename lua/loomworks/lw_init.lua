@@ -16,7 +16,8 @@ local M = {}
 M._running = {}
 
 --- True when `dir` itself holds a workspace (spec §13.2: `loomworks.json` or
---- `.nvim/loomworks.user.json`): the upward search's own check
+--- the working copy, `.lw/user.json` or `.nvim/loomworks.user.json` as the
+--- vendored release recognizes them): the upward search's own check
 --- (loomworks.root_finder, vendored), which stops at `dir` exactly then.
 --- `:LoomworksInit` and `N` share it.
 --- @param dir string

@@ -46,8 +46,8 @@ describe("daemon mode: a buffer held before the workspace loads (§9.7)", functi
     before_each(function()
         root = H.tmp()
         vim.fn.mkdir(root .. "/app", "p")
-        vim.fn.mkdir(root .. "/.nvim", "p")
-        local f = io.open(root .. "/.nvim/loomworks.user.json", "w"); f:write("{}"); f:close()
+        vim.fn.mkdir(root .. "/.lw", "p")
+        local f = io.open(root .. "/.lw/user.json", "w"); f:write("{}"); f:close()
         lw.shutdown()
         real_attach = observer.attach
         observer.attach = function(r) return stub_attach(r) end

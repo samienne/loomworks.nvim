@@ -231,7 +231,7 @@ A language server loomworks installs (the default path — §9.4) is **held from
 
 The hold lives in the shared dispatch layer and works through the server's `root_dir` function, which loomworks owns. Neovim starts a client for a buffer only once `root_dir`'s asynchronous `on_dir` callback is invoked; loomworks withholds that callback for a buffer **under the workspace root** while the workspace is still initializing, queueing the buffer instead of resolving it. Buffers **outside** any workspace root resolve immediately via the fallback (`vim.fs.root`) — a C/C++ file unrelated to the workspace gets the user's stock server with no delay.
 
-Because that decision is made from the **buffer's own path**, the hold also covers buffers restored *before* loomworks knows the workspace root: a session manager can reopen files — and Neovim can resolve their `root_dir` — before auto-load has called `setup` with the root. When no workspace is loaded yet and no configured root is known, the gate walks up from the buffer's path for a workspace marker (`loomworks.json`, or `.nvim/loomworks.user.json`); a buffer inside a loomworks workspace is held, one outside any is resolved. (A directory holding only `.nvim/loomworks.cache.json` is not a workspace — the markers are the two auto-load uses, §13.) Detection only *holds*: it never makes the buffer withheld. If, when the hold ends, no workspace is loaded or being loaded for the buffer's root (auto-load is cwd-based, so a file of another workspace opened from elsewhere loads nothing), the buffer is resolved through the fallback — the user's stock server, as for any buffer outside a loaded workspace (§9.8). Correspondingly a buffer counts as *ready to resolve* only once a **live workspace object** exists and its databases are ready — not merely because no workspace has loaded yet — and the start of a new initialization cycle never drains already-held buffers (they wait for that cycle's readiness signal or the safety timeout).
+Because that decision is made from the **buffer's own path**, the hold also covers buffers restored *before* loomworks knows the workspace root: a session manager can reopen files — and Neovim can resolve their `root_dir` — before auto-load has called `setup` with the root. When no workspace is loaded yet and no configured root is known, the gate walks up from the buffer's path for a workspace marker (`loomworks.json`, `.lw/user.json`, or the legacy `.nvim/loomworks.user.json`, §13.2); a buffer inside a loomworks workspace is held, one outside any is resolved. (A directory holding only a build cache, `.lw/cache.json` or `.nvim/loomworks.cache.json`, is not a workspace — the markers are the ones auto-load uses, §13.) Detection only *holds*: it never makes the buffer withheld. If, when the hold ends, no workspace is loaded or being loaded for the buffer's root (auto-load is cwd-based, so a file of another workspace opened from elsewhere loads nothing), the buffer is resolved through the fallback — the user's stock server, as for any buffer outside a loaded workspace (§9.8). Correspondingly a buffer counts as *ready to resolve* only once a **live workspace object** exists and its databases are ready — not merely because no workspace has loaded yet — and the start of a new initialization cycle never drains already-held buffers (they wait for that cycle's readiness signal or the safety timeout).
 
 The queue is released when the **active profile's owned LSP databases are ready** — the compilation databases of its build directories that are configured here have been generated (a unit not configured here has nothing to generate and contributes no database, §9.1). At that point the resolved binary and the `compile_commands_dir` (with its `compile_commands.json` already on disk for configured units) are in place, so the server starts once, correct, with no follow-up restart. On release, each queued buffer is resolved normally (§9.8 *Decision*): it is routed to an entry — its project's, or for a buffer under the root outside every project the workspace entry — and, unless that entry is **withheld** (§9.8), its `on_dir` is invoked. A buffer whose entry is withheld is not started — it moves from the hold to the withheld set of §9.8. Databases for non-active profiles are generated lazily and do not gate the start.
 
@@ -298,7 +298,7 @@ require("loomworks").setup({
 | Value | Behavior |
 |-------|----------|
 | `"auto"` | Always load silently when a workspace root is found from cwd (§13.2). Notify via `vim.notify`. |
-| `"cached_only"` | Load silently if cache exists (`.nvim/loomworks.cache.json`). For uncached workspaces, notify but do not load. |
+| `"cached_only"` | Load silently if cache exists (`.lw/cache.json`, or the legacy `.nvim/loomworks.cache.json`, §13.2). For uncached workspaces, notify but do not load. |
 | `"prompt"` | Load silently if cache exists. For uncached workspaces, prompt the user for confirmation. |
 | `false` | Never auto-load. Only manual `:LoomworksInit`. |
 
@@ -321,15 +321,30 @@ submodule of a superproject loads the superproject's workspace. Use
 repository root).
 
 **Detection order**: at each directory, `loomworks.json` is checked first,
-then `.nvim/loomworks.user.json`. Either file is sufficient to identify a
-workspace root.
+then `.lw/user.json`, then `.nvim/loomworks.user.json`. Any of them is
+sufficient to identify a workspace root.
+
+**Workspace state directory**: `lw` 0.2.0 keeps a workspace's own files in
+`<root>/.lw/` (`.lw/user.json`, `.lw/cache.json`, `.lw/workspace.log`,
+`.lw/build/`, …; [loomworks core §16.44](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md#1644-workspace-state-directory-lw));
+releases before 0.2.0 keep them in `<root>/.nvim/` under `loomworks.`-prefixed
+names (`.nvim/loomworks.user.json`, `.nvim/loomworks.cache.json`,
+`.nvim/loomworks.log`). Migrating a workspace from one to the other is
+`lw`'s (copy-only, on first use by a 0.2.0+ `lw`); the editor never moves,
+copies or migrates these files. So that a workspace of an earlier release is
+found (and `lw` migrates it on first use), the editor's own discovery — the
+cache check of §13.1, the LSP gate's marker walk (§9.7) and `:LoomworksLog`
+(§14) — accepts **both** generations, the `.lw/` name first, then the legacy
+one. The upward search itself (and `:LoomworksInit`'s check, §13.5, which is
+that search's own check) is loomworks' vendored `root_finder`, which
+recognizes the same markers in the same order.
 
 ### 13.3 Behavior
 
 When a trigger fires:
 1. Search upward from cwd ([loomworks core §1.1](https://github.com/samienne/loomworks/blob/main/spec/core/data-model.md)) for a directory holding
-   `loomworks.json` or `.nvim/loomworks.user.json` — that directory is the
-   root.
+   `loomworks.json`, `.lw/user.json` or `.nvim/loomworks.user.json` — that
+   directory is the root.
 2. If none found → no-op.
 3. If found and a workspace is already loaded at that root → no-op.
 4. If found and a **different** workspace is already loaded → prompt
@@ -358,7 +373,7 @@ show their progress through fidget.nvim when it is installed (§19.16
 
 The editor writes no workspace file itself: `lw init` creates the workspace,
 and the editor runs it. `:LoomworksInit [path]` loads the workspace at `path`
-when `path` holds `loomworks.json` or `.nvim/loomworks.user.json` (an
+when `path` holds a workspace marker of §13.2 (an
 explicit `path` is used as given, with no upward search; with no `path`: the
 root the upward search of §13.2 finds from cwd); otherwise it runs `lw init`
 in `path` (default: cwd). `N` on the status page runs `lw init` in the
@@ -396,7 +411,7 @@ download's error.
 | `:LoomworksDaemon [connect\|status]` | Optional subcommand (default: `status`) | `connect`: connect to the workspace daemon through an ordinary relay, which starts the daemon when none is live (§19.16 "Through the relay"); `status`: show the Runtime line and the host binary a launch would use, with its source (§19.16 "Host binary") |
 | `:LoomworksTrust` | None | Review a refused working copy ([loomworks core §17.4](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)): show its summary, then trust (re-sign), discard, or cancel |
 | `:LoomworksCompileCommand [file]` | Optional file (default: current buffer) | Refused: `compile command: not available with the workspace daemon` (§19.16 "Public API") |
-| `:LoomworksLog` | None | Open the loaded workspace's `.nvim/loomworks.log` in a float; a note when no workspace is loaded or no log exists |
+| `:LoomworksLog` | None | Open the loaded workspace's log (`.lw/workspace.log`, else the legacy `.nvim/loomworks.log`, §13.2) in a float; a note when no workspace is loaded or no log exists |
 | `:LoomworksFidgetClear` | None | Cancel every tracked fidget progress entry and report how many were cleared |
 | `:LoomworksReload` | None | Development: tear down the workspace and reload the plugin's code |
 
@@ -1650,7 +1665,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
 | `N`     | create_workspace | Run `lw init` in a terminal where no workspace is, then load the workspace (§13.5) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
-| `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
+| `<C-n>` | nuke        | Reset workspace: delete `.lw/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
 | `e`     | describe    | Edit the description ([loomworks core §1.10](https://github.com/samienne/loomworks/blob/main/spec/core/data-model.md)) of the nearest describable item — profile, configuration set, project, or user configuration — in the description editor (§1.16) |
 | `K`     | hover       | Hover popup with the full content of the current line; a row may supply its own hover content (on a describable item, its full description, §1.16) |
@@ -1701,7 +1716,7 @@ brackets, separated by double spaces.
 **Header hint**: After the Root line, a `Comment` leaf shows global actions:
 `[?] help  [L] load  [<C-n>] reset`
 
-**Refused-state hint**: When the workspace failed to load because a `.nvim`
+**Refused-state hint**: When the workspace failed to load because a workspace
 file was refused ([loomworks core §17.4](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)), the page shows only the load error (title,
 `Failed to load workspace`, root, message) followed by a blank line and a
 `Comment` hint naming the remedy for the refused file:
@@ -1894,7 +1909,7 @@ by any profile. Grouped by project key (sorted alphabetically). Each
 project is a foldable node; each config within is a foldable node showing
 the config key and its status.
 
-**Stray build directories**: directories under `{root}/.nvim/build/` not
+**Stray build directories**: directories under `{root}/.lw/build/` not
 referenced by any cache entry. Detected via top-down pruning: the scan
 reports the highest-level directory whose entire subtree contains no cache
 entries. Directories that ARE cache entries (or parents of cache entries)
@@ -1906,8 +1921,8 @@ Orphaned Items  [D] delete
   ▶ App
     ▶ Debug:ninja-gcc-12 (built)
       Status: built
-      Build dir: .nvim/build/App/Debug
-  .nvim/build/OldProject (stray)
+      Build dir: .lw/build/App/Debug
+  .lw/build/OldProject (stray)
   ▸ Clean all
 ```
 
@@ -2285,10 +2300,10 @@ Shown when `<C-n>` is pressed. Floating window centered in editor.
 **Content**:
 1. Title: "Reset workspace cache"
 2. List of paths that will be deleted:
-   - `<root>/.nvim/build/`
-   - `<root>/.nvim/loomworks.cache.json`
+   - `<root>/.lw/build/`
+   - `<root>/.lw/cache.json`
    - each module's owned LSP database area,
-     `<root>/.nvim/cache/<lsp_database_root>/` ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md), [loomworks core §4.6](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md) *Owned LSP
+     `<root>/.lw/cache/<lsp_database_root>/` ([loomworks core §8.4](https://github.com/samienne/loomworks/blob/main/spec/core/module-interface.md), [loomworks core §4.6](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md) *Owned LSP
      database cleanup*) — listed only when present on disk
 3. Confirmation prompt
 
@@ -2300,12 +2315,12 @@ resolves from cwd via `workspace.resolve_root()`.
 **Safety checks** (in `nuke_cache(root)`):
 1. Root must be an absolute path (rejects relative paths)
 2. `loomworks.json` must exist at the root (confirms it is a real workspace)
-3. Every path to delete is verified to be under `root/.nvim/` using
+3. Every path to delete is verified to be under `root/.lw/` using
    normalized path prefix checking (prevents directory traversal)
 4. An owned LSP database area is removed only when it is exactly the
-   direct child `<root>/.nvim/cache/<lsp_database_root>` and neither it,
-   `.nvim/cache` nor `.nvim` is a symbolic link or junction ([loomworks core §4.6](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md)
-   *Owned LSP database cleanup*); nothing else under `.nvim/cache/` is
+   direct child `<root>/.lw/cache/<lsp_database_root>` and neither it,
+   `.lw/cache` nor `.lw` is a symbolic link or junction ([loomworks core §4.6](https://github.com/samienne/loomworks/blob/main/spec/core/state-lifecycle.md)
+   *Owned LSP database cleanup*); nothing else under `.lw/cache/` is
    touched
 
 If any check fails, the operation aborts with an error notification and
@@ -2357,7 +2372,7 @@ multiple modules show all tags. Already-added projects show `✓` with
 workspace root. On fold open, subdirectories are scanned lazily. Results
 are cached in a browser-local dict. Pending scans show "scanning...".
 
-**Filtered directories**: `.git`, `.nvim`, `.cache`, `.vs`, `.vscode`,
+**Filtered directories**: `.git`, `.lw`, `.nvim`, `.cache`, `.vs`, `.vscode`,
 `node_modules`, `build`, `out`, `__pycache__`, and all hidden directories
 (starting with `.`) are excluded from scanning.
 
@@ -2490,7 +2505,7 @@ After confirmation:
 This is not "auto-clean" — it is an explicit user action with a
 confirmation dialog showing exactly what will be deleted.
 
-**File mutation**: All changes write to `loomworks.user.json` via Workspace
+**File mutation**: All changes write to the working copy (`.lw/user.json`) via Workspace
 mutation methods. Each method saves and remerges independently. Published
 items are written to `loomworks.json` only on explicit `:w` (see
 [loomworks core §2.4](https://github.com/samienne/loomworks/blob/main/spec/core/three-file-model.md)).

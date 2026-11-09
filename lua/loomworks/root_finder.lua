@@ -5,13 +5,13 @@
 --- both bind to the same workspace from the same directory.
 ---
 --- Walk up from the start directory; the first directory holding
---- `loomworks.json` or `.nvim/loomworks.user.json` is the root. A directory
+--- `loomworks.json` or `.lw/user.json` is the root. A directory
 --- with a `.git` entry but no workspace marker is a git working-tree boundary
 --- and ends the search with no root — EXCEPT a submodule's `.git` file: a
 --- submodule checkout is part of its superproject's working tree, so the walk
 --- continues to the superproject's workspace.
 ---
---- Why the boundary exists at all: a fresh `git worktree` has no `.nvim/` yet
+--- Why the boundary exists at all: a fresh `git worktree` has no `.lw/` yet
 --- (gitignored, not created by `git worktree add`). Without the stop, `lw` in
 --- it would silently walk past the worktree and bind to the PARENT checkout's
 --- workspace, operating on the wrong build dir; the `lw worktree` / `lw pull`
@@ -130,8 +130,11 @@ function M.find(start)
     local submodule
     while dir ~= "" do
         -- A workspace is recognized by the published snapshot OR the working
-        -- copy — a not-yet-published `lw init` has only the latter.
+        -- copy — a not-yet-published `lw init` has only the latter. The
+        -- working copy of a release before 0.2.0 (`.nvim/`) marks one too,
+        -- so that it is found and migrated (§16.44).
         if uv.fs_stat(dir .. "/loomworks.json")
+            or uv.fs_stat(dir .. "/.lw/user.json")
             or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") then
             return dir, { submodule = submodule }
         end
