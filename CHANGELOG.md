@@ -75,7 +75,9 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   workspaces of earlier releases: auto-load's cache check, the language-server
   hold and `:LoomworksLog` look for the `.lw/` name first. Moving the files is
   lw's (it copies them on first use); the plugin never does. The orphaned-items
-  section now shows a build directory relative to the workspace root (#433).
+  section now shows a build directory relative to the workspace root. The
+  plugin pins `lw` 0.2.0-beta.7, the first release with the `.lw/` layout
+  (#433).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
