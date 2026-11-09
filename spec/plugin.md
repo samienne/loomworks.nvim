@@ -331,13 +331,13 @@ releases before 0.2.0 keep them in `<root>/.nvim/` under `loomworks.`-prefixed
 names (`.nvim/loomworks.user.json`, `.nvim/loomworks.cache.json`,
 `.nvim/loomworks.log`). Migrating a workspace from one to the other is
 `lw`'s (copy-only, on first use by a 0.2.0+ `lw`); the editor never moves,
-copies or migrates these files. Until the pinned `lw` (§19.16) is 0.2.0 or
-later, the editor's own discovery — the cache check of §13.1, the LSP gate's
-marker walk (§9.7) and `:LoomworksLog` (§14) — accepts **both** generations,
-the `.lw/` name first, then the legacy one. The upward search itself (and
-`:LoomworksInit`'s check, §13.5, which is that search's own check) is
-loomworks' vendored `root_finder`: it recognizes the markers of the vendored
-release, `.lw/user.json` from the release that moved the files on.
+copies or migrates these files. So that a workspace of an earlier release is
+found (and `lw` migrates it on first use), the editor's own discovery — the
+cache check of §13.1, the LSP gate's marker walk (§9.7) and `:LoomworksLog`
+(§14) — accepts **both** generations, the `.lw/` name first, then the legacy
+one. The upward search itself (and `:LoomworksInit`'s check, §13.5, which is
+that search's own check) is loomworks' vendored `root_finder`, which
+recognizes the same markers in the same order.
 
 ### 13.3 Behavior
 
