@@ -95,7 +95,7 @@ M.FORMAT = 1
 
 --- The fixtures a runner prepares (the format's contract; their content is
 --- described here, each runner creates it):
----   empty  a root with `loomworks.json` = `{"projects": {}}` and `.nvim/`
+---   empty  a root with `loomworks.json` = `{"projects": {}}` and `.lw/`
 ---   shell  a `shell` project `app` (path `app`, configuration `Debug`,
 ---          build directory `${workspace_root}/out/${variant}`, configure
 ---          and build commands that print a line (when the client

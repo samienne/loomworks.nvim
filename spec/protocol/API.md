@@ -344,7 +344,7 @@ it).
   `refused`; the server then loads the workspace again (`header_changed`),
   so every id issued before is stale;
 - `delete_user_prefs { plan? }` — removes the working copy (`lw trust
-  --discard`, its `.nvim` path checks), confirmed as
+  --discard`, its `.lw` path checks), confirmed as
   `trust_accept` is, under the workspace operation lock; the confirmed
   content is checked again under that lock, and a file that changed since is
   `refused` with nothing deleted. With no working copy it is `refused`.
@@ -1831,7 +1831,7 @@ by these ids only, never by key or path; the deletion itself is decided by
 
 *(Optional.)* `nuke { plan?, yes? }` — task-streamed, `meta.kind =
 "nuke"` — `lw nuke`: the workspace's build state
-(`.nvim/build/`, the build and health caches, the owned language-server
+(`.lw/build/`, the build and health caches, the owned language-server
 database areas). Its locks are
 checked before it lists, also without `yes`: a held workspace operation
 lock or build-directory lock is `refused` naming the holder. The server's
