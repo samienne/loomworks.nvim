@@ -25,7 +25,7 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
     local obs, sent, created, notes, saved, orig_notify
 
     local function fake_observer()
-        local conn = { transport = 11, closed = false }
+        local conn = { transport = 1, closed = false }
         function conn.call(_, object, iface, v, method, args, cb, env)
             sent[#sent + 1] = { object = object, iface = iface, v = v, method = method, args = args, cb = cb,
                 env = env }

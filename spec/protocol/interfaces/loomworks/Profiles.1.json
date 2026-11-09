@@ -2,7 +2,7 @@
   "interface": "loomworks.Profiles",
   "version": 1,
   "status": "draft",
-  "description": "Object /profiles (API.md §11): the profiles' queries and commands. Step 5g.2 lands compiler_cache (the protocol-10 query profile_cache stays as its v0 alias); step 5n (part B2) set_device and clear_device; step 5o (part B2) set_active, create, tool_choices, add_tool and remove_tool. list and query are deferred. Step 6b-alpha adds set_default_target.",
+  "description": "Object /profiles (API.md §11): the profiles' queries and commands. Step 5g.2 lands compiler_cache; step 5n (part B2) set_device and clear_device; step 5o (part B2) set_active, create, tool_choices, add_tool and remove_tool. list and query are deferred. Step 6b-alpha adds set_default_target.",
   "methods": {
     "compiler_cache": {
       "description": "The compiler cache the profile resolves for one of its projects, as lw profile query <profile> <project> cache prints it; cache is absent when the project's module does not cache C/C++. Probes the client's PATH. An unknown profile, a project the profile does not map, or a stale id is the refused result.",

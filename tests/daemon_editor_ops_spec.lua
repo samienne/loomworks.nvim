@@ -22,7 +22,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
     --- A connected observer of `ws` over a fake connection recording each
     --- call (`sent`); `feat` overrides its features.
     local function fake_observer(feat)
-        local conn = { transport = 11, closed = false }
+        local conn = { transport = 1, closed = false }
         function conn.call(_, object, iface, v, method, args, cb, env)
             sent[#sent + 1] = { object = object, iface = iface, v = v, method = method, args = args, cb = cb,
                 env = env }
@@ -286,16 +286,12 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
     it("connected but not carrying it: a specific reason, never the Runtime line", function()
         obs = fake_observer()
         obs.note = "build: observing the workspace daemon (pid 4242)"
-        -- An older (protocol-10) daemon: observed through broadcasts only.
-        obs.mode = "v0"
-        assert.equals("the workspace daemon is too old to carry it (it offers no interfaces)",
-            obs:refusal("build"))
-        local st = op("build")
-        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
-        assert.equals("build: the workspace daemon is too old to carry it (it offers no interfaces)", st.err)
         -- A feature still pending just after connect.
         obs.mode = "interfaces"
         obs._feat = { operations = "available", tasks = "pending" }
+        local st = op("build")
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("build: the workspace daemon is still connecting (loomworks.Tasks/1 pending)", st.err)
         assert.equals("the workspace daemon is still connecting (loomworks.Tasks/1 pending)", obs:refusal("build"))
         obs._feat = { operations = "pending", tasks = "subscribed" }
         assert.equals("the workspace daemon is still connecting (loomworks.Build/1 pending)", obs:refusal("build"))
@@ -376,7 +372,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
             on_reply = function() end,
             on_done = function(task, reason) done = { task = task, reason = reason } end,
         })
-        obs.conn = { transport = 11, closed = false, call = function() end }
+        obs.conn = { transport = 1, closed = false, call = function() end }
         sent[1].cb({ outcome = "accepted", task_id = "m1" }, nil)
         assert.is_true(vim.wait(2000, function() return done ~= nil end, 10), "on_done never ran")
         assert.equals("the workspace daemon disconnected", done.reason)

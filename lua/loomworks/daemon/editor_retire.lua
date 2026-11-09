@@ -10,9 +10,8 @@
 --- `--no-launch --skip-instance` relay (observer `_skip`, step 5i PR G2).
 ---
 --- * `incompatibility` — is a connected daemon incompatible with the editor?
----   No transport overlap or, on a transport-11 connection, no
----   `loomworks.Root/1` (a protocol-10 daemon offers no interfaces and is
----   judged by its transport only). The same problem sort as the pre-launch
+---   No transport overlap or, on a connection with an agreed transport
+---   whose welcome lists objects, no `loomworks.Root/1`. The same problem sort as the pre-launch
 ---   probe (loomworks.provision.needs `problems`). A missing feature
 ---   interface only degrades that feature and is never a reason to retire.
 --- * `stale` — a compatible daemon weighed for a retirement because its code
@@ -35,10 +34,9 @@ local M = {}
 
 --- Is the daemon behind `conn` incompatible with the editor (spec §19.16
 --- "Retiring an incompatible daemon")? nil when it is compatible. The root
---- interface is weighed only on a transport-11 connection whose welcome
---- lists objects — the observer's own test for observing through
---- interfaces; over transport 10 a daemon offers none and is observed
---- through the protocol-10 broadcasts.
+--- interface is weighed only on a connection with an agreed transport whose
+--- welcome lists objects; without an agreed transport the transport reason
+--- alone says it.
 --- @param ch table the daemon's challenge { protocol, protocol_min, lw_version }
 --- @param conn table the connection { transport, welcome = { objects } }
 --- @return loomworks.daemon.Incompatibility|nil
@@ -46,8 +44,7 @@ function M.incompatibility(ch, conn)
     ch = type(ch) == "table" and ch or {}
     local welcome = type(conn) == "table" and conn.welcome or nil
     local objects = type(welcome) == "table" and welcome.objects or nil
-    local interfaces = type(conn) == "table" and type(conn.transport) == "number" and conn.transport >= 11
-        and type(objects) == "table"
+    local interfaces = type(conn) == "table" and type(conn.transport) == "number" and type(objects) == "table"
     local d = { descriptor = 1, transport = { min = ch.protocol_min, max = ch.protocol }, objects = objects }
     local p = require("loomworks.provision.needs").problems(d, { interfaces = interfaces })
     local reasons = {}

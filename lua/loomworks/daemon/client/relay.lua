@@ -50,7 +50,7 @@ local M = {}
 
 --- Errors a caller distinguishes.
 M.ERR_CLOSED = "closed"         -- the daemon closed the connection
-M.ERR_TRANSPORT = "transport"   -- the negotiated transport has no interface calls (protocol 10)
+M.ERR_TRANSPORT = "transport"   -- no transport was agreed with the daemon: no interface calls
 
 M.KILL_MS = settings.KILL_MS
 M.EOF_GRACE_MS = settings.EOF_GRACE_MS
@@ -68,7 +68,7 @@ M.FORMS = { ordinary = true, ["no-launch"] = true, retiring = true, skip = true 
 --- @field relay loomworks.daemon.RelayProc the relay it runs over
 --- @field challenge table the daemon's announced versions (`welcome.daemon`; {} without `via`)
 --- @field welcome table the daemon's `welcome` with the relay's additions (§19.8 step 4): `daemon`, `via = "relay"` and `relay` (loomworks.daemon.WelcomeRelay, absent from an older relay)
---- @field transport integer|nil the transport both sides agreed on (§19.9 "From protocol 11")
+--- @field transport integer|nil the transport both sides agreed on (§19.9; nil: none agreed)
 --- @field closed boolean|nil
 --- @field on_close fun(conn: loomworks.daemon.Conn)|nil called once when the connection closes after it was established
 local Conn = {}
@@ -88,9 +88,9 @@ end
 --- Call an interface method (spec §19.20): sends a `call` frame stamped with
 --- the interface version; `cb(result|nil, err)` with the `ok` reply's
 --- `result`, or the structured error object (`{ code, message, data? }`) — a
---- closed connection is `{ code = "closed" }`, and a connection whose
---- negotiated transport is below 11 fails at once with `{ code = "transport" }`
---- (client-side, never on the wire).
+--- closed connection is `{ code = "closed" }`, and a connection with no
+--- agreed transport fails at once with `{ code = "transport" }` (client-side,
+--- never on the wire).
 --- @param object string
 --- @param iface string
 --- @param v integer
@@ -102,10 +102,10 @@ end
 -- reads `:call(` as a call site naming its interface and method; this is the
 -- transport every such site goes through, not one of them.)
 Conn.call = function(self, object, iface, v, method, args, cb, env)
-    if not (type(self.transport) == "number" and self.transport >= 11) then
+    if type(self.transport) ~= "number" then
         return cb(nil, { code = M.ERR_TRANSPORT,
-            message = string.format("the daemon's transport is %s; interface calls need 11",
-                tostring(self.transport or "not agreed")) })
+            message = string.format("no transport agreed with the daemon; interface calls need %d",
+                version.PROTOCOL) })
     end
     local frame = require("loomworks.proto.envelope").call(object, iface, v, method, args, env)
     self:request(frame, function(reply, err)
@@ -425,9 +425,10 @@ function M.connect(opts, cb)
                 c.transport = version.agreed(w.daemon, opts)
             else
                 -- An older pin's attached runtime (§19.10 "Compatibility"): no
-                -- `daemon` to judge; interface calls only when it lists objects.
+                -- `daemon` to judge and no transport agreed, so no interface
+                -- calls (every pre-0.2.0 transport is incompatible with 1).
                 c.challenge = {}
-                c.transport = type(w.objects) == "table" and 11 or 10
+                c.transport = nil
             end
             return report(c)
         end

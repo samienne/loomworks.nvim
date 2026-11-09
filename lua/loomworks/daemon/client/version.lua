@@ -1,6 +1,6 @@
 --- loomworks/daemon/client/version.lua — what the editor's daemon client
---- announces and checks in the version handshake (spec §19.9 "From protocol
---- 11"). The editor judges a daemon by the transport range only: the two
+--- announces and checks in the version handshake (spec §19.9; loomworks
+--- PROTOCOL.md §6). The editor judges a daemon by the transport range only: the two
 --- ranges must overlap. Working-copy and cache formats are the daemon's
 --- business (it reads and writes them); what the editor needs beyond the
 --- transport is the interfaces it calls, each with its own version (§19.20).
@@ -8,15 +8,15 @@
 local M = {}
 
 --- The newest transport this client speaks (spec §19.8).
-M.PROTOCOL = 11
+M.PROTOCOL = 1
 
---- The oldest transport this client speaks: a daemon of protocol 10 is
---- observed through its broadcasts (no interfaces).
-M.PROTOCOL_MIN = 10
+--- The oldest transport this client speaks. The pre-0.2.0 transports (up to
+--- 11) share no version with 1: such a daemon is incompatible.
+M.PROTOCOL_MIN = 1
 
 --- The transport two ranges agree on: the highest in the overlap of
 --- `[min, max]` and ours, or nil when they do not overlap. A peer that
---- states no `protocol_min` (protocol 10 and older) states `[max, max]`.
+--- states no `protocol_min` states `[max, max]`.
 --- @param max integer|nil the peer's `protocol`
 --- @param min integer|nil the peer's `protocol_min`
 --- @return integer|nil

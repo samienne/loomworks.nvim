@@ -4,7 +4,7 @@
   "status": "draft",
   "internal": true,
   "same_build": true,
-  "description": "Object /internal (spec 19.13 As interfaces): a scope snapshot of the daemon's model for a same-build client's read-only projection (the CLI's read commands, the parity tests). Never a stable contract; the editor never uses it. The protocol-10 snapshot request stays as its v0 alias.",
+  "description": "Object /internal (spec 19.13 As interfaces): a scope snapshot of the daemon's model for a same-build client's read-only projection (the CLI's read commands, the parity tests). Never a stable contract; the editor never uses it.",
   "methods": {
     "get": {
       "description": "The scope's tables, the toolchain detection, the stripped program-bearing fields, the id index, seq and session generation (spec 19.13). Read-only: no lock, no task; loads the workspace in the client's environment when none is loaded.",

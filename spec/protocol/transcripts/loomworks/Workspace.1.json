@@ -42,8 +42,8 @@
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["changed"] } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0 } } },
-        { "send": { "kind": "build", "req_id": 2, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
-        { "expect": { "kind": "ok", "req_id": 2, "outcome": "accepted", "task_id": { "$bind": "task" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "interactive": false, "command": "lw build" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
         { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },
         { "expect": {
             "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "changed",

@@ -8,7 +8,7 @@
       "name": "hello is answered by welcome with the objects",
       "handshake": false,
       "steps": [
-        { "send": { "kind": "hello", "protocol": 11, "protocol_min": 10, "nonce": "0000000000000000000000000000000000000000000000000000000000000000", "lw_version": { "$var": "lw_version" }, "client": "cli" } },
+        { "send": { "kind": "hello", "protocol": 1, "protocol_min": 1, "nonce": "0000000000000000000000000000000000000000000000000000000000000000", "lw_version": { "$var": "lw_version" }, "client": "cli" } },
         { "expect": {
             "kind": "welcome",
             "header": {
@@ -42,7 +42,7 @@
             "kind": "ok", "req_id": 1,
             "result": {
               "binary": { "lw_version": { "$var": "lw_version" }, "impl": { "$type": "string" }, "dev": { "$type": "boolean" } },
-              "transport": { "min": 10, "max": 11 },
+              "transport": { "min": 1, "max": 1 },
               "session_generation": { "$var": "welcome.header.session_generation" },
               "root_methods": { "$contains": ["describe", "schema", "subscribe", "unsubscribe"] },
               "objects": { "$contains": [

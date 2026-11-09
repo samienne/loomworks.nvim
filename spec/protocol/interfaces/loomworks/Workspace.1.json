@@ -70,12 +70,12 @@
   },
   "signals": {
     "changed": {
-      "description": "A committed write of a state file (API.md §6): the model changed; a client fetches the state again. The interface form of the protocol-10 model_change broadcast.",
+      "description": "A committed write of a state file (API.md §6): the model changed; a client fetches the state again.",
       "args": {
         "type": "object",
         "required": ["revision"],
         "properties": {
-          "revision": { "description": "The model revision after the write (API.md §6): rises by one per committed write in a server session; welcome.seq is its value at connect. The protocol-10 model_change seq.", "type": "integer", "minimum": 1 },
+          "revision": { "description": "The model revision after the write (API.md §6): rises by one per committed write in a server session; welcome.seq is its value at connect.", "type": "integer", "minimum": 1 },
           "scopes": {
             "description": "The scopes that changed, when known (absent: any).",
             "type": "array",

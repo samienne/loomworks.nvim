@@ -40,6 +40,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   the SDK providers and the workspace engine moved to
   [samienne/loomworks](https://github.com/samienne/loomworks), which publishes
   `lw` from 0.2.0 on. This repository now holds only the Neovim plugin (#414).
+- The editor speaks daemon transport 1 only, the transport `lw` 0.2.0
+  restarted at. A pre-0.2.0 `lw` (transports 10 and 11) is incompatible: the
+  editor does not observe its daemon and names it a pre-0.2.0 `lw` in the
+  reason. Observation through the old broadcasts is gone. The plugin pins
+  `lw` 0.2.0-beta.6, the first release on transport 1 (#432).
 
 ### Upgrade notes
 - The plugin provisions its own `lw`: when neither `LOOMWORKS_LW` nor the

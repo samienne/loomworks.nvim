@@ -22,7 +22,7 @@ roadmap of further interfaces is not part of the contract.
 
 **Section numbers.** `§n` is a section of this document.
 `PROTOCOL.md §n` is a section of the protocol and `formats.md §n` a section
-of the [file formats](../formats.md).
+of the [file formats](https://github.com/samienne/loomworks/blob/main/spec/formats.md).
 
 **The CLI's behaviour.** Many operations below are the CLI's commands run by
 a server. Where this document says an operation prints, refuses or fails *as
@@ -200,9 +200,8 @@ not know. The `text` never contains
 terminal escape sequences: whether and how a role is shown (colour, `--color`,
 `NO_COLOR`) is up to the client.
 
-From transport 11 a `task_id` and a `sub_id` are opaque strings
-(`TaskId`); a connection of protocol 10 keeps its integer task ids
-(PROTOCOL.md Annex A).
+A `task_id` and a `sub_id` are opaque strings
+(`TaskId`).
 
 ### 4.3 Steps of a task
 
@@ -447,6 +446,12 @@ failure line with the `--target` hint, and `BUILD OK: <profile>`.
   on its stream, the command lines `lw build -v` prints as `line` frames of
   role `command`. It changes what is streamed, never what runs.
 
+The build gate refuses a unit whose state is `unknown` (an interrupted
+deletion: its directory is untrusted): the build or configure ends 1 before
+any step with `cannot build: <project>/<configuration>: build directory state
+unknown (interrupted delete or reset); run lw clean or lw reset first`. Clean,
+reset and delete stay allowed; they are the remedy.
+
 ### 8.3 `configure` and unit scopes
 
 **`configure { profile | units, reconfigure, interactive, command }`** —
@@ -461,7 +466,8 @@ reclaimed as for a build). It prints `configuring <scope>`, one `==>
 failing step ends the task with its failure line and the step's exit code,
 the later steps not run. It writes the configure record and the cache as a
 configure does, the write-back's `changed` before `done`. It
-cancels as a build (`configure stopped: <reason>`).
+cancels as a build (`configure stopped: <reason>`). The build gate's
+`unknown` refusal (§8.2) applies to a configure as well.
 
 **`units`** on `build`, `configure` and `clean` — a non-empty array, each
 item `{ id }` (a configuration unit's id, e.g. a `view.ProjectsIndex/1`
@@ -508,7 +514,7 @@ result lines as its error and as the task result's `not_run`. A failing step's e
 without `not_run`.
 
 A **core-performed wipe** (a module's `wipe_build_dir`) is the build-directory
-deletion ([ARCHITECTURE.md](../../ARCHITECTURE.md), "Deletion safety"): the
+deletion ([ARCHITECTURE.md](https://github.com/samienne/loomworks/blob/main/ARCHITECTURE.md), "Deletion safety"): the
 path is validated first (non-empty, within the workspace root and never the root itself, links not
 followed, no command interpreter) — a refused path ends the task with the
 `clean refused: unsafe build directory …` line; the clean's units sharing the

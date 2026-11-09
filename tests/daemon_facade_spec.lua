@@ -20,7 +20,7 @@ describe("the daemon-mode facade (§19.16 Public API, step 6b-alpha)", function(
     end
 
     local function fake_observer()
-        local conn = { transport = 11, closed = false }
+        local conn = { transport = 1, closed = false }
         function conn.call(_, object, iface, v, method, args, cb, env)
             sent[#sent + 1] = { object = object, iface = iface, v = v, method = method, args = args, cb = cb,
                 env = env }

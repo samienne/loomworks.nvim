@@ -36,22 +36,27 @@ local function managed_selection(v)
 end
 
 describe("editor_retire (pure decisions, §19.16)", function()
-    it("incompatible: no transport overlap, or no Root/1 on transport 11; file formats are not judged", function()
-        assert.is_nil(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10 }, {}))
+    it("incompatible: no transport overlap, or no Root/1 on an agreed transport; file formats are not judged", function()
+        assert.is_nil(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 1 }, {}))
         -- A daemon's schemas are its own business: never a reason.
-        assert.is_nil(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10,
+        assert.is_nil(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 1,
             schemas = { user = 999, cache = 0 } }, {}))
         local inc = assert(R.incompatibility({ protocol = 99, protocol_min = 99 }, {}))
         assert.truthy(inc.reasons[1]:find("does not overlap", 1, true))
-        -- Transport 11 with objects but no root: incompatible; a missing
-        -- feature interface alone is not.
-        local ch = { protocol = version.PROTOCOL, protocol_min = 10 }
-        inc = assert(R.incompatibility(ch, { transport = 11, welcome = { objects = {} } }))
+        -- A pre-0.2.0 daemon (transports 10..11) shares no version with 1.
+        inc = assert(R.incompatibility({ protocol = 11, protocol_min = 10 }, { welcome = { objects = {} } }))
+        assert.equals(1, #inc.reasons)
+        assert.truthy(inc.reasons[1]:find("transport 10..11 does not overlap ours 1..1", 1, true), inc.reasons[1])
+        assert.truthy(inc.reasons[1]:find("pre-0.2.0", 1, true), inc.reasons[1])
+        -- An agreed transport with objects but no root: incompatible; a
+        -- missing feature interface alone is not.
+        local ch = { protocol = version.PROTOCOL, protocol_min = 1 }
+        inc = assert(R.incompatibility(ch, { transport = 1, welcome = { objects = {} } }))
         assert.truthy(table.concat(inc.reasons, ";"):find("loomworks.Root/1", 1, true))
-        assert.is_nil(R.incompatibility(ch, { transport = 11, welcome = { objects = {
+        assert.is_nil(R.incompatibility(ch, { transport = 1, welcome = { objects = {
             { path = "/", interfaces = { { name = "loomworks.Root", versions = { 1 } } } } } } }))
-        -- Transport 10 (observed through broadcasts): no interfaces weighed.
-        assert.is_nil(R.incompatibility(ch, { transport = 10, welcome = {} }))
+        -- A welcome without objects: judged by the transport only.
+        assert.is_nil(R.incompatibility(ch, { transport = 1, welcome = {} }))
     end)
 
     it("selected: the managed lw, or a PATH/explicit lw with a compatible verdict and a version", function()
@@ -218,7 +223,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
     --- The fake's daemon is compatible and runs another code identity than
     --- the relay's: stale, observed while it is weighed for a retirement.
     local function observable(f)
-        f.daemons.old = { protocol = version.PROTOCOL, protocol_min = 10, lw_version = "0.0.1" }
+        f.daemons.old = { protocol = version.PROTOCOL, protocol_min = 1, lw_version = "0.0.1" }
         return f
     end
 

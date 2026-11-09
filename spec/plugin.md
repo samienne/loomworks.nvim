@@ -521,7 +521,8 @@ degraded ("End state").
   without `via` comes from an attached runtime of an older pin ([loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)
   "Compatibility"): the editor observes it **without the version check**
   (such a `welcome` carries no `welcome.daemon` to judge) and **never
-  retires it**.
+  retires it**. No transport is agreed with it, so the editor makes no
+  interface call on it: every feature is missing.
 - **Waiting notes.** A relay reports nothing while it waits (on an attached
   run, a starting daemon, a retiring daemon, or for any daemon at all). Until
   it forwards `welcome` the Runtime line shows one generic note for its form:
@@ -651,15 +652,15 @@ reconnect's discovery and first reads end it. An interface that appears later (t
 `objects_changed`) is subscribed to then, and a refused subscription is
 retried once, on the next `objects_changed` or reconnect. A missing interface
 is noted only when the editor gets nothing for it: a daemon whose
-`describe` reports `delivery: "subscription"` sends a transport-11
-connection only what it subscribed to, so a missing interface is noted; a
-daemon of transport 11 without it (an older daemon, or a describe that failed)
-still sends the protocol-10 broadcasts, and one that offers none of the
-observed views is observed through them without a note. Only a transport mismatch
+`describe` reports `delivery: "subscription"` sends a connection only what
+it subscribed to, so a missing interface is noted; a daemon whose describe
+states no `delivery` (or a describe that failed) and that offers none of the
+observed views gets no note. Only a transport mismatch
 (no overlap of the ranges, [loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md)) makes the daemon incompatible as a whole.
-Against a daemon of protocol 10 (no `welcome.objects`) the editor observes
-through the v0 broadcasts as below and notes interface features as "daemon
-too old".
+The editor speaks transport 1 only (`[protocol_min, protocol]` = `[1, 1]`,
+loomworks spec [PROTOCOL.md §6](https://github.com/samienne/loomworks/blob/main/spec/protocol/PROTOCOL.md)):
+the pre-0.2.0 daemons (transports up to 11) share no version with it and are
+incompatible; there is no observation through broadcasts.
 
 **Editor operations.** While connected to a compatible daemon, the editor runs these
 operations as **interface calls**, owning their tasks ([loomworks core §19.15](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "The editor as
@@ -1330,9 +1331,9 @@ where those run is "Editor operations" and "Availability" above.
   editor can still authenticate and retire it), when it does not offer
   `loomworks.Root/1`, or when its schemas are older than the editor's (it
   cannot read the editor's files). The `loomworks.Root/1` requirement applies
-  only to a transport (protocol) 11 connection whose welcome lists the
-  daemon's interfaces (`welcome.objects`); a protocol-10 daemon offers no
-  interfaces and is judged by its version and schemas only. A missing
+  to a connection with an agreed transport whose welcome lists the
+  daemon's interfaces (`welcome.objects`); without them the daemon is judged
+  by its transport only. A missing
   feature interface only degrades that feature ("Interface client") and is
   never a reason to retire. The
   editor sends `retire` (never `stop`) to an incompatible daemon, or to a
@@ -1423,7 +1424,7 @@ state").
   without this check ("Through the relay" above).
   - **Incompatible daemon.** A daemon with older schemas (and nothing else
     wrong) is observed; any other incompatible daemon (no transport overlap,
-    newer schemas, or, over transport 11, a missing root interface) the
+    newer schemas, or a missing root interface) the
     observer notes and does not observe, and does not connect to it again;
     through the relay it follows a successor with `--no-launch
     --skip-instance` ("Skipping an incompatible daemon" above). It never
@@ -1469,8 +1470,8 @@ state").
   happens in a relay (`RELAY_RETIRE_WAIT`, or `--no-launch`, with
   `--retiring` when the instance is known, ending in exit 16), and the one
   launch per retirement episode is an ordinary relay's.
-- **Model changes.** On `model_change` the editor applies its files' pending
-  changes at once (loomworks spec [PROTOCOL.md §12–§13](https://github.com/samienne/loomworks/blob/main/spec/protocol/PROTOCOL.md)).
+- **Model changes.** On `Workspace.changed` the editor applies its files'
+  pending changes at once (loomworks spec [PROTOCOL.md §12–§13](https://github.com/samienne/loomworks/blob/main/spec/protocol/PROTOCOL.md)).
 - **Tasks.** Each observed task becomes a **remote task** in the editor.
   - **Resolving.** Its `start` meta is resolved at the boundary. The profile
     key is looked up among the workspace's profiles. Each unit is matched to
@@ -1511,7 +1512,7 @@ state").
     when the connection drops (it is then shown as ended "the workspace
     daemon disconnected"). Either way its runtime state is cleared at once;
     the unit's state after the task is whatever the editor's files then say.
-    The daemon sends the `model_change` of the task's cache write-back
+    The daemon sends the `Workspace.changed` of the task's cache write-back
     (loomworks spec [PROTOCOL.md §12–§13](https://github.com/samienne/loomworks/blob/main/spec/protocol/PROTOCOL.md)) before its `done`, so the editor has already reloaded the
     outcome when the running state clears.
   - **UI.** A remote task is shown exactly as a local task of the same kind
@@ -1546,10 +1547,11 @@ protocol (or schema) and versions, the binary's path when known (the
 daemon's handle `exe`, [loomworks core §19.6](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md), whoever started it; an older daemon's handle may
 not name one), and the remedy (update
 the plugin, or pin or install a matching lw), e.g. `Runtime:   daemon
-(default) — lw v0.1.44 (protocol 7) does not match this plugin (protocol 6):
+(default) — lw v0.1.44 (protocol 11) does not match this plugin (protocol 1):
 update the plugin or the pin — running degraded`.
-From protocol 11 this whole-daemon note applies only to a transport mismatch;
-a missing interface version is the per-feature note of "Interface client".
+This whole-daemon note applies only to a transport mismatch (e.g. a
+pre-0.2.0 `lw`, whose transports up to 11 share no version with the editor's
+1); a missing interface version is the per-feature note of "Interface client".
 
 
 # Part II: UI
