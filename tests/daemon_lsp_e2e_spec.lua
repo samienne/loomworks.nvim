@@ -32,7 +32,7 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         cfg.projects.app.shell.compile_commands = "${build_dir}/compile_commands.json"
         local user = { _meta = { version = 2 }, active_profile = "dev",
             profiles = { dev = { configuration_set = "dev" } }, projects = { app = cfg.projects.app } }
-        local f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb"))
+        local f = assert(io.open(root .. "/.lw/user.json", "wb"))
         f:write(H.signed_user(root, user)); f:close()
         env = H.editor_env({ LOOMWORKS_RUNTIME = "daemon" })
         source._reset_changes()

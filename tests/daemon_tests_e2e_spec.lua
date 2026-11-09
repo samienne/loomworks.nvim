@@ -43,7 +43,7 @@ local function tests_workspace()
     local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
         projects = { app = cfg.projects.app }, active_profile = "dev" }
     local signed = H.signed_user(root, user)
-    f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb")); f:write(signed); f:close()
+    f = assert(io.open(root .. "/.lw/user.json", "wb")); f:write(signed); f:close()
     return root
 end
 

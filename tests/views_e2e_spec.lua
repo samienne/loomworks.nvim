@@ -25,7 +25,7 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
         -- project's active record.
         local user = { _meta = { version = 2 }, active_profile = "dev",
             profiles = { dev = { configuration_set = "dev" } } }
-        local f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb"))
+        local f = assert(io.open(root .. "/.lw/user.json", "wb"))
         f:write(H.signed_user(root, user)); f:close()
         -- Buffers are named under the resolved root (an 8.3 short temp path
         -- on a runner: the daemon's root is the realpath'd long one, and a
