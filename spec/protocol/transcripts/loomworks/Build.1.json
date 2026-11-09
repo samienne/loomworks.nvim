@@ -53,20 +53,6 @@
       ]
     },
     {
-      "name": "the protocol-10 build alias keeps its v0 shape at protocol 10: integer task ids, flat outcome",
-      "description": "An older client negotiates 10 and is served unchanged (PROTOCOL.md Annex A); its replies are checked against transport.json v0.replies.",
-      "fixture": "shell",
-      "hello": { "protocol": 10, "protocol_min": 10 },
-      "allow": [ { "kind": "model_change" }, { "kind": "task", "phase": "line" }, { "kind": "task", "phase": "output" }, { "kind": "task", "phase": "progress" } ],
-      "steps": [
-        { "expect_none": { "kind": "signal" }, "within_ms": 100 },
-        { "send": { "kind": "build", "req_id": 1, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
-        { "expect": { "kind": "ok", "req_id": 1, "outcome": "accepted", "task_id": { "$bind": "task", "$type": "integer" }, "profile_key": "dev" } },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "start", "meta": { "kind": "build", "profile": "dev", "method": { "$absent": true } } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0, "result": { "$absent": true } }, "timeout_ms": 120000 }
-      ]
-    },
-    {
       "name": "an id of an earlier session generation is a stale reference: refused, never another entity",
       "description": "Ids carry the session generation (PROTOCOL.md §12.1). 1.1 stands for an id the first entity got in an earlier session (generation 1): before ids carried the generation, it would have named whatever entity this session numbered 1.",
       "fixture": "shell",

@@ -2,7 +2,7 @@
   "interface": "loomworks.Tests",
   "version": 1,
   "status": "draft",
-  "description": "Object /tests (API.md §10): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Step 5m (API.md §10.2) adds the editor's discover (part B1), run_cases, prepare_debug (task-streamed), collect and result (part B2) with their handlers; its results signal, which needs no handler, is declared here from part 0.",
+  "description": "Object /tests (API.md §10): the batch test run of lw test as a task-streamed method. Step 5m (API.md §10.2) adds the editor's discover (part B1), run_cases, prepare_debug (task-streamed), collect and result (part B2) with their handlers; its results signal, which needs no handler, is declared here from part 0.",
   "methods": {
     "run": {
       "description": "Build the profile (unless no_build), then run its registered tests (lw test [<profile>] [--no-build] [--junit <file>] [-- <args>]).",
@@ -242,7 +242,7 @@
       "mutates": true
     },
     "prepare_debug": {
-      "description": "Prepare debugging one test node (API.md §10.2; spec 19.16 Tests): the locks and build of a run_cases of that node (released when the task ends), then the debug spec of the test step run_cases would have run (its program, arguments, filter and results option, working directory and environment) with the debug languages and adapters resolved, and a prepared token for collect. The client runs the program under its debugger.",
+      "description": "Prepare debugging one test node (API.md §10.2; loomworks.nvim spec/plugin.md 19.16 Tests): the locks and build of a run_cases of that node (released when the task ends), then the debug spec of the test step run_cases would have run (its program, arguments, filter and results option, working directory and environment) with the debug languages and adapters resolved, and a prepared token for collect. The client runs the program under its debugger.",
       "params": {
         "type": "object",
         "required": [

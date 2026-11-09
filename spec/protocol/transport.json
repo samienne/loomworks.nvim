@@ -1,7 +1,7 @@
 {
-  "transport": 11,
-  "protocol_min": 10,
-  "description": "The transport layer (PROTOCOL.md §4-§11): the handshake, the frozen control subset and, from protocol 11, the message envelope. Only this layer carries the protocol number. Fields are only ever added; a receiver ignores a field it does not know.",
+  "transport": 1,
+  "protocol_min": 1,
+  "description": "The transport layer (PROTOCOL.md §4-§11): the handshake, the frozen control subset and the message envelope. Only this layer carries the protocol number. Fields are only ever added; a receiver ignores a field it does not know.",
   "error_codes": {
     "unknown_object": { "description": "No object at that path." },
     "unknown_interface": { "description": "The object does not implement that interface." },
@@ -13,6 +13,7 @@
     "stopping": { "description": "The daemon is stopping." },
     "retiring": { "description": "The daemon is retiring and accepts no new operation from this client." },
     "forbidden": { "description": "Not allowed for this connection (e.g. cancelling another connection's task)." },
+    "no_transport": { "description": "The connection agreed on no transport version (no overlap of the two ranges); only the frozen control subset is served. data.protocol and data.protocol_min give the daemon's range." },
     "internal": { "description": "The call failed inside the daemon. A client treats an unknown code as internal." }
   },
   "frames": {
@@ -22,7 +23,7 @@
       "properties": {
         "kind": { "const": "hello" },
         "protocol": { "type": "integer" },
-        "protocol_min": { "description": "From protocol 11; absent: equal to protocol.", "type": "integer" },
+        "protocol_min": { "description": "Absent: equal to protocol.", "type": "integer" },
         "lw_version": { "type": "string" },
         "schemas": { "$ref": "#/$defs/FileSchemas" },
         "client": { "enum": ["cli", "editor"] },
@@ -36,7 +37,7 @@
       "properties": {
         "kind": { "const": "challenge" },
         "protocol": { "type": "integer" },
-        "protocol_min": { "description": "From protocol 11; absent: equal to protocol.", "type": "integer" },
+        "protocol_min": { "description": "Absent: equal to protocol.", "type": "integer" },
         "lw_version": { "type": "string" },
         "schemas": { "$ref": "#/$defs/FileSchemas" },
         "session_generation": { "type": "integer" },
@@ -52,12 +53,10 @@
         "client_proof": { "type": "string" }
       }
     },
-    "ping": { "description": "Control request (PROTOCOL.md §7); the reply is v0.replies.ping.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ping" }, "req_id": { "type": "integer" } } },
-    "status": { "description": "Control request (PROTOCOL.md §7); the reply is v0.replies.status.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "status" }, "req_id": { "type": "integer" } } },
-    "stop": { "description": "Control request (PROTOCOL.md §7): the server exits after the reply (v0.replies.stop).", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "stop" }, "req_id": { "type": "integer" } } },
-    "retire": { "description": "Control request (PROTOCOL.md §7): the server accepts no new operation and exits once idle; the reply is v0.replies.retire.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "retire" }, "req_id": { "type": "integer" } } },
-    "retiring": { "description": "Transport 10 only (PROTOCOL.md Annex A): sent to a transport-10 observer when the server retires. From transport 11 the root's retiring signal (PROTOCOL.md §10) replaces it.", "type": "object", "required": ["kind"], "properties": { "kind": { "const": "retiring" } } },
-    "model_change": { "description": "Transport 10 only (PROTOCOL.md Annex A): a committed write of a state file. Never sent on a connection of transport 11; Workspace/1 changed replaces it.", "type": "object", "required": ["kind", "seq", "session_generation"], "properties": { "kind": { "const": "model_change" }, "seq": { "type": "integer", "minimum": 1 }, "session_generation": { "type": "integer" } } },
+    "ping": { "description": "Control request (PROTOCOL.md §7); the reply is control.replies.ping.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ping" }, "req_id": { "type": "integer" } } },
+    "status": { "description": "Control request (PROTOCOL.md §7); the reply is control.replies.status.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "status" }, "req_id": { "type": "integer" } } },
+    "stop": { "description": "Control request (PROTOCOL.md §7): the server exits after the reply (control.replies.stop).", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "stop" }, "req_id": { "type": "integer" } } },
+    "retire": { "description": "Control request (PROTOCOL.md §7): the server accepts no new operation and exits once idle; the reply is control.replies.retire.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "retire" }, "req_id": { "type": "integer" } } },
     "welcome": {
       "type": "object",
       "required": ["kind", "header"],
@@ -108,7 +107,7 @@
       }
     },
     "error": {
-      "description": "The reply to an interface call that could not be processed. A v0 request's error reply carries error as a string instead.",
+      "description": "The reply to an interface call that could not be processed.",
       "type": "object",
       "required": ["kind", "req_id", "error"],
       "properties": {
@@ -145,7 +144,7 @@
       "required": ["kind", "task_id", "phase"],
       "properties": {
         "kind": { "const": "task" },
-        "task_id": { "description": "From transport 11 the opaque task id (loomworks.Common/1 TaskId, a string); a protocol-10 connection keeps its integer.", "type": ["string", "integer"] },
+        "task_id": { "description": "The opaque task id (loomworks.Common/1 TaskId, a string).", "type": "string" },
         "phase": { "enum": ["start", "line", "output", "progress", "done"] },
         "meta": { "description": "start: the task's meta (loomworks.Common/1 TaskMeta); for an interface method's task it names the object, iface, v and method.", "type": "object" },
         "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (PROTOCOL.md §14.1).", "type": "object" },
@@ -159,8 +158,8 @@
       }
     }
   },
-  "v0": {
-    "description": "The replies keyed by request kind: the frozen control requests' (PROTOCOL.md §7, every transport) and the protocol-10 (v0) requests' (PROTOCOL.md Annex A), the shape each request's ok reply keeps, so the v0 aliases stay unchanged for older clients. Minimal: the fields clients read. A v0 error reply carries error as a string. task_id is an integer on a connection of protocol 10 and the opaque string from transport 11 (the conformance engine checks which).",
+  "control": {
+    "description": "The replies of the frozen control requests (PROTOCOL.md §7), keyed by request kind.",
     "replies": {
       "ping": { "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ok" }, "req_id": { "type": "integer" } } },
       "stop": { "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ok" }, "req_id": { "type": "integer" } } },
@@ -185,56 +184,7 @@
           "busy_clients": { "description": "Connections besides the asking one that own a running task or have a request in flight.", "type": "integer" },
           "idle_timeout": { "description": "Seconds.", "type": "integer" },
           "idle_deadline": { "description": "Wall-clock seconds; absent when something besides the asker keeps the server up.", "type": "integer" },
-          "tasks": { "type": "array", "items": { "type": "object", "required": ["task_id"], "properties": { "task_id": { "type": ["integer", "string"] } } } }
-        }
-      },
-      "build": { "$ref": "#/v0/$defs/Operation" },
-      "clean": { "$ref": "#/v0/$defs/Operation" },
-      "reset": { "$ref": "#/v0/$defs/Operation" },
-      "test": { "$ref": "#/v0/$defs/Operation" },
-      "prepare_run": { "$ref": "#/v0/$defs/Operation" },
-      "snapshot": {
-        "type": "object",
-        "required": ["kind", "req_id", "outcome"],
-        "properties": {
-          "kind": { "const": "ok" },
-          "req_id": { "type": "integer" },
-          "outcome": { "type": "string" },
-          "scope": { "type": "string" },
-          "index": { "type": "object" }
-        }
-      },
-      "query": {
-        "type": "object",
-        "required": ["kind", "req_id", "outcome"],
-        "properties": {
-          "kind": { "const": "ok" },
-          "req_id": { "type": "integer" },
-          "outcome": { "type": "string" },
-          "result": { "type": "object" }
-        }
-      }
-    },
-    "$defs": {
-      "Operation": {
-        "description": "The operations' outcome union, flat on the reply (API.md §4.1).",
-        "type": "object",
-        "required": ["kind", "req_id", "outcome"],
-        "properties": {
-          "kind": { "const": "ok" },
-          "req_id": { "type": "integer" },
-          "outcome": { "enum": ["accepted", "refused", "declined", "confirm"] },
-          "task_id": { "type": ["integer", "string"] },
-          "profile_key": { "type": "string" },
-          "pid": { "type": "integer" },
-          "message": { "type": "string" },
-          "exit_code": { "type": "integer" },
-          "stream": { "type": "string" },
-          "reason": { "type": "string" },
-          "lines": { "type": "array", "items": { "type": "string" } },
-          "plan": { "type": "string" },
-          "notes": { "type": "array", "items": { "type": "string" } },
-          "note_roles": { "description": "The role of each note, by index (loomworks.Common/1 NoteRoles); absent = plain.", "type": "array", "items": { "type": "string" } }
+          "tasks": { "type": "array", "items": { "type": "object", "required": ["task_id"], "properties": { "task_id": { "type": "string" } } } }
         }
       }
     }

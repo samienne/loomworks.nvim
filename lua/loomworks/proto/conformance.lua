@@ -67,13 +67,11 @@
 --- subscribed signal's `seq` is the previous one of its object on this
 --- connection + 1 (from the baseline `subscribe` returned); a signal of a
 --- subscription the connection dropped (`unsubscribe` answered) fails. The reply to a
---- protocol-10 request is validated against its v0 shape where
---- transport.json has one (`v0.replies.<request kind>`; an `error` reply's
---- `error` is a string); other protocol-10 frames (`model_change`, ...) are
---- only matched. Every task frame follows its task's order: `start` first,
---- then `line` / `output` / `progress`, then `done`, nothing after it; its
---- `task_id` is an integer on a connection of protocol 10 and the opaque
---- string from transport 11. The task frames of a task an interface call
+--- control request is validated against its shape (transport.json
+--- `control.replies.<request kind>`; an `error` reply's `error` is the
+--- structured object). Every task frame follows its task's order: `start`
+--- first, then `line` / `output` / `progress`, then `done`, nothing after it;
+--- its `task_id` is the opaque string. The task frames of a task an interface call
 --- started (its `ok` result `accepted` with a `task_id`, for a method the
 --- schema declares task-streamed) are also typed: the `start` meta must name
 --- the method (`object`, `iface`, `v`, `method`) and match the method's task
@@ -375,7 +373,7 @@ end
 --- @field subs table<integer, { object: string, iface: string, v: integer }>
 --- @field last_seq table<string, integer> per object: the last seq received
 --- @field dropped table<any, true> sub_ids the connection unsubscribed
---- @field v0 table<integer, string> req_id -> the kind of a protocol-10 request sent
+--- @field requests table<integer, string> req_id -> the kind of a request sent that is not a call
 --- @field task_state table<any, "started"|"done"> per task_id: where its frames are
 --- @field negotiated integer|nil the transport the handshake agreed on
 --- @field queue table[] received frames not consumed
@@ -390,7 +388,7 @@ Session.__index = Session
 function M.session(driver, opts)
     opts = opts or {}
     local self = setmetatable({ driver = driver, set = opts.set or documents.set(), calls = {}, subs = {}, tasks = {},
-        last_seq = {}, dropped = {}, v0 = {}, task_state = {}, queue = {}, vars = opts.vars or {}, received = 0 },
+        last_seq = {}, dropped = {}, requests = {}, task_state = {}, queue = {}, vars = opts.vars or {}, received = 0 },
         Session)
     local transport = self.set:load("transport.json")
     self.transport = transport
@@ -434,8 +432,8 @@ end
 function Session:check_received(frame)
     if type(frame) ~= "table" or type(frame.kind) ~= "string" then return false, "a frame without a kind" end
     local call = (frame.kind == "ok" or frame.kind == "error") and self.calls[frame.req_id] or nil
-    -- A v0 reply (no tracked interface call): its v0 shape, where one exists.
-    if (frame.kind == "ok" or frame.kind == "error") and not call then return self:check_v0_reply(frame) end
+    -- The reply to a request that is not a call (a control request): its shape.
+    if (frame.kind == "ok" or frame.kind == "error") and not call then return self:check_control_reply(frame) end
     local ok, err = self:check_transport(frame)
     if not ok then return false, frame.kind .. " frame: " .. tostring(err) end
     if call then
@@ -530,17 +528,13 @@ end
 --- Validate a task frame of an interface method's task (see the header):
 --- the start meta names the method and matches its task meta schema; the
 --- `done` carries a `result` matching its task result schema. Tasks no
---- interface call started (protocol-10 requests) are only matched.
+--- interface call started are only matched.
 --- @param frame table
 --- @return boolean ok, string|nil err
 function Session:check_task(frame)
     local id = frame.task_id
-    if self.negotiated ~= nil then
-        local want = self.negotiated >= 11 and "string" or "integer"
-        if not json_type_ok(want, id) then
-            return false, string.format("task_id %s is not a%s %s at transport %d", encode(id),
-                want == "integer" and "n" or "", want, self.negotiated)
-        end
+    if self.negotiated ~= nil and not json_type_ok("string", id) then
+        return false, string.format("task_id %s is not a string", encode(id))
     end
     local st = self.task_state[id]
     if st == "done" then return false, "task " .. tostring(id) .. ": a " .. tostring(frame.phase) .. " frame after its done" end
@@ -581,32 +575,26 @@ function Session:check_task(frame)
     return true
 end
 
---- Validate the reply to a protocol-10 request against its v0 shape
---- (transport.json `v0.replies.<kind>`; see the header). A reply to no
+--- Validate the reply to a control request against its shape
+--- (transport.json `control.replies.<kind>`; see the header). A reply to no
 --- request this session sent is only matched.
 --- @param frame table
 --- @return boolean ok, string|nil err
-function Session:check_v0_reply(frame)
-    local kind = self.v0[frame.req_id]
+function Session:check_control_reply(frame)
+    local kind = self.requests[frame.req_id]
     if kind == nil then return true end
-    self.v0[frame.req_id] = nil
+    self.requests[frame.req_id] = nil
     if frame.kind == "error" then
-        if type(frame.error) ~= "string" then
-            return false, "the v0 error reply to " .. kind .. " carries a non-string error " .. encode(frame.error)
+        local e = frame.error
+        if type(e) ~= "table" or type(e.code) ~= "string" then
+            return false, "the error reply to " .. kind .. " carries no structured error " .. encode(e)
         end
         return true
     end
-    local replies = self.transport and self.transport.v0 and self.transport.v0.replies or {}
+    local replies = self.transport and self.transport.control and self.transport.control.replies or {}
     if replies[kind] == nil then return true end
-    local ok, err = self.set:validate("transport.json", "/v0/replies/" .. kind, frame)
-    if not ok then return false, "v0 " .. kind .. " reply: " .. tostring(err) end
-    if frame.task_id ~= nil and self.negotiated ~= nil then
-        local want = self.negotiated >= 11 and "string" or "integer"
-        if not json_type_ok(want, frame.task_id) then
-            return false, string.format("v0 %s reply: task_id %s is not a%s %s at transport %d", kind,
-                encode(frame.task_id), want == "integer" and "n" or "", want, self.negotiated)
-        end
-    end
+    local ok, err = self.set:validate("transport.json", "/control/replies/" .. kind, frame)
+    if not ok then return false, kind .. " reply: " .. tostring(err) end
     return true
 end
 
@@ -637,7 +625,7 @@ function Session:send(frame, malformed)
         -- The transport the daemon agrees on: the highest both speak.
         self.negotiated = math.min(frame.protocol, self.transport.transport or frame.protocol)
     elseif type(frame.req_id) == "number" and type(frame.kind) == "string" then
-        self.v0[frame.req_id] = frame.kind
+        self.requests[frame.req_id] = frame.kind
     end
     local ok, err = self.driver.send(frame)
     if ok == false or (ok == nil and err) then error({ conformance = "send failed: " .. tostring(err) }) end
@@ -717,7 +705,7 @@ end
 --- @param vars table
 --- @return table
 function M.hello(case, vars)
-    local h = { kind = "hello", protocol = 11, protocol_min = 10, nonce = string.rep("0", 64),
+    local h = { kind = "hello", protocol = 1, protocol_min = 1, nonce = string.rep("0", 64),
         lw_version = vars.lw_version, client = "cli" }
     for k, v in pairs(type(case.hello) == "table" and case.hello or {}) do h[k] = v end
     return h

@@ -2,7 +2,7 @@
   "interface": "loomworks.Launch",
   "version": 1,
   "status": "draft",
-  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. Step 5n part B3 (API.md §9.5) adds device_log, the log stream of a program Devices/1.launch launched, its records sent as the log signal. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler. Step 6b-alpha (API.md §9.6) adds targets, a read of the profile's launchable targets.",
+  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. Step 5n part B3 (API.md §9.5) adds device_log, the log stream of a program Devices/1.launch launched, its records sent as the log signal. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler. Step 6b-alpha (API.md §9.6) adds targets, a read of the profile's launchable targets.",
   "methods": {
     "prepare_run": {
       "description": "Build (unless no_build), deploy and resolve the launch of the profile's target or launch configuration; the task result carries the launch spec, or device for a program that runs on a device in the client.",

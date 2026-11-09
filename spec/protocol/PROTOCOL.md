@@ -189,12 +189,31 @@ breaking transport change.
 `hello` and `challenge` each state a range `[protocol_min, protocol]`
 (`protocol_min` absent: equal to `protocol`). Client and server agree on the
 highest transport version in the overlap of the two ranges; with no overlap
-the server is incompatible with that client. Interfaces are not negotiated in
+the server is incompatible with that client: it still serves that client the
+frozen control subset (§7), and refuses every `call` with `no_transport`
+(§11.2), so it also serves no subscription. Interfaces are not negotiated in
 the handshake: the client chooses a version per interface and stamps it on
 each call (§9.4). There are no capability flags.
 
-The current transport is 11; a server of transport 11 also accepts clients of
-10 through the aliases of Annex A, until its `protocol_min` is raised to 11.
+The current transport is 1, and `protocol_min` is 1. Pre-0.2.0
+pre-releases used transport numbers up to 11 and are incompatible: their
+range shares no version with 1, so a client treats such a server as an
+incompatible daemon (and a server such a client as an incompatible client).
+
+### 6.1 Versioning policy
+
+Three kinds of version move independently:
+
+- **The transport** (`protocol`) is bumped only for a wire-level change: the
+  framing, authentication, the handshake, the envelope or the root object.
+- **An interface** (§9): a change of an interface's meaning — anything
+  beyond the additive changes of §17.1 — gets a new interface version,
+  served alongside the old one for a deprecation period (§17.3).
+- **A bug fix** never changes a version: neither the transport nor an
+  interface.
+
+On-disk schema versions (the working copy's and the cache's) are independent
+of both: neither the transport nor an interface version moves with them.
 
 ## 7. The frozen control subset
 
@@ -204,7 +223,7 @@ any two versions can always authenticate, inspect and retire each other.
 Fields of these messages are only ever added, never removed, renamed or
 retyped, and a receiver ignores a field it does not know.
 
-From transport 11 the frozen subset also covers the `retiring` signal, the
+The frozen subset also covers the `retiring` signal, the
 envelope kinds and their routing fields (`kind`, `req_id`, `object`, `iface`,
 `v`, `method`, `sub_id`, `task_id`), the transport error codes (§11; new codes
 may be added, a client treats an unknown one as `internal`) and the root
@@ -216,7 +235,11 @@ server's state; `stop` asks the server to exit; `retire` asks it to accept no
 new operations, finish the running ones and exit once idle. The meaning of
 `status` fields, and of "busy" and "idle", is defined by the server's
 specification, not by the transport. Each control request is `{ kind, req_id }`;
-`transport.json` gives their frames and, under `v0.replies`, their replies.
+`transport.json` gives their frames and, under `control.replies`, their
+replies. A request the server cannot serve (an unknown `kind`, a failure
+inside the server) is answered with the envelope's `error` frame
+`{ kind, req_id, error }` (§8), whose `error` is the object
+`{ code, message, data? }` of §11, never a bare string.
 
 **`welcome`.** `welcome { header, seq, clients, busy, retiring, objects? }`:
 
@@ -228,7 +251,7 @@ specification, not by the transport. Each control request is `{ kind, req_id }`;
   `transport.json` (§12.2 says what a client does when `session_generation`
   changes).
 - `retiring` — true when the server is retiring (§10.2).
-- `objects` — from transport 11: the `describe().objects` list (§10) without
+- `objects` — the `describe().objects` list (§10) without
   digests, so a client with nothing else to ask needs no extra round trip.
 
 An intermediary (§3) may add optional fields to `welcome` (it changes no
@@ -324,10 +347,8 @@ fields and new methods, which a client calls only after seeing them in
   object its `path`, `owner` and `interfaces`, each `{ name, versions,
   deprecated?, internal?, same_build?, schema_digest }`, where
   `schema_digest` maps a version to the sha256 of its schema document — its
-  `root_methods`, and `delivery?`: `"subscription"` when the server sends a
-  transport-11 connection task frames and changes only through its
-  subscriptions; absent means it also sends the transport-10 broadcasts of
-  Annex A.
+  `root_methods`, and `delivery?`: `"subscription"` — the server sends a
+  connection task frames and changes only through its subscriptions.
 - `schema { iface, v }` — that interface version's schema document.
 - `subscribe { object, iface, v, signals?, args? }` → `{ sub_id, seq,
   initial? }` (§13).
@@ -375,6 +396,7 @@ not-found or refused result, never a transport error.
 | `stopping` | The server is stopping. |
 | `retiring` | The server is retiring and accepts no new operation from this client. |
 | `forbidden` | Not allowed for this connection (e.g. cancelling another connection's task, §14.6). |
+| `no_transport` | The connection agreed on no transport (§6): a `call` (and so a subscription) is refused; `data.protocol` and `data.protocol_min` give the server's range. |
 | `internal` | The call failed inside the server. |
 
 New codes may be added (§7); a client treats an unknown code as `internal`.
@@ -719,40 +741,13 @@ pattern never matches an array nor an array pattern an object.
   against the transport's and the method's codes;
 - a signal against its schema, with a gapless `seq` per object, none for a
   subscription after its `unsubscribe`;
-- every task's frames in order (`start` first, nothing after `done`; integer
-  ids at transport 10, strings from 11), and the task frames of a
-  task-streamed call (the start meta naming the method; `done.result` against
-  its task result schema);
-- a transport-10 reply against its v0 shape (`transport.json` `v0.replies`),
-  so the v0 aliases provably stay unchanged; other transport-10 frames are
-  only matched.
+- every task's frames in order (`start` first, nothing after `done`; string
+  ids), and the task frames of a task-streamed call (the start meta naming
+  the method; `done.result` against its task result schema);
+- a control request's reply against its shape (`transport.json`
+  `control.replies`).
 
-## Annex A (informative): transport 10 and the v0 aliases
-
-Transport 10 predates the envelope. A server of transport 11 accepts clients
-of 10 and serves them as follows until its `protocol_min` is raised to 11,
-after which this annex no longer applies.
-
-- **Request kinds.** The transport-10 request kinds (`build`, `test`,
-  `prepare_run`, `clean`, `reset`, `snapshot`, `query`) are served unchanged
-  as **v0 aliases** of the corresponding interface methods, with the same
-  effect as calling them. A v0 request gets a v0 reply, whose shape
-  `transport.json` `v0.replies` keeps (the operations' outcome flat on the
-  reply); a v0 `error` reply carries `error` as a string. Only an interface
-  call gets the structured `error` object (§8).
-- **Broadcasts.** A transport-10 connection receives, unconditionally and
-  without subscribing, every task's frames and the `model_change { seq,
-  session_generation }` broadcast. That broadcast's `seq` advances by one per
-  broadcast per server session; a broadcast at or below the last `seq` of the
-  same session generation is ignored, a new generation is always applied.
-  That `seq` is the model revision of API.md §6 (`changed.revision`).
-- **Task ids.** A transport-10 connection keeps integer task ids in its task
-  frames, its accepted replies and `status.tasks`.
-- **Run results.** On a transport-10 connection a `prepare_run` task's
-  `done` also carries the run's `launch` and `device` at the top level; a
-  connection of transport 11 reads them from `done.result`.
-
-## Annex B (reserved): providers
+## Annex A (reserved): providers
 
 A server may host extensions **out of process**: a provider is spawned by
 the server (`<provider> --stdio`) or connects with `hello.role = "provider"`,
