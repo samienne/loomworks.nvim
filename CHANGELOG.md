@@ -83,7 +83,7 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   depends on, and stops before any build when no target resolves (a named
   target that matches nothing gets one configure re-run first). The editor's
   run and debug launches already built only the launch target and are
-  unchanged (#PR).
+  unchanged (#434).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
