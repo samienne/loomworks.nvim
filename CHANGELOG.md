@@ -78,6 +78,12 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   section now shows a build directory relative to the workspace root. The
   plugin pins `lw` 0.2.0-beta.7, the first release with the `.lw/` layout
   (#433).
+- The plugin pins `lw` 0.2.0-beta.8, whose `lw run` resolves the launch
+  target before building, builds only that target and the projects it
+  depends on, and stops before any build when no target resolves (a named
+  target that matches nothing gets one configure re-run first). The editor's
+  run and debug launches already built only the launch target and are
+  unchanged (#PR).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
