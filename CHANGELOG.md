@@ -125,7 +125,7 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   a Lua source tree (`LOOMWORKS_LUA`). To run a development `lw`, build it in
   a loomworks checkout (`make install`) and set `binary.path` to that
   executable. A `binary.source` still in the setup is ignored with a warning
-  (#PRNUM).
+  (#435).
 
 ## 0.1.49 - 2026-10-19
 
