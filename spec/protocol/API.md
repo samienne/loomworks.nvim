@@ -631,15 +631,26 @@ foreign kit. An accepted request runs as a task
 (`meta.kind = run`) that does, and prints, what the CLI's run does before its
 `running …` line, in the same order:
 
-1. unless `no_build`, the profile's build: the build-directory locks taken as
-   for a build, the build steps of §8.2 (every gate and line), then the locks
-   **released** — they are held for the build only;
-2. the launch target resolved against the built tree (the named target, else the default target, else the
-   sole launchable one; the same messages for none, ambiguous and unset) and
-   its validity gate;
-3. unless `no_build`, the deploy steps, after the locks were
+1. unless `no_build`, the configure steps of §8.2 (every gate and line) of
+   the profile's units that need one, under the build-directory locks taken
+   as for a build — nothing is built yet;
+2. the launch target resolved against the configured tree (the named target,
+   else the default target, else the sole launchable one; the same messages
+   for none, ambiguous and unset) and its validity gate — a refusal here ends
+   the task **before any build step**. A named target that matches nothing
+   first has the configure step of its project (the one it is scoped to,
+   else every unit of the profile, less the units step 1 configured) re-run
+   once — the module's normal configure step, no wipe (`Build/1.configure`
+   without `reconfigure`) — and is resolved again (headless §16.17 "Order");
+3. unless `no_build`, the build of the resolved target: the build steps of
+   §8.2 restricted to the target's own project, built for that one target
+   where its module selects targets, and to the projects it depends on that
+   are in the profile (a command launch configuration: the whole profile),
+   then the locks **released** — they are held for the configure and the
+   build only;
+4. unless `no_build`, the deploy steps, after the locks were
    released;
-4. the launch spec resolved — variables and `${VAR}` expanded in the
+5. the launch spec resolved — variables and `${VAR}` expanded in the
    client's environment (§5).
 
 `done` then carries `exit_code` 0 and `launch` (§4.4) — or a nonzero exit
@@ -682,7 +693,8 @@ not exist yet.
 
 `prepare_run` and `prepare_debug` take an optional `build_scope`: `profile`
 (the default: steps 1 and 3 of §9.1, as `lw run` builds) or `target` — in
-place of steps 1 and 3, the launch's own phases: the
+place of steps 1 and 3 (no configure step, so a named target that matches
+nothing is refused without the retry of step 2), the launch's own phases: the
 launch's dependencies (explicit `depends_on` and deploy-source projects, a
 deploy source in the configuration it names), the pre-build deploy steps,
 the launch target's own unit, the post-build deploy steps. Each build in it
