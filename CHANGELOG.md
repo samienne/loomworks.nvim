@@ -84,6 +84,9 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   target that matches nothing gets one configure re-run first). The editor's
   run and debug launches already built only the launch target and are
   unchanged (#434).
+- The plugin pins `lw` 0.2.0-beta.9, which adds `lw --no-input run
+  <profile>`: run that profile's default target without a prompt. The
+  editor's launches are unchanged (#436).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
