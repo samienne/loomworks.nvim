@@ -587,7 +587,7 @@ function Observer:_spawn(want, probed)
     local token = { form = want.form, answer = want.answer, instance = want.instance }
     local connect = self.opts.relay or require("loomworks.daemon.client.relay").connect
     local r, err = connect({
-        argv = { bin }, root = self.root, env = sel.env, unset = binsel.child_unset(sel),
+        argv = { bin }, root = self.root, unset = binsel.child_unset(sel),
         form = want.form, instance = want.instance,
         client = "editor", role = "observer", kill_ms = self.opts.kill_ms,
         on_message = function(msg)

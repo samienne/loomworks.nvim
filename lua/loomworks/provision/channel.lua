@@ -71,13 +71,12 @@ M.CHANNELS = { stable = true, unstable = true }
 --- @field again boolean|nil the release was rejected before (not weighed again)
 
 --- Whether `binary.channel` applies to the setting at all (spec: a valid
---- channel, downloads not off, no development `binary.source`). The
+--- channel, downloads not off). The
 --- selection reaching the managed source is the caller's to check.
 --- @param setting loomworks.provision.BinarySetting|nil
 --- @return boolean
 function M.applies(setting)
     return type(setting) == "table" and M.CHANNELS[setting.channel] == true and setting.download ~= false
-        and not setting.source
 end
 
 --- The record's path.
@@ -395,8 +394,7 @@ function M.describe(setting, opts)
     if type(setting) ~= "table" or setting.channel == nil then return nil end
     if not M.applies(setting) then
         local why = not M.CHANNELS[setting.channel] and "not a channel"
-            or setting.download == false and "downloads are off (binary.download = false)"
-            or "binary.source is set (development)"
+            or "downloads are off (binary.download = false)"
         return { "binary.channel = " .. tostring(setting.channel) .. ": no effect (" .. why .. ")" }
     end
     local rec = M.load(opts)

@@ -95,11 +95,6 @@ end
 function M.selected(sel, opts)
     opts = opts or {}
     if type(sel) ~= "table" then return { ok = false, why = "no host binary selected" } end
-    if sel.env and sel.env.LOOMWORKS_LUA then
-        -- binary.source (development): the binary runs another Lua tree, so
-        -- its version is not the one any check vouched for.
-        return { ok = false, path = sel.path, why = "binary.source is set (development)" }
-    end
     if type(sel.download) == "table" then
         return { ok = type(sel.download.version) == "string", version = sel.download.version,
             why = type(sel.download.version) ~= "string" and "the plugin-managed lw has no version" or nil }

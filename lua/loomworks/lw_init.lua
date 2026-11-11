@@ -56,7 +56,6 @@ local function spawn(run, root, bin, sel, args, cb)
     end
     local jopts = {
         cwd = root,
-        env = sel.env,
         on_exit = function(_, code)
             vim.schedule(function()
                 if code ~= 0 then return cb(false, "lw init exited with " .. tostring(code)) end

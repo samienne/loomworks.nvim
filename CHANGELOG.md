@@ -121,6 +121,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   `get_active_tasks`, `get_build_dir_locks_info`, `has_pending_deletions`,
   `has_running_tasks`, `lsp_ready`, `nuke_cache`, `record_task_result`,
   `reload_config` and `rescan_tools` (#414).
+- The setup option `binary.source`: the plugin no longer runs any `lw` with
+  a Lua source tree (`LOOMWORKS_LUA`). To run a development `lw`, build it in
+  a loomworks checkout (`make install`) and set `binary.path` to that
+  executable. A `binary.source` still in the setup is ignored with a warning
+  (#PRNUM).
 
 ## 0.1.49 - 2026-10-19
 

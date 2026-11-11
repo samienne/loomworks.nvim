@@ -910,22 +910,21 @@ describe("the observer (§19.16)", function()
         assert.is_nil(obs.conn)
     end)
 
-    it("spawns the relay from the selected binary, names it and passes binary.source's environment", function()
+    it("spawns the relay from the selected binary, and names it", function()
         local asked, seen_opts = {}, nil
         obs = attach({ binary = { prefer = "managed" },
             resolve = function(_, o)
                 seen_opts = o
                 return "/m/lw", "managed", { path = "/m/lw", source = "managed", label = "plugin-managed lw",
-                    candidates = {}, env = { LOOMWORKS_LUA = "/src/lua" } }
+                    candidates = {} }
             end,
             relay = stub_relay(asked) })
         assert.equals("connecting", obs.state)
         assert.same({ prefer = "managed" }, seen_opts.setting)
         assert.same({ "/m/lw" }, asked[1].argv)
         assert.equals("ordinary", asked[1].form)
-        assert.same({ LOOMWORKS_LUA = "/src/lua" }, asked[1].env)
-        assert.equals("connecting to or starting the workspace daemon (/m/lw (plugin-managed lw) with the Lua "
-            .. "source /src/lua) — lsp configuration: waiting for the workspace daemon — language servers held",
+        assert.is_nil(asked[1].env)
+        assert.equals("connecting to or starting the workspace daemon (/m/lw (plugin-managed lw)) — lsp configuration: waiting for the workspace daemon — language servers held",
             obs:runtime_line())
         assert.equals("managed", obs.selection.source)
     end)

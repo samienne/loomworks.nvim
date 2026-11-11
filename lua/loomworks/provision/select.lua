@@ -18,8 +18,9 @@
 ---      `binary.download = false`.
 --- `binary.prefer = "managed"` puts 3 before 2. The editor reads no `lw.pin`:
 --- a global or managed lw follows the repository's pin itself (§16.23).
---- `binary.source` (development only, never automatic) runs the selected
---- binary with a Lua source tree (`LOOMWORKS_LUA`, §16.11).
+--- The plugin sets no Lua source tree for any binary: a development lw is an
+--- executable named by `binary.path`. The removed `binary.source` is ignored
+--- with a warning (`check_setting`).
 ---
 --- A search-path or explicit lw is weighed by its cached pre-launch probe
 --- verdict (loomworks.provision.probe, §19.16 "Pre-launch probe", step 5h.5):
@@ -39,7 +40,6 @@ local M = {}
 --- @class loomworks.provision.BinarySetting  the setup option `binary`
 --- @field path? string an lw host binary to use as is
 --- @field prefer? "system"|"managed" which of `lw` on PATH and the plugin-managed lw comes first (default "system")
---- @field source? string development only: run the binary with the Lua tree at this explicit path
 --- @field download? boolean false: never download the plugin-managed lw (default true; daemon mode only)
 --- @field release_url? string release-source override for that download (else LOOMWORKS_RELEASE_URL, else lw's origin)
 --- @field channel? "stable"|"unstable" let the managed lw move ahead of the pin to this channel's newest compatible release (default unset: the pin only; step 5h.5)
@@ -57,7 +57,6 @@ local M = {}
 --- @field source? loomworks.provision.Source
 --- @field label? string
 --- @field candidates loomworks.provision.Candidate[] every step, in search order
---- @field env? table<string, string> extra environment for every process started from the binary: `binary.source`'s `LOOMWORKS_LUA` (the managed lw gets none, §19.16)
 --- @field download? loomworks.provision.Wanted the plugin-managed lw to download first (it decided the search)
 --- @field note? string why there is none (the Runtime line)
 --- @field reason? string `note` without the Runtime line's "running degraded" (`none_note(sel, { degraded = false })`)
@@ -78,16 +77,16 @@ M.LABELS = {
 M.NONE_NOTE_BASE = "no lw host binary found (LOOMWORKS_LW, binary.path, PATH, plugin-managed lw)"
 M.NONE_NOTE = M.NONE_NOTE_BASE .. " — running degraded"
 
+--- The setup warning for the removed `binary.source` (the plugin sets no Lua
+--- source tree for any lw, §19.16).
+M.SOURCE_REMOVED = "binary.source was removed and is ignored: to run a development lw, build it"
+    .. " (make install in a loomworks checkout) and set binary.path to that executable"
+
 local function is_win() return package.config:sub(1, 1) == "\\" end
 
 local function is_file(p)
     local st = p and uv.fs_stat(p)
     return st ~= nil and st.type == "file"
-end
-
-local function is_dir(p)
-    local st = p and uv.fs_stat(p)
-    return st ~= nil and st.type == "directory"
 end
 
 local function slash(p) return (p:gsub("\\", "/")) end
@@ -187,8 +186,7 @@ function M.check_setting(v)
         else warns[#warns + 1] = "binary.prefer: expected \"system\" or \"managed\", ignored" end
     end
     if v.source ~= nil and v.source ~= false then
-        if type(v.source) == "string" and v.source ~= "" then out.source = v.source
-        else warns[#warns + 1] = "binary.source: expected a directory, ignored" end
+        warns[#warns + 1] = M.SOURCE_REMOVED
     end
     if v.download ~= nil then
         if type(v.download) == "boolean" then out.download = v.download
@@ -205,16 +203,6 @@ function M.check_setting(v)
     return out, (#warns > 0 and table.concat(warns, "; ") or nil)
 end
 
---- The development source tree of `binary.source`, or nil + why.
---- @param src string an explicit directory (the plugin carries no lw Lua tree)
---- @param opts table
---- @return string|nil dir, string|nil why
-local function source_dir(src, opts)
-    local dir = (slash(vim.fs.normalize(src)):gsub("/+$", ""))
-    if not (opts.is_dir or is_dir)(dir) then return nil, "binary.source: " .. dir .. " is not a directory" end
-    return dir
-end
-
 --- Select the host binary for the workspace at `root`.
 --- opts (tests inject):
 ---   setting   loomworks.provision.BinarySetting (the setup option `binary`)
@@ -226,7 +214,6 @@ end
 ---   managed   fun(opts) → path|nil, why, missing (loomworks.provision.managed.find;
 ---             opts.setting carries `binary.channel`)
 ---   data      the editor's data directory (the managed lw; default stdpath)
----   is_dir    for `binary.source`
 ---   probe     fun(path) → loomworks.provision.Probe|nil, the cached pre-launch
 ---             verdict (loomworks.provision.probe.cached); false: no probe
 --- @param root string
@@ -338,14 +325,6 @@ function M.resolve(root, opts)
         end
     end
 
-    if sel.path and setting.source then
-        local dir, why = source_dir(setting.source, opts)
-        if dir then
-            sel.env = { LOOMWORKS_LUA = dir }
-        else
-            sel.warning = sel.warning and (sel.warning .. "; " .. why) or why
-        end
-    end
     if not sel.path and not sel.note and not sel.download then
         sel.reason = M.none_note(sel, { degraded = false })
         sel.note = M.none_note(sel)
@@ -363,7 +342,6 @@ end
 --- (spec §19.16 "Plugin pin"): for the managed lw, LOOMWORKS_LUA and
 --- LOOMWORKS_INSTALL_DIR; nil for a binary the user installed or named
 --- (binary.path / LOOMWORKS_LW / PATH), which keeps the inherited environment.
---- `binary.source`'s LOOMWORKS_LUA (the selection's `env`) is set after it.
 --- @param sel loomworks.provision.Selection|nil
 --- @return string[]|nil
 function M.child_unset(sel)
@@ -413,7 +391,6 @@ function M.describe(sel)
         return M.none_note(sel)
     end
     local s = sel.path .. " (" .. sel.label .. ")"
-    if sel.env and sel.env.LOOMWORKS_LUA then s = s .. " with the Lua source " .. sel.env.LOOMWORKS_LUA end
     -- The pre-launch probe (step 5h.5): a verdict worth saying. (A skipped
     -- lw on PATH is the candidate's reason and the observer's `probe_note`.)
     local chosen
