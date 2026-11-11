@@ -2,8 +2,8 @@
 # Written by scripts/vendor.sh; verify with scripts/vendor.sh --check.
 # Do not edit: change the file in loomworks, tag, and re-vendor.
 source samienne/loomworks
-tag v0.2.0-beta.9
-commit e715be668777ed8c1c088c30e00ebbf4f7d364bf
+tag v0.2.0-beta.10
+commit be455ee45f7547248f01a20cfaf1e33142eba6d6
 155795436c21332c27bf274af0c4d7c86c2a5338d93cc5eb762a25ab67b481c0  lua/loomworks/description.lua
 c06d0858eaac58bb66650a7b3d1f6914b0c300cac707608f150f1f47c3a75635  lua/loomworks/device_log_records.lua
 006c3841f1aebebdb7c185a6c112c6e82973cb921d07a53e525984cb5fd28add  lua/loomworks/lsp_config.lua
@@ -16,7 +16,7 @@ d04f445baefcf586715c13c9304ee3cc57de4e0be9096db7421cf6dc57f58436  lua/loomworks/
 be2f0b4e1bb2bfd21db308b451d8c79c997a00381018376680365e285ed82d4f  lua/loomworks/root_finder.lua
 79ba34b749bc83a6de83e9b138c4bf4eb5010c52ce3122ca00a100f4cf3a5aca  lua/loomworks/sha256.lua
 e262158d1597fa62501dca7f5767b212598c4166d36a8cdf4cad41380e48e1bd  lua/loomworks/test_state.lua
-8ca0b7ff64590850803c2250d62826d7280879b6a101d9d344dae6c4bba9b387  spec/protocol/API.md
+d7feb39ac092cdc140339c53686a4baf86178a6508ba8155511bfd4a5e4f5ed6  spec/protocol/API.md
 0f22b0b5d82e22b6f52203925b0984cbfd5007124666349c2b9693914e593dc3  spec/protocol/PROTOCOL.md
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  spec/protocol/frozen/.gitkeep
 0caecbf89f8e0cd70ee6c840b7a32aa92ac09ef15990495b67ccbec9556e146c  spec/protocol/interfaces/loomworks/Build.1.json
