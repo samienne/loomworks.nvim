@@ -92,6 +92,10 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   has no stored default target (the sole-executable fallback is gone). In
   the editor, a profile with a single executable and no stored default
   opens the target picker once, then stores the choice (#437).
+- The plugin pins `lw` 0.2.0-beta.11: in a repository whose `lw.pin` pins an
+  `lw` older than 0.2.0-beta.7 (workspace state in `.nvim/`), a newer `lw`
+  now refuses commands that would read or write workspace state and points
+  to the repository's pinned launcher or `lw bootstrap upgrade` (#438).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
