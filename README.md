@@ -49,6 +49,11 @@ The editor launches the workspace daemon from the first of:
 `binary.prefer = "managed"` puts 3 before 2. `:checkhealth loomworks` shows
 which `lw` is used and why; `:LoomworksDaemon status` shows the daemon.
 
+To run a development `lw`, build it in a loomworks checkout
+(`make -C <loomworks> install`) and point `binary.path` at the installed
+executable. (The former `binary.source` option is gone: setting it only
+prints a warning.)
+
 ## Install
 
 With [lazy.nvim](https://github.com/folke/lazy.nvim):
@@ -95,7 +100,6 @@ require("loomworks").setup({
     download = true,       -- false: never download the managed lw
     channel = nil,         -- "stable" or "unstable"
     release_url = nil,     -- a release mirror (URL or directory)
-    source = nil,          -- development: a loomworks source tree
   },
   task_output_win = {},    -- window options for task output
   progress_max_width = nil, -- fidget: cap the progress message width

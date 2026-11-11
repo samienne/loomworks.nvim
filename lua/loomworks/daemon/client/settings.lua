@@ -48,7 +48,7 @@ end
 
 --- A relay's environment as a "K=V" list: this process's without the names
 --- in `unset` (the managed lw's: loomworks.provision.select.child_unset), with
---- `LW_ROOT` and then `extra` (the selection's, e.g. `binary.source`) set last.
+--- `LW_ROOT` and then `extra` set last.
 --- @param root string
 --- @param extra? table<string, string>
 --- @param unset? string[]

@@ -1164,10 +1164,11 @@ where those run is "Editor operations" and "Availability" above.
   The setup option `binary.prefer = "managed"` (default `"system"`) puts 3
   before 2. Its consequence: the daemon's version can then depend on who
   launched it (the CLI starts the daemon from its own `lw`, the editor from
-  the managed one; [loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) decides what each does with the other's). Running a
-  host binary with the plugin's or another Lua source tree (`binary.source`,
-  `LOOMWORKS_LUA`, [loomworks core §16.11](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)) is a development opt-in only, never automatic: it
-  sets the source of the binary selected above and never selects one.
+  the managed one; [loomworks core §19.9](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) decides what each does with the other's). The plugin
+  sets no Lua source tree for any binary it launches: a development `lw` is
+  an executable built from a loomworks checkout, named by `binary.path` (or
+  `LOOMWORKS_LW`, or found on the search path). The former option
+  `binary.source` is ignored with a warning at setup.
 
   The editor **reads no `lw.pin`**. A global or managed `lw` follows the
   repository's pin itself: the daemon commands the editor launches (`daemon
@@ -1292,8 +1293,7 @@ where those run is "Editor operations" and "Availability" above.
   (`"stable"` or `"unstable"`; default unset = the plugin pin only, no
   channel lookups) lets the managed `lw` move ahead of the pin. It applies
   only when the selection reaches the managed source, `binary.download` is
-  not `false`, `binary.source` is not set (a development binary is never
-  channel-resolved) and the runtime mode is daemon. In the background, at most
+  not `false` and the runtime mode is daemon. In the background, at most
   once a day and on `:LoomworksDaemon connect`:
   1. The **pinned** managed `lw` is made present and verified first (the
      download above). Only that binary resolves a channel — never an `lw`
@@ -1422,7 +1422,7 @@ where those run is "Editor operations" and "Availability" above.
   observer launches, its note names the binary and its source.
   `:LoomworksDaemon status` and `:checkhealth loomworks` list every source
   with its verdict. The editor never launches a daemon from its own plugin
-source unless `binary.source` asks for it. It follows daemons only through
+source. It follows daemons only through
 relays, which need a host binary, so with none it spawns no relay, runs
 degraded, and does not observe a daemon another client started ("End
 state").

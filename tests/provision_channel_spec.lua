@@ -131,12 +131,11 @@ describe("binary.channel: weighing a query (§19.16 Channel upgrades)", function
 end)
 
 describe("binary.channel: channel.json and the wanted managed lw", function()
-    it("applies only to a valid channel with downloads on and no development source", function()
+    it("applies only to a valid channel with downloads on", function()
         assert.is_false(channel.applies({}))
         assert.is_true(channel.applies({ channel = "stable" }))
         assert.is_false(channel.applies({ channel = "nightly" }))
         assert.is_false(channel.applies({ channel = "stable", download = false }))
-        assert.is_false(channel.applies({ channel = "stable", source = "/src/lua" }))
     end)
 
     it("round-trips the record; a changed channel keeps the accepted release and is due at once", function()

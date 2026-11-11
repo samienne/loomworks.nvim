@@ -325,7 +325,7 @@ end
 --- opts:
 ---   argv        the executable prefix (the selected host binary, e.g. `{ bin }`)
 ---   root        the workspace root
----   env         extra environment (the selection's, `binary.source`)
+---   env         extra environment, set last
 ---   unset       inherited variables to remove (the managed lw's:
 ---               loomworks.provision.select.child_unset)
 ---   form        "ordinary"|"no-launch"|"retiring"|"skip"

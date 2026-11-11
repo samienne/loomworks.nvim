@@ -23,7 +23,6 @@ local function run(o)
         exists = files(o.files or {}),
         on_path = function() if o.path then return o.path end return nil, "no lw on the search path" end,
         managed = function() if o.managed then return o.managed end return nil, managed.NOT_YET end,
-        is_dir = function(d) return o.dirs and o.dirs[d] or false end,
     })
 end
 
@@ -86,20 +85,34 @@ describe("host binary order (§19.16)", function()
         assert.equals(sel.note, binsel.none_note(sel, { degraded = false }) .. " — running degraded")
     end)
 
-    it("binary.source (development only) adds LOOMWORKS_LUA to a chosen binary, never chooses one", function()
-        local bin, _, sel = run({ setting = { source = "/src/lua" }, path = "/p/lw", dirs = { ["/src/lua"] = true } })
+    it("the removed binary.source is ignored with a warning and never reaches the binary's environment", function()
+        local bin, _, sel = run({ setting = { source = "/src/lua" }, path = "/p/lw" })
         assert.equals("/p/lw", bin)
-        assert.same({ LOOMWORKS_LUA = "/src/lua" }, sel.env)
-        assert.truthy(binsel.describe(sel):find("with the Lua source /src/lua", 1, true))
-        -- An explicit path only: the plugin carries no lw Lua tree of its own.
-        _, _, sel = run({ setting = { source = true }, path = "/p/lw" })
         assert.is_nil(sel.env)
-        assert.truthy(sel.warning:find("binary.source: expected a directory, ignored", 1, true), sel.warning)
-        _, _, sel = run({ setting = { source = "/nope" }, path = "/p/lw" })
-        assert.is_nil(sel.env)
-        assert.truthy(sel.warning:find("is not a directory", 1, true), sel.warning)
-        bin, _, sel = run({ setting = { source = "/src/lua" }, dirs = { ["/src/lua"] = true } })
-        assert.is_nil(bin); assert.is_nil(sel.env)
+        assert.equals(binsel.SOURCE_REMOVED, sel.warning)
+        assert.truthy(sel.warning:find("binary.path", 1, true), sel.warning)
+        assert.is_nil(binsel.describe(sel):find("Lua source", 1, true))
+    end)
+
+    it("setup warns once that binary.source was removed and keeps the rest of binary", function()
+        local lw = require("loomworks")
+        local saved_notify, saved_binary = vim.notify, lw._binary_config
+        local saved_deps = { overseer = package.loaded["overseer"], snacks = package.loaded["snacks"] }
+        package.loaded["overseer"] = saved_deps.overseer or {}
+        package.loaded["snacks"] = saved_deps.snacks or {}
+        local notes = {}
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+        local ok, err = pcall(lw.setup, { lsp = false, keys = false, binary = { path = "/x/lw", source = "/src/lua" } })
+        vim.notify = saved_notify
+        package.loaded["overseer"], package.loaded["snacks"] = saved_deps.overseer, saved_deps.snacks
+        local cfg = lw._binary_config
+        lw._binary_config = saved_binary
+        assert.is_true(ok, err)
+        local warns = vim.tbl_filter(function(n) return n.msg:find("binary.source", 1, true) ~= nil end, notes)
+        assert.equals(1, #warns)
+        assert.equals(vim.log.levels.WARN, warns[1].level)
+        assert.equals("loomworks: " .. binsel.SOURCE_REMOVED, warns[1].msg)
+        assert.same({ path = "/x/lw" }, cfg)
     end)
 
     it("checks the setup option", function()
@@ -109,7 +122,9 @@ describe("host binary order (§19.16)", function()
         s, w = binsel.check_setting({ path = 3, prefer = "fast", source = 7 })
         assert.same({}, s)
         assert.truthy(w:find("binary.path", 1, true) and w:find("binary.prefer", 1, true)
-            and w:find("binary.source", 1, true), w)
+            and w:find("binary.source was removed", 1, true), w)
+        s, w = binsel.check_setting({ path = "/x", source = "/src/lua" })
+        assert.same({ path = "/x" }, s); assert.equals(binsel.SOURCE_REMOVED, w)
         s, w = binsel.check_setting("lw")
         assert.same({}, s); assert.truthy(w)
     end)
