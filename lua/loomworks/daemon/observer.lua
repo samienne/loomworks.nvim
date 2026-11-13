@@ -523,6 +523,17 @@ function Observer:start(explicit)
     self:_spawn({ form = "ordinary" })
 end
 
+--- Degraded with no connection, retried only by an explicit connect (spec
+--- §19.16 "Exit before `welcome`"): the observer waits (a relay exited
+--- before `welcome`, or only a waiting relay is in flight) or has no host
+--- binary. Not while connecting, probing or downloading (in flight) nor
+--- while a connection is held. `L` in the status view then reconnects.
+--- @return boolean
+function Observer:awaiting_connect()
+    if self.conn or self._retire then return false end
+    return self.state == "waiting" or self.state == "no-binary"
+end
+
 --- The instance id `<pid>:<start_time>` (§19.5, the value `--skip-instance`
 --- takes) of a daemon from `welcome.daemon`, or nil when either part is
 --- missing or malformed: a daemon whose start time is unknown cannot be
