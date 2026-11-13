@@ -1000,6 +1000,41 @@ describe("the observer (§19.16)", function()
             end
         end)
 
+        it("L in the status view retries a wait (an explicit connect), it does not rescan", function()
+            obs = attach({ manual = true })
+            -- An old pin's relay refused (status 3): degraded, waiting.
+            exit(3, { line = "lw: detail 3" })
+            assert.same({ "ordinary" }, fr.spawns)
+            assert.equals("waiting", obs.state)
+            assert.is_true(require("loomworks").daemon_awaiting_connect())
+            local rescans = 0
+            local model = require("loomworks.ui.model_calls")
+            local orig = model.call
+            model.call = function(_, method, ...)
+                if method == "Toolchains/1.rescan" then rescans = rescans + 1 end
+                return orig(_, method, ...)
+            end
+            local ok, err = pcall(function()
+                require("loomworks.ui.tree").new(require("loomworks.ui.status")._render_fn):on_key("load", 1)
+            end)
+            model.call = orig
+            assert(ok, err)
+            assert.equals(0, rescans)
+            assert.same({ "ordinary", "ordinary" }, fr.spawns)
+            assert.equals("connecting", obs.state)
+            assert.is_false(require("loomworks").daemon_awaiting_connect())
+        end)
+
+        it("with no host binary, L retries the binary selection", function()
+            local bin = nil
+            obs = attach({ resolve = function() return bin end })
+            assert.equals("no-binary", obs.state)
+            assert.is_true(require("loomworks").daemon_awaiting_connect())
+            bin = "lw"
+            require("loomworks.ui.tree").new(require("loomworks.ui.status")._render_fn):on_key("load", 1)
+            assert.same({ "ordinary" }, fr.spawns)
+        end)
+
         it("2 from a relay given the editor's flags names the pinned version", function()
             local f = assert(io.open(root .. "/lw.pin", "w"))
             f:write("version = 0.1.40\n")

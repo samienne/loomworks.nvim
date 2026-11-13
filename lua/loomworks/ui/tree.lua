@@ -234,7 +234,14 @@ function Tree:on_key(action, line)
         local lw = require("loomworks")
         -- (The editor holds no model, step 6b-α: a loaded workspace is the
         -- root it observes the daemon of.)
-        if lw.loaded_root() then
+        if lw.daemon_awaiting_connect() then
+            -- Degraded with no connection (a relay exited before `welcome`,
+            -- or no host binary): nothing to rescan; retry as
+            -- `:LoomworksDaemon connect` does (§19.16 "Exit before `welcome`").
+            vim.notify("loomworks: Reconnecting to the workspace daemon…", vim.log.levels.INFO)
+            local ok, why = lw.daemon_connect()
+            if not ok then vim.notify("loomworks: " .. tostring(why), vim.log.levels.ERROR) end
+        elseif lw.loaded_root() then
             -- The daemon's rescan (it waits for detection, up to 45 s:
             -- announced at once); a refusal, or a detection that outran the
             -- wait (a warn note), is notified.

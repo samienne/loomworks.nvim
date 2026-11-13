@@ -117,6 +117,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   or `LOOMWORKS_INSTALL_DIR` from the editor's environment (an `lw` you
   installed or named still does). A `<data>/loomworks/bundle/` folder left by earlier
   development builds is no longer used and can be deleted (#414, #423).
+- `L` on the status page now reconnects when the editor could not reach the
+  workspace daemon (for example after fixing an `lw.pin` that named an old
+  `lw`, or installing `lw`), as `:LoomworksDaemon connect` does. It used to
+  try a toolchain rescan that could not run, so only restarting Neovim
+  helped (#439).
 
 ### Removed
 - The setup options `log_level` and `user_prefs_root`, and

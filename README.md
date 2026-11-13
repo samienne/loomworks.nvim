@@ -153,7 +153,7 @@ On the status page (`?` shows them all): `<Tab>`/`<S-Tab>` move, `l`/`h`
 open/close a fold, `<CR>` activates a profile, `b` builds (`<C-b>` serially),
 `c` configures, `R` rebuilds, `C` cleans, `D` deletes, `t` shows a task, `o`
 shows build options, `e` edits a description, `P` cycles publish intent, `N`
-runs `lw init` in a terminal where no workspace is, `L` loads, `<C-n>` resets the workspace, `U` discards the
+runs `lw init` in a terminal where no workspace is, `L` loads (or, while the editor waits with no daemon connection, reconnects as `:LoomworksDaemon connect` does), `<C-n>` resets the workspace, `U` discards the
 working copy, `T` reviews trust, `K` hovers, `q` closes. `:w` publishes the
 working copy to `loomworks.json`; `:e!` reverts it.
 

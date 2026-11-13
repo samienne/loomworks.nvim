@@ -553,8 +553,10 @@ degraded ("End state").
   with the relay's `lw: ...` standard-error line as detail (never the
   status-14 `retiring` line), and a follow-up. "Wait"
   means: the editor stays degraded with that note and spawns no further
-  relay until an explicit `:LoomworksDaemon connect` (or a workspace
-  reload).
+  relay until an explicit `:LoomworksDaemon connect` — or `L` in the status
+  view (UI §1.3), which retries the same way while the editor is degraded
+  with no connection, the binary selection included — or a workspace
+  reload.
 
   | Status | Note | Follow-up |
   |--|--|--|
@@ -1664,7 +1666,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
 | `N`     | create_workspace | Run `lw init` in a terminal where no workspace is, then load the workspace (§13.5) |
-| `L`     | load        | Load workspace from cwd / rescan tools |
+| `L`     | load        | Load workspace from cwd / rescan tools; while the observed workspace is degraded with no connection (waiting for an explicit connect, or no host binary, §19.16 "Exit before `welcome`"), reconnect as `:LoomworksDaemon connect` does instead of rescanning |
 | `<C-n>` | nuke        | Reset workspace: delete `.lw/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
 | `e`     | describe    | Edit the description ([loomworks core §1.10](https://github.com/samienne/loomworks/blob/main/spec/core/data-model.md)) of the nearest describable item — profile, configuration set, project, or user configuration — in the description editor (§1.16) |

@@ -237,13 +237,27 @@ end
 --- launching it when none is live. Returns false + why when it cannot.
 --- @return boolean ok, string|nil why
 function M.daemon_connect()
-    local root = M.workspace_root()
-    if not root then return false, "no workspace loaded" end
     local observer = require("loomworks.daemon.observer")
-    local obs = observer.current() or observer.attach(root, { binary = M._binary_config })
+    local obs = observer.current()
+    if not obs then
+        local root = M.workspace_root()
+        if not root then return false, "no workspace loaded" end
+        obs = observer.attach(root, { binary = M._binary_config })
+    end
     if not obs then return false, "no workspace loaded" end
     obs:start(true)
     return true
+end
+
+--- Whether the observed workspace daemon is degraded with no connection and
+--- waits for an explicit connect (§19.16 "Exit before `welcome`"; no host
+--- binary included): `L` in the status view then reconnects instead of
+--- rescanning (UI §1.3). False when nothing is observed.
+--- @return boolean
+function M.daemon_awaiting_connect()
+    local mod = package.loaded["loomworks.daemon.observer"]
+    local obs = type(mod) == "table" and mod.current() or nil
+    return obs ~= nil and obs:awaiting_connect()
 end
 
 --- The daemon-mode facade (spec §19.16 "Public API"): the getters answer
