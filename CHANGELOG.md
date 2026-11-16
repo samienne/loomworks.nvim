@@ -96,6 +96,11 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   `lw` older than 0.2.0-beta.7 (workspace state in `.nvim/`), a newer `lw`
   now refuses commands that would read or write workspace state and points
   to the repository's pinned launcher or `lw bootstrap upgrade` (#438).
+- The plugin pins `lw` 0.2.0-beta.12, which adds `lw pin ignore` and
+  `lw pin follow` (run the lw you invoke instead of the pinned release in
+  one checkout) and `lw reset --state` (delete only the build and health
+  caches). With the pin ignored, the editor's daemon relay runs the lw on
+  your search path (#440).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
