@@ -62,6 +62,13 @@ M.FORMS = { ordinary = true, ["no-launch"] = true, retiring = true, skip = true 
 
 --- @class loomworks.daemon.WelcomeRelay  a relay's `welcome.relay` (§19.8 step 4)
 --- @field lw_version string the relay's own code identity (§19.9): that of the daemon it would launch
+--- @field pin loomworks.daemon.WelcomePin|nil the ignored pin (present only with the pin ignored; absent from an older relay)
+
+--- @class loomworks.daemon.WelcomePin  `welcome.relay.pin` (loomworks core §19.8; display only, observer.pin_note)
+--- @field version string the pinned version
+--- @field mode string "ignore"
+--- @field exe string|nil the relay's resolved executable (the lw it forwarded to)
+--- @field no_path_lw boolean|nil true when the relay found no lw on the search path and runs itself
 
 --- @class loomworks.daemon.Conn  the editor's connection to a daemon, over a relay
 --- @field pipe table the duplex stream over the relay's standard I/O

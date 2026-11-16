@@ -893,9 +893,28 @@ function M.pinned_version(root)
     return nil
 end
 
+--- How the user fixes a pin the editor's relay cannot run (§19.16 "Exit
+--- before `welcome`"): the commands are named, never run by the editor.
+M.PIN_FIX = "update the pin (lw bootstrap upgrade) or ignore it (lw pin ignore)"
+
+--- The remedies a status 10 or 1 offers after its detail (§19.16 "Exit
+--- before `welcome`", "Pin and state remedies"); nil for any other status.
+--- @param code integer|nil
+--- @return string|nil
+function M.exit_fix(code)
+    if code == 10 then
+        return "if the pin or the workspace state is the cause: lw pin ignore runs your lw here, "
+            .. "lw bootstrap upgrade moves the pin, lw reset --state discards the build cache (builds are kept)"
+    end
+    if code == 1 then
+        return "if the pin is the cause: lw bootstrap upgrade moves the pin, lw pin ignore runs your lw here"
+    end
+    return nil
+end
+
 --- The Runtime note of a relay that exited before `welcome` (§19.16 "Exit
 --- before `welcome`"), without its follow-up; the relay's `lw: …` line is
---- the detail (never the status-14 `retiring` line).
+--- the detail (never the status-14 `retiring` line), and `exit_fix` follows it.
 --- @param code integer|nil
 --- @param form string the relay's form
 --- @param root string
@@ -909,11 +928,11 @@ function M.exit_note(code, form, root)
     if code == 16 then return "the retiring daemon has exited and no other is live" end
     if code == 3 then
         return "the pinned lw predates the shared-daemon relay and another runtime holds this workspace; "
-            .. "running degraded — update the pin"
+            .. "running degraded — " .. M.PIN_FIX
     end
     if code == 2 and form ~= "ordinary" then
         local v = M.pinned_version(root)
-        if v then return "the pinned lw " .. v .. " does not support the editor relay flags — update the pin" end
+        if v then return "the pinned lw " .. v .. " does not support the editor relay flags — " .. M.PIN_FIX end
     end
     if code == 2 then return "internal error (usage)" end
     if code == 15 then return "internal error (protocol)" end
@@ -1017,6 +1036,12 @@ function Observer:_on_relay_exit(token, err, info)
     local function with(note) return info.line and (note .. " (" .. info.line .. ")") or note end
     if err ~= "exit" or code == nil then
         return self:_set("waiting", with("internal error: the relay to the workspace daemon failed"))
+    end
+    -- The pin and state remedies follow the detail (§19.16 "Pin and state remedies").
+    local fix = M.exit_fix(code)
+    if fix then
+        local plain = with
+        with = function(note) return plain(note) .. " — " .. fix end
     end
     local note = M.exit_note(code, token.form, self.root)
     if code == 10 or code == 11 then
@@ -3250,10 +3275,34 @@ function Observer:ended_tasks()
     return vim.list_extend({}, self._ended or {})
 end
 
+--- The ignored-pin note of a relay's `welcome` (§19.16 "Through the relay",
+--- "Ignored pin"; loomworks core §19.8 `relay.pin`): "pin ignored: pinned X,
+--- running <exe> <lw_version>", nil when the pin is followed, there is none
+--- or the relay predates the field. Display only: it changes no rule.
+--- @param welcome table|nil
+--- @return string|nil
+function M.pin_note(welcome)
+    if type(welcome) ~= "table" or welcome.via ~= "relay" or type(welcome.relay) ~= "table" then return nil end
+    local pin = welcome.relay.pin
+    if type(pin) ~= "table" or pin.mode ~= "ignore" then return nil end
+    local function str(v) return type(v) == "string" and v ~= "" and v or nil end
+    local parts = {}
+    parts[#parts + 1] = str(pin.exe)
+    parts[#parts + 1] = str(welcome.relay.lw_version)
+    local running = table.concat(parts, " ")
+    local t = "pin ignored: pinned " .. (str(pin.version) or "?")
+    if running ~= "" then t = t .. ", running " .. running end
+    if pin.no_path_lw == true then t = t .. " (no lw on the search path — the editor's lw runs)" end
+    return t
+end
+
 --- The observer's part of the Runtime line: its state or current note.
 --- @return string
 function Observer:runtime_line()
     local t = self.note or self.state
+    -- An ignored pin, while connected through a relay that reports it.
+    local pin = self.conn and M.pin_note(self.conn.welcome)
+    if pin then t = t .. " — " .. pin end
     -- The pre-launch probe's lasting note (step 5h.5: a skipped lw on PATH,
     -- an incompatible explicit one); a no-binary note already names it.
     if self.probe_note and self.state ~= "no-binary" then t = t .. " — " .. self.probe_note end

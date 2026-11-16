@@ -538,6 +538,18 @@ degraded ("End state").
   (such a `welcome` carries no `welcome.daemon` to judge) and **never
   retires it**. No transport is agreed with it, so the editor makes no
   interface call on it: every feature is missing.
+- **Ignored pin.** A `welcome.relay.pin` with `mode = "ignore"` ([loomworks
+  core
+  §19.8](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md);
+  an optional field, absent when the pin is followed, when there is none and
+  from a relay older than the field) is shown on the connected Runtime line
+  after the observing note: `pin ignored: pinned <version>, running <exe>
+  <lw_version>` — `<exe>` from the field (omitted when absent) and
+  `<lw_version>` from `welcome.relay` — with `(no lw on the search path — the
+  editor's lw runs)` added when `no_path_lw` is true (the relay found no `lw`
+  on the search path and runs as the binary the editor selected, "Host binary"
+  below). It is display only: it changes no judging or retirement rule, and it
+  goes with the connection. Any other `mode`, or no field, shows nothing.
 - **Waiting notes.** A relay reports nothing while it waits (on an attached
   run, a starting daemon, a retiring daemon, or for any daemon at all). Until
   it forwards `welcome` the Runtime line shows one generic note for its form:
@@ -560,18 +572,32 @@ degraded ("End state").
 
   | Status | Note | Follow-up |
   |--|--|--|
-  | 10 | could not start the workspace daemon; the editor runs degraded | one no-launch relay, then wait |
+  | 10 | could not start the workspace daemon; the editor runs degraded — then the pin and state remedies (below) | one no-launch relay, then wait |
   | 11 | the workspace daemon is not responding | one no-launch relay, then wait |
   | 12 | the daemon belongs to another loomworks data dir, or is not a loomworks daemon | wait |
   | 13 | the workspace daemon runs on another host | wait |
   | 14 | a retiring daemon is still busy | a retiring relay, or a no-launch relay ("Following a stopped or retiring daemon" below) |
   | 16 | the retiring daemon has exited and no other is live | the retirement episode's one ordinary relay, else wait |
-  | 3 | the pinned `lw` predates the shared-daemon relay and another runtime holds this workspace (an older pin's attached `--stdio`, [loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Compatibility"); running degraded — update the pin | wait |
-  | 1 | an internal error — or, for a repository pinned before 0.1.43-beta.15, the pin redirect's refusal ([loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md) "A pin older than the command"), whose standard-error line names the pinned version and the release that introduced the command; the note shows that line | wait |
-  | 2 | an internal error (usage) — or, when the relay was spawned with `--no-launch`, `--skip-instance` or `--retiring`, the pinned `lw <version>` does not support the editor relay flags (update the pin), naming the pinned version | wait |
+  | 3 | the pinned `lw` predates the shared-daemon relay and another runtime holds this workspace (an older pin's attached `--stdio`, [loomworks core §19.10](https://github.com/samienne/loomworks/blob/main/spec/core/daemon.md) "Compatibility"); running degraded — update the pin (`lw bootstrap upgrade`) or ignore it (`lw pin ignore`) | wait |
+  | 1 | an internal error — or, for a repository pinned before 0.1.43-beta.15, the pin redirect's refusal ([loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md) "A pin older than the command"), whose standard-error line names the pinned version and the release that introduced the command; the note shows that line, then the pin remedies (below) | wait |
+  | 2 | an internal error (usage) — or, when the relay was spawned with `--no-launch`, `--skip-instance` or `--retiring`, the pinned `lw <version>` does not support the editor relay flags — update the pin (`lw bootstrap upgrade`) or ignore it (`lw pin ignore`) — naming the pinned version | wait |
   | 15 | an internal error (protocol) | wait |
   | 0 | an internal error (the relay ended although the editor kept its standard input open) | wait |
   | any other | an internal error | wait |
+
+  **Pin and state remedies.** A relay can fail to start a daemon because of
+  the repository's pin, or because the workspace state is newer than the
+  pinned release reads (a build cache another lw wrote, [loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)
+  "State the pinned release cannot read"); the editor cannot tell these from
+  other causes, and the redirecting host's line naming the fixes may not be
+  the relay's last. So the notes name the fixes after the detail, as
+  commands the user runs — the editor runs none of them and deletes nothing
+  itself: status 10 adds `if the pin or the workspace state is the cause: lw
+  pin ignore runs your lw here, lw bootstrap upgrade moves the pin, lw reset
+  --state discards the build cache (builds are kept)` ([loomworks core §16.24](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md),
+  [§16.30](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)); status 1 adds `if the pin is the cause: lw bootstrap upgrade
+  moves the pin, lw pin ignore runs your lw here`. After a fix,
+  `:LoomworksDaemon connect` (or `L`) connects again.
 
   "One no-launch relay" is one per failure: a no-launch relay spawned in
   answer to a status 10 or 11 is not answered with another when it, too,
@@ -1190,6 +1216,17 @@ where those run is "Editor operations" and "Availability" above.
   `SHA256SUMS`, "Channel upgrades" below); binaries the user
   installed (search path, explicit) get compatibility checks only. The plugin may download its managed `lw` automatically
   (`binary.download = false` turns that off): official releases only ([loomworks core §17.8](https://github.com/samienne/loomworks/blob/main/spec/core/trust.md)).
+
+  **Ignored pin.** The editor reads no `.lw/local` either. While the
+  repository's pin is ignored (`lw pin ignore`, [loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md) "Ignored
+  pin", [§16.24](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)), the relay form of the binary the editor selected
+  **hands off** to the `lw` on the search path (with the no-pin flag), so
+  the editor and the shell run one binary: the hand-off **overrides** the
+  setup option `binary.path` and the managed `lw`. Only `LOOMWORKS_LW`
+  exempts the selected binary: one named through it runs as is. With no
+  `lw` on the search path, or when the selected binary is that `lw`, it runs
+  itself. The relay reports the ignored pin in `welcome.relay.pin`, shown on
+  the Runtime line ("Through the relay" "Ignored pin" above).
 
   **Plugin pin**. The plugin carries the release it downloads:
   `lua/loomworks/provision/pinned.lua`, `{ version, assets = { [<host asset>]

@@ -39,12 +39,19 @@ connects to that daemon and gives it an editor front end:
 The editor launches the workspace daemon from the first of:
 
 1. `$LOOMWORKS_LW`, then the setup option `binary.path` — explicit; never
-   replaced by another `lw`;
+   replaced by another `lw` (except `binary.path` in a repository whose pin
+   is ignored, below);
 2. `lw` on your `PATH` (absolute entries only), when it is compatible with
    the plugin;
 3. the **managed `lw`**: the release this plugin pins, downloaded on first
    use, verified against the release's signed checksums and installed under
    Neovim's data directory (`<stdpath("data")>/loomworks/lw/`).
+
+In a repository with an `lw.pin`, the chosen `lw` runs the pinned release.
+After `lw pin ignore` (undone by `lw pin follow`) it hands off to the `lw` on
+your `PATH` instead, so the editor runs the same `lw` as your shell: this
+overrides `binary.path`; only `$LOOMWORKS_LW` is run as is. The status page's
+Runtime line then shows `pin ignored: pinned <version>, running <lw> <version>`.
 
 `binary.prefer = "managed"` puts 3 before 2. `:checkhealth loomworks` shows
 which `lw` is used and why; `:LoomworksDaemon status` shows the daemon.
