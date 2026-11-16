@@ -67,8 +67,15 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 - `:LoomworksDaemon [connect|status]`: `connect` connects the editor to the
   workspace daemon, starting one when none is running; `status` shows the
   daemon's runtime line and the `lw` a launch would use (#414).
+- In a repository whose pin is ignored (`lw pin ignore`, lw 0.2.0-beta.12),
+  the status page's Runtime line shows it: "pin ignored: pinned <version>,
+  running <lw> <version>", noting when no `lw` is on `PATH` and the editor's
+  own `lw` runs (#441).
 
 ### Changed
+- When the workspace daemon cannot be started, or the pinned `lw` cannot run
+  the editor's relay, the Runtime line names the fixes to run: `lw pin
+  ignore`, `lw bootstrap upgrade` and `lw reset --state` (#441).
 - The plugin finds workspaces in lw 0.2.0's layout, where a workspace's own
   files live under `.lw/` (`.lw/user.json`, `.lw/cache.json`,
   `.lw/workspace.log`, `.lw/build/`) instead of `.nvim/loomworks.*`, as well as
@@ -99,8 +106,9 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 - The plugin pins `lw` 0.2.0-beta.12, which adds `lw pin ignore` and
   `lw pin follow` (run the lw you invoke instead of the pinned release in
   one checkout) and `lw reset --state` (delete only the build and health
-  caches). With the pin ignored, the editor's daemon relay runs the lw on
-  your search path (#440).
+  caches). With the pin ignored, the editor's daemon relay hands off to the lw on
+  your search path, overriding `binary.path` (only `LOOMWORKS_LW` is run as
+  is) (#440, #441).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now

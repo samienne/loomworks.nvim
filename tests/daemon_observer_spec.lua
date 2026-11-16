@@ -299,6 +299,32 @@ describe("the observer (§19.16)", function()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
     end
 
+    it("shows an ignored pin from welcome.relay.pin on the connected Runtime line (Through the relay)", function()
+        W = new_world({ root = ws.root })
+        obs = attach()
+        connected()
+        local w = obs.conn.welcome
+        -- Absent: no pin note.
+        assert.falsy(obs:runtime_line():find("pin ignored", 1, true), obs:runtime_line())
+        w.via, w.relay = "relay", { lw_version = "0.2.0+dev" }
+        assert.falsy(obs:runtime_line():find("pin ignored", 1, true), obs:runtime_line())
+        -- Ignored: pinned version, the relay's exe and its lw_version.
+        w.relay.pin = { version = "0.1.43", mode = "ignore", exe = "/usr/local/bin/lw" }
+        assert.truthy(obs:runtime_line():find("observing the workspace daemon (pid ", 1, true), obs:runtime_line())
+        assert.truthy(obs:runtime_line():find(
+            " — pin ignored: pinned 0.1.43, running /usr/local/bin/lw 0.2.0+dev", 1, true), obs:runtime_line())
+        assert.falsy(obs:runtime_line():find("search path", 1, true), obs:runtime_line())
+        -- Ignored with no lw on the search path: the editor's own lw runs.
+        w.relay.pin.no_path_lw = true
+        assert.truthy(obs:runtime_line():find("pin ignored: pinned 0.1.43, running /usr/local/bin/lw 0.2.0+dev "
+            .. "(no lw on the search path — the editor's lw runs)", 1, true), obs:runtime_line())
+        -- Not connected: no pin note.
+        local conn = obs.conn
+        obs.conn = nil
+        assert.falsy(obs:runtime_line():find("pin ignored", 1, true), obs:runtime_line())
+        obs.conn = conn
+    end)
+
     it("subscribes to /tasks and /workspace when offered (step 5g.3) and observes through them", function()
         W = new_world({ root = ws.root })
         obs = attach()
@@ -941,7 +967,9 @@ describe("the observer (§19.16)", function()
             assert.same({ "ordinary", "no-launch" }, fr.spawns)
             assert.equals("waiting", obs.state)
             assert.truthy(obs:runtime_line():find("could not start the workspace daemon; the editor runs degraded "
-                .. "(lw: could not start the workspace daemon (boom))", 1, true), obs:runtime_line())
+                .. "(lw: could not start the workspace daemon (boom)) — if the pin or the workspace state is the "
+                .. "cause: lw pin ignore runs your lw here, lw bootstrap upgrade moves the pin, lw reset --state "
+                .. "discards the build cache (builds are kept)", 1, true), obs:runtime_line())
             assert.truthy(obs:runtime_line():find("none is launched", 1, true), obs:runtime_line())
             -- The no-launch relay answering a 10 exits 11: no second one.
             exit(11, { line = "lw: the workspace daemon (pid 9) is not responding" })
@@ -949,6 +977,8 @@ describe("the observer (§19.16)", function()
             assert.equals("waiting", obs.state)
             assert.truthy(obs:runtime_line():find("the workspace daemon is not responding", 1, true),
                 obs:runtime_line())
+            -- (A status 11 names no pin or state remedy.)
+            assert.falsy(obs:runtime_line():find("lw reset --state", 1, true), obs:runtime_line())
             -- Only an explicit connect spawns again.
             vim.wait(200)
             assert.equals(2, #fr.spawns)
@@ -1035,6 +1065,31 @@ describe("the observer (§19.16)", function()
             assert.same({ "ordinary" }, fr.spawns)
         end)
 
+        it("1 / 3 name the pin remedies after the detail; other statuses name none (Pin and state remedies)",
+            function()
+            for _, c in ipairs({
+                { 1, "(lw: detail 1) — if the pin is the cause: lw bootstrap upgrade moves the pin, "
+                    .. "lw pin ignore runs your lw here" },
+                { 3, "running degraded — update the pin (lw bootstrap upgrade) or ignore it (lw pin ignore) "
+                    .. "(lw: detail 3)" },
+                { 12, nil }, { 13, nil }, { 15, nil }, { 0, nil },
+            }) do
+                obs = attach({ manual = true })
+                exit(c[1], { line = "lw: detail " .. c[1] })
+                local line = obs:runtime_line()
+                if c[2] then
+                    assert.truthy(line:find(c[2], 1, true), line)
+                else
+                    assert.falsy(line:find("lw pin ignore", 1, true), line)
+                    assert.falsy(line:find("lw reset --state", 1, true), line)
+                end
+                obs:stop(); obs = nil
+            end
+            assert.equals("if the pin is the cause: lw bootstrap upgrade moves the pin, lw pin ignore runs your lw here",
+                observer.exit_fix(1))
+            assert.is_nil(observer.exit_fix(11))
+        end)
+
         it("2 from a relay given the editor's flags names the pinned version", function()
             local f = assert(io.open(root .. "/lw.pin", "w"))
             f:write("version = 0.1.40\n")
@@ -1046,7 +1101,8 @@ describe("the observer (§19.16)", function()
             -- A no-launch relay's 2 (spawned after a drop).
             obs:_spawn({ form = "no-launch" })
             exit(2, { line = "lw: unknown option --no-launch" })
-            assert.truthy(obs:runtime_line():find("the pinned lw 0.1.40 does not support the editor relay flags", 1,
+            assert.truthy(obs:runtime_line():find("the pinned lw 0.1.40 does not support the editor relay flags — "
+                .. "update the pin (lw bootstrap upgrade) or ignore it (lw pin ignore)", 1,
                 true), obs:runtime_line())
             assert.truthy(obs:runtime_line():find("(lw: unknown option --no-launch)", 1, true), obs:runtime_line())
             assert.equals(2, #fr.spawns)
@@ -1476,5 +1532,32 @@ describe("the editor's load (step 6b-alpha)", function()
         assert.equals(1, #attached)
         assert.equals(lw.workspace_root(), attached[1].root)
         assert.equals(vim.fs.normalize(vim.uv.fs_realpath(root)), attached[1].root)
+    end)
+end)
+
+describe("observer.pin_note (§19.16 Through the relay, Ignored pin)", function()
+    local function welcome(pin, extra)
+        local w = { via = "relay", relay = { lw_version = "0.2.0-beta.12", pin = pin } }
+        for k, v in pairs(extra or {}) do w[k] = v end
+        return w
+    end
+
+    it("names the pinned version and the running lw", function()
+        assert.equals("pin ignored: pinned 0.1.43, running C:/bin/lw.exe 0.2.0-beta.12",
+            observer.pin_note(welcome({ version = "0.1.43", mode = "ignore", exe = "C:/bin/lw.exe" })))
+    end)
+
+    it("adds the no-PATH-lw note, and omits an absent exe", function()
+        assert.equals("pin ignored: pinned 0.1.43, running 0.2.0-beta.12 "
+            .. "(no lw on the search path — the editor's lw runs)",
+            observer.pin_note(welcome({ version = "0.1.43", mode = "ignore", no_path_lw = true })))
+    end)
+
+    it("is nil without the field, for another mode, or without via = relay", function()
+        assert.is_nil(observer.pin_note(welcome(nil)))
+        assert.is_nil(observer.pin_note(welcome({ version = "0.1.43", mode = "follow" })))
+        assert.is_nil(observer.pin_note(welcome({ version = "0.1.43", mode = "ignore" }, { via = false })))
+        assert.is_nil(observer.pin_note({ seq = 0 }))
+        assert.is_nil(observer.pin_note(nil))
     end)
 end)
