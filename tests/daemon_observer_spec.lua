@@ -1108,6 +1108,29 @@ describe("the observer (§19.16)", function()
             assert.equals(2, #fr.spawns)
         end)
 
+        it("names a pin only from the nearest lw.pin up to the git top (§19.16), and only in that note", function()
+            local top = vim.fn.tempname():gsub("\\", "/")
+            local sub = top .. "/repo/sub"
+            vim.fn.mkdir(sub, "p")
+            local function write(path, text)
+                local f = assert(io.open(path, "w")); f:write(text); f:close()
+            end
+            -- A pin above the git working tree's top is not the workspace's.
+            write(top .. "/lw.pin", "version = 9.9.9\n")
+            vim.fn.mkdir(top .. "/repo/.git", "p")
+            assert.is_nil(observer.pinned_version(sub))
+            assert.equals("internal error (usage)", observer.exit_note(2, "no-launch", sub))
+            -- The nearest one up from the root, its version line only.
+            write(top .. "/repo/lw.pin", "# pinned\nversion = 0.1.40\nsha256 = ab\n")
+            assert.equals("0.1.40", observer.pinned_version(sub))
+            -- An ordinary relay's 2 never names it.
+            assert.equals("internal error (usage)", observer.exit_note(2, "ordinary", sub))
+            -- A pin without a version line names nothing.
+            write(top .. "/repo/lw.pin", "sha256 = ab\n")
+            assert.is_nil(observer.pinned_version(sub))
+            vim.fn.delete(top, "rf")
+        end)
+
         it("a relay the editor ended is not mapped; connect replaces a waiting relay, not an ordinary one", function()
             obs = attach({ manual = true })
             local first = fr.last()

@@ -1198,7 +1198,12 @@ where those run is "Editor operations" and "Availability" above.
   `LOOMWORKS_LW`, or found on the search path). The former option
   `binary.source` is ignored with a warning at setup.
 
-  The editor **reads no `lw.pin`**. A global or managed `lw` follows the
+  The editor **never reads `lw.pin` to choose or launch a binary**. Its one
+  read of it is to name the pinned version in the degraded note of a relay
+  that exits with status 2 before `welcome` ("Exit before `welcome`" above):
+  no other source names it there, since no `welcome` arrived and the pinned
+  release's usage line predates any version detail. That read decides
+  nothing. A global or managed `lw` follows the
   repository's pin itself: the daemon commands the editor launches (`daemon
   run` and its `--stdio` relay form) are redirect commands
   ([loomworks core §16.23](https://github.com/samienne/loomworks/blob/main/spec/core/headless.md)), so they run the pinned version — unless the pinned
