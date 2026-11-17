@@ -16,8 +16,10 @@
 ---      decides the search too: the selection carries it as `download`, and
 ---      the observer downloads it (loomworks.provision.fetch) unless
 ---      `binary.download = false`.
---- `binary.prefer = "managed"` puts 3 before 2. The editor reads no `lw.pin`:
---- a global or managed lw follows the repository's pin itself (§16.23).
+--- `binary.prefer = "managed"` puts 3 before 2. The selection reads no
+--- `lw.pin` (the editor reads it only to name the pinned version in a degraded
+--- note, daemon.observer.pinned_version): a global or managed lw follows the
+--- repository's pin itself (§16.23).
 --- The plugin sets no Lua source tree for any binary: a development lw is an
 --- executable named by `binary.path`. The removed `binary.source` is ignored
 --- with a warning (`check_setting`).
@@ -220,7 +222,7 @@ end
 --- @param opts? table
 --- @return string|nil path, loomworks.provision.Source|nil source, loomworks.provision.Selection sel
 function M.resolve(root, opts)
-    local _ = root -- the workspace: no per-workspace source today (the editor reads no lw.pin)
+    local _ = root -- the workspace: no per-workspace source today (the selection reads no lw.pin)
     opts = opts or {}
     local setting, warning = M.check_setting(opts.setting)
     local getenv = opts.getenv or os.getenv

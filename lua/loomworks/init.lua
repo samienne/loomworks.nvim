@@ -209,8 +209,8 @@ M._binary_config = nil
 --- `:checkhealth loomworks`. Resolved afresh; launches nothing.
 --- @return loomworks.provision.Selection
 function M.host_binary_selection()
-    -- (The selection does not depend on the workspace: the editor reads no
-    -- lw.pin, a global or managed lw follows it itself.)
+    -- (The selection does not depend on the workspace: it reads no lw.pin,
+    -- a global or managed lw follows it itself.)
     local _, _, sel = require("loomworks.provision.select").resolve(vim.fn.getcwd(),
         { setting = M._binary_config })
     return sel
