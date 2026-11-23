@@ -849,7 +849,10 @@ one failed, its JUnit file at the requested path (one per step when several;
 a warning line when none was written) with its `JUnit: <path>` line, and
 finally either `no tests to run for profile '<p>'`, or the per-step summary
 and `TESTS OK: <profile> (<n> step[s])`, or the failure `<k> of <n> test
-step[s] failed` with exit 1. Each program is spawned as a build step is
+step[s] failed` with exit 1, or, when the steps executed no test (CLI §16.16
+"Runs that execute no test"), `NO TESTS RAN: <profile> (<n> step[s])`. That
+last outcome exits 1 with `no tests ran (the forwarded arguments matched no
+tests)` when `-- <args>` were given, and exits 0 otherwise. Each program is spawned as a build step is
 (streamed, cancellable). A build step that fails ends the test run as it
 ends a build. A saved target whose artifact is found foreign only once built
 (no kit platform) is not run on a device by the server: its step fails with
@@ -936,7 +939,15 @@ reference (§1.2), with the message `no such test`, before acceptance.
   most about 4 per second); on the step's end the results file is
   authoritative and its cases are sent once more as `results`. The summary
   is `TESTS OK: <scope> (<n> passed)` or `<k> of <n> tests failed` with exit
-  1; every step runs even after one failed. A cancel kills the running step;
+  1; every step runs even after one failed. A run with no step at all is
+  `no tests to run for profile '<p>'` with exit 0. A run whose steps
+  executed no test case is `NO TESTS RAN: <scope>`, never `TESTS OK`. A case
+  is executed when it passed, failed or errored. A step's executed cases are
+  those of its results file and its progress; a step with no results file
+  and only its exit status counts as having run. When that run is
+  narrowed, with a `select` or with `extra`, it ends with exit 1 and the
+  error `no tests ran (the selection matched no tests)`. Otherwise it ends
+  with exit 0. A cancel kills the running step;
   its cases still `queued` or `running` become unknown (their status
   removed, the earlier last result not restored). `done.result` is
   `{ exit_code, error?, cases, counts }`: `cases` an array of
