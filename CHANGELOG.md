@@ -29,6 +29,8 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-23
+
 ### Breaking
 - The plugin is now only a client of the `lw` workspace daemon. It loads no
   workspace of its own: the status page, profiles, builds, launches, tests,
@@ -103,7 +105,7 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   `lw` older than 0.2.0-beta.7 (workspace state in `.nvim/`), a newer `lw`
   now refuses commands that would read or write workspace state and points
   to the repository's pinned launcher or `lw bootstrap upgrade` (#438).
-- The plugin pins `lw` 0.2.0-beta.17, which (with beta.12) adds `lw pin
+- The plugin pins `lw` 0.2.0, which (with beta.12) adds `lw pin
   ignore` and `lw pin follow` (run the lw you invoke instead of the pinned
   release in one checkout) and `lw reset --state` (delete only the build and
   health caches). `lw self-update` now keeps the channel on failure and
@@ -112,7 +114,7 @@ How to write an entry (the same format as loomworks' CHANGELOG):
   maps cl-style `/Wall` to `/W4` (existing databases are rebuilt). With the
   pin ignored, the editor's daemon relay hands off to the lw on your search
   path, overriding `binary.path` (only `LOOMWORKS_LW` is run as is) (#440,
-  #441, #442, #444, #445, #446, #447).
+  #441, #442, #444, #445, #446, #447, #448).
 - `:LoomworksCompileCommand` and `compile_command_for_file()` now always
   refuse: "compile command: not available with the workspace daemon" (#414).
 - The status page's `N` (create workspace) and `create_workspace()` now
