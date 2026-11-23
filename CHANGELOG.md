@@ -29,6 +29,13 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 
 ## Unreleased
 
+## 0.2.2 - 2026-11-23
+
+### Fixed
+- The plugin pins `lw` 0.2.2: a narrowed test run that executes no tests
+  now reports NO TESTS RAN, and the rebuild notice after upgrading from
+  0.1.x is clearer (#450).
+
 ## 0.2.1 - 2026-11-23
 
 ### Fixed
