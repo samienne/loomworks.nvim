@@ -29,6 +29,13 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 
 ## Unreleased
 
+## 0.2.1 - 2026-11-23
+
+### Fixed
+- The plugin pins `lw` 0.2.1: on Windows an `lw.cmd` of any earlier release,
+  replaced by `lw bootstrap install` or `lw bootstrap upgrade` while it runs,
+  now ends with lw's exit status instead of looping (#449).
+
 ## 0.2.0 - 2026-11-23
 
 ### Breaking

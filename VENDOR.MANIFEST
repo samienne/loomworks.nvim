@@ -2,8 +2,8 @@
 # Written by scripts/vendor.sh; verify with scripts/vendor.sh --check.
 # Do not edit: change the file in loomworks, tag, and re-vendor.
 source samienne/loomworks
-tag v0.2.0
-commit 763196d1e8f954f6827f6e3da5902ef8aab85a0a
+tag v0.2.1
+commit edf147d9a49920c507ecc40db6bce9d11a1900f2
 155795436c21332c27bf274af0c4d7c86c2a5338d93cc5eb762a25ab67b481c0  lua/loomworks/description.lua
 c06d0858eaac58bb66650a7b3d1f6914b0c300cac707608f150f1f47c3a75635  lua/loomworks/device_log_records.lua
 006c3841f1aebebdb7c185a6c112c6e82973cb921d07a53e525984cb5fd28add  lua/loomworks/lsp_config.lua
