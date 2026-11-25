@@ -29,6 +29,13 @@ How to write an entry (the same format as loomworks' CHANGELOG):
 
 ## Unreleased
 
+## 0.2.3 - 2026-11-25
+
+### Added
+- The plugin pins `lw` 0.2.3: on a terminal, `lw build`, `clean`, `test`
+  and `run` keep a live status line below the step output (turn it off
+  with `--no-sticky` or `LW_STICKY=0`) (#451).
+
 ## 0.2.2 - 2026-11-23
 
 ### Fixed
